@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git clone *)",
+      "Bash(npm run *)",
+      "Bash(rm -rf \"D:/siyuan/data/plugins/siyuan-things\")",
+      "Bash(cp -r d:/project/siyuan_Things_plugin/dist \"D:/siyuan/data/plugins/siyuan-things\")",
+      "Read(//d/siyuan/data/plugins/**)",
+      "Bash(ls -la \"D:/siyuan/data/storage/\" 2>/dev/null | head -20)",
+      "Read(//d/siyuan/data/storage/**)",
+      "Bash(ls -la \"D:/siyuan/data/storage/petal/\" 2>/dev/null)",
+      "Read(//d/siyuan/data/storage/petal/**)",
+      "Read(//d/siyuan/data/storage/petal/siyuan-things/**)",
+      "Bash(rm -rf dist)",
+      "Bash(cat \"D:/siyuan/data/storage/petal/siyuan-things/tasks.json\" 2>/dev/null)",
+      "Bash(cp -r dist \"D:/siyuan/data/plugins/siyuan-things\")",
+      "WebFetch(domain:github.com)",
+      "WebSearch",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:b3log.org)",
+      "Bash(rm -rf \"D:/siyuan/data/storage/petal/siyuan-things\")",
+      "Bash(rm -rf \"D:/siyuan/data/plugins/siyuan-things/\"*)",
+      "Bash(cp -r \"d:/project/siyuan_Things_plugin/dist/\"* \"D:/siyuan/data/plugins/siyuan-things/\")",
+      "Bash(gh repo *)",
+      "Bash(git remote *)",
+      "Bash(git add *)",
+      "Bash(git commit -m 'Initial commit: SiYuan Things plugin *)",
+      "Bash(ping github.com -n 2)",
+      "Bash(git config *)",
+      "Bash(gh auth *)",
+      "Bash(netsh winhttp *)",
+      "Bash(git gc *)",
+      "Bash(rm -rf .git)",
+      "Bash(git init *)"
+    ]
+  }
+}

@@ -1,0 +1,412 @@
+<script lang="ts">
+  import { onMount } from "svelte";
+  import TaskItem from "./TaskItem.svelte";
+  import TaskCreate from "./TaskCreate.svelte";
+  import type { ViewType, Task } from "@/types";
+  import type { StoreManager } from "@/stores";
+  import { showMessage } from "siyuan";
+
+  export let view: ViewType;
+  export let viewId: string | undefined;
+  export let searchQuery: string;
+  export let store: StoreManager;
+
+  let showCreateForm = false;
+  let showFabMenu = false;
+  let refreshKey = 0;
+
+  // 监听 store 变化
+  onMount(() => {
+    const unsubTasks = store.tasks.on(() => {
+      refreshKey++;
+    });
+    return () => {
+      unsubTasks();
+    };
+  });
+
+  // 根据视图获取任务列表
+  $: tasks = getTasks(view, viewId, searchQuery, refreshKey);
+
+  function getTasks(view: ViewType, viewId?: string, query?: string, _key?: number): Task[] {
+    if (query) {
+      return store.tasks.search(query);
+    }
+
+    switch (view) {
+      case "inbox":
+        return store.tasks.getInboxTasks();
+      case "today":
+        return store.tasks.getTodayTasks();
+      case "upcoming":
+        return store.tasks.getUpcomingTasks().sort((a, b) => (a.startDate || 0) - (b.startDate || 0));
+      case "anytime":
+        return store.tasks.getAnytimeTasks();
+      case "someday":
+        return store.tasks.getSomedayTasks();
+      case "log":
+        // 日志簿显示已完成的任务
+        return store.tasks.getCompletedTasks();
+      case "project":
+        return viewId ? store.tasks.getProjectTasks(viewId) : [];
+      case "area":
+        if (!viewId) return [];
+        const areaProjects = store.projects.getAreaProjects(viewId);
+        const projectIds = new Set(areaProjects.map((p) => p.id));
+        return store.tasks
+          .getAll()
+          .filter((t) => t.status === "todo" && (t.areaId === viewId || (t.projectId && projectIds.has(t.projectId))));
+      case "tag":
+        return viewId ? store.tasks.getTagTasks(viewId) : [];
+      default:
+        return [];
+    }
+  }
+
+  // 排序 - 使用 order 字段
+  $: sortedTasks = sortTasks(tasks);
+
+  function sortTasks(tasks: Task[]): Task[] {
+    return [...tasks].sort((a, b) => {
+      // 首先按 order 排序
+      if (a.order !== b.order) {
+        return a.order - b.order;
+      }
+      // 如果 order 相同，按创建时间倒序
+      return b.created - a.created;
+    });
+  }
+
+  // 按日期分组
+  $: groupedTasks = groupTasks(sortedTasks, view);
+
+  function groupTasks(tasks: Task[], view: ViewType): Map<string, Task[]> {
+    if (view !== "upcoming") {
+      return new Map([["all", tasks]]);
+    }
+
+    const groups = new Map<string, Task[]>();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    for (const task of tasks) {
+      if (!task.startDate) continue;
+      const date = new Date(task.startDate);
+      date.setHours(0, 0, 0, 0);
+
+      const diffDays = Math.round((date.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+      let key: string;
+
+      if (diffDays === 0) key = "今天";
+      else if (diffDays === 1) key = "明天";
+      else if (diffDays < 7) key = `${diffDays}天后`;
+      else key = date.toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
+
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(task);
+    }
+
+    return groups;
+  }
+
+  function handleTaskCreated() {
+    showCreateForm = false;
+  }
+
+  function handleTaskClick(event: CustomEvent) {
+    // 任务点击由 TaskItem 内部处理展开/折叠
+  }
+
+  // 处理拖拽排序
+  async function handleReorder(event: CustomEvent) {
+    const { draggedId, targetId, position } = event.detail;
+
+    const draggedTask = store.tasks.get(draggedId);
+    const targetTask = store.tasks.get(targetId);
+
+    if (!draggedTask || !targetTask) return;
+
+    // 交换排序值
+    const tempOrder = draggedTask.order;
+    await store.tasks.updateTask(draggedId, { order: targetTask.order });
+    await store.tasks.updateTask(targetId, { order: tempOrder });
+  }
+
+  // 悬浮按钮菜单
+  function handleFabAction(action: string) {
+    showFabMenu = false;
+
+    switch (action) {
+      case "task":
+        showCreateForm = true;
+        break;
+      case "project":
+        const projectName = prompt('输入项目名称:');
+        if (projectName) {
+          store.projects.createProject({ name: projectName }).then(() => {
+            showMessage(`项目已创建: ${projectName}`);
+          });
+        }
+        break;
+      case "area":
+        const areaName = prompt('输入区域名称:');
+        if (areaName) {
+          store.areas.createArea({ name: areaName }).then(() => {
+            showMessage(`区域已创建: ${areaName}`);
+          });
+        }
+        break;
+    }
+  }
+
+  // 点击外部关闭菜单
+  function handleClickOutside(e: MouseEvent) {
+    const target = e.target as HTMLElement;
+    if (!target.closest('.things-fab')) {
+      showFabMenu = false;
+    }
+  }
+  // 视图标题
+  $: viewTitle = getViewTitle(view, viewId);
+
+  function getViewTitle(view: ViewType, viewId?: string): string {
+    const titles: Record<string, string> = {
+      inbox: "收件箱",
+      today: "今天",
+      upcoming: "计划",
+      anytime: "随时",
+      someday: "某天",
+      log: "日志",
+      search: "搜索",
+    };
+
+    if (view === "project" && viewId) {
+      const p = store.projects.get(viewId);
+      return p?.name || "项目";
+    }
+    if (view === "area" && viewId) {
+      const a = store.areas.get(viewId);
+      return a?.name || "区域";
+    }
+
+    return titles[view] || "Things";
+  }
+
+  // 视图图标
+  $: viewIcon = getViewIcon(view);
+
+  function getViewIcon(view: ViewType): string {
+    const icons: Record<string, string> = {
+      inbox: "📥",
+      today: "⭐",
+      upcoming: "📅",
+      anytime: "⏰",
+      someday: "💭",
+      log: "📋",
+      search: "🔍",
+    };
+    return icons[view] || "📝";
+  }
+</script>
+
+<svelte:window on:click={handleClickOutside} />
+
+<div class="task-list">
+  <!-- 大标题 -->
+  <div class="task-list__header">
+    <h1 class="task-list__title">{viewTitle}</h1>
+  </div>
+
+  <!-- 创建任务表单 -->
+  {#if showCreateForm}
+    <TaskCreate
+      {store}
+      defaultView={view}
+      on:created={handleTaskCreated}
+      on:cancel={() => showCreateForm = false}
+    />
+  {/if}
+
+  <!-- 任务列表 -->
+  <div class="task-list__items">
+    {#if sortedTasks.length === 0}
+      <div class="task-list__empty">
+        {#if view === "inbox"}
+          <p>📥 收件箱为空</p>
+        {:else if view === "today"}
+          <p>☀️ 今天没有任务</p>
+        {:else if view === "upcoming"}
+          <p>📅 没有计划任务</p>
+        {:else if view === "anytime"}
+          <p>📋 没有随时任务</p>
+        {:else if view === "someday"}
+          <p>💭 没有某天任务</p>
+        {:else if view === "log"}
+          <p>📋 日志簿为空</p>
+        {:else if view === "search"}
+          <p>🔍 未找到匹配任务</p>
+        {:else}
+          <p>暂无任务</p>
+        {/if}
+      </div>
+    {:else}
+      {#each [...groupedTasks.entries()] as [group, groupTasks]}
+        {#if view === "upcoming" && groupedTasks.size > 1}
+          <div class="task-list__group">{group}</div>
+        {/if}
+        {#each groupTasks as task (task.id)}
+          <TaskItem
+            {task}
+            {store}
+            showProject={view !== "project"}
+          />
+        {/each}
+      {/each}
+    {/if}
+  </div>
+
+  <!-- 悬浮按钮 -->
+  <div class="things-fab">
+    {#if showFabMenu}
+      <div class="things-fab__menu">
+        <button class="things-fab__menu-item" on:click={() => handleFabAction("task")}>
+          <svg><use xlink:href="#iconAdd" /></svg>
+          <span>新建待办事项</span>
+        </button>
+        <button class="things-fab__menu-item" on:click={() => handleFabAction("project")}>
+          <svg><use xlink:href="#iconProject" /></svg>
+          <span>新建项目</span>
+        </button>
+        <button class="things-fab__menu-item" on:click={() => handleFabAction("area")}>
+          <svg><use xlink:href="#iconArea" /></svg>
+          <span>新建区域</span>
+        </button>
+      </div>
+    {/if}
+    <button class="things-fab__btn" on:click|stopPropagation={() => showFabMenu = !showFabMenu}>
+      <svg><use xlink:href="#iconAdd" /></svg>
+    </button>
+  </div>
+</div>
+
+<style lang="scss">
+  .task-list {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+    position: relative;
+    padding: 0 48px;
+
+    &__header {
+      padding: 24px 0 16px 0;
+      flex-shrink: 0;
+    }
+
+    &__title {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--b3-theme-on-background);
+      margin: 0;
+      text-align: left;
+    }
+
+    &__items {
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    &__group {
+      padding: 6px 12px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--b3-theme-on-surface-light);
+      background: var(--b3-theme-surface);
+      border-bottom: 1px solid var(--b3-border-color);
+      text-transform: uppercase;
+    }
+
+    &__empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 48px 16px;
+      text-align: center;
+      color: var(--b3-theme-on-surface-light);
+
+      p {
+        margin: 4px 0;
+        font-size: 14px;
+      }
+    }
+  }
+
+  .things-fab {
+    position: absolute;
+    bottom: 24px;
+    right: 24px;
+    z-index: 100;
+
+    &__btn {
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      background: var(--b3-theme-primary);
+      color: var(--b3-theme-on-primary);
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+      transition: transform 0.2s, box-shadow 0.2s;
+
+      &:hover {
+        transform: scale(1.05);
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+      }
+
+      svg {
+        width: 24px;
+        height: 24px;
+      }
+    }
+
+    &__menu {
+      position: absolute;
+      bottom: 64px;
+      right: 0;
+      background: var(--b3-theme-surface);
+      border: 1px solid var(--b3-border-color);
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      padding: 8px;
+      min-width: 180px;
+    }
+
+    &__menu-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 8px 12px;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--b3-theme-on-surface);
+      border-radius: 4px;
+
+      &:hover {
+        background: var(--b3-theme-surface-light);
+      }
+
+      svg {
+        width: 16px;
+        height: 16px;
+      }
+    }
+  }
+</style>
