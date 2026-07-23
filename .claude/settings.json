@@ -38,7 +38,24 @@
       "Bash(ls -la \"D:/siyuan/data/storage/petal/siyuan-things/\" 2>/dev/null || echo \"目录不存在\")",
       "Bash(ls -la \"D:/siyuan/data/storage/petal/siyuan-things/things-config.json\" 2>/dev/null || echo \"文件不存在\")",
       "Bash(cat \"D:/siyuan/data/storage/petal/siyuan-things/things-config.json\" 2>/dev/null || echo \"文件不存在\")",
-      "Bash(git commit -m '重构为统一 TaskCard 组件 *)"
+      "Bash(git commit -m '重构为统一 TaskCard 组件 *)",
+      "Read(//c/Users/Administrator/Downloads/icon/**)",
+      "Bash(identify \"d:/project/siyuan_Things_plugin/icon.png\")",
+      "Bash(python -c \"from PIL import Image; img = Image.open\\('d:/project/siyuan_Things_plugin/icon.png'\\); print\\(f'{img.width}x{img.height}'\\)\")",
+      "Bash(cp \"C:/Users/Administrator/Downloads/icon/todo_logo.png\" \"d:/project/siyuan_Things_plugin/icon.png\" && echo \"已替换 icon.png\")",
+      "Bash(ls -la \"D:/siyuan/data/plugins/siyuan-things/\" | head -10)",
+      "Read(//d/siyuan/data/plugins/siyuan-things/**)",
+      "Bash(rm -rf \"D:/siyuan/data/cache/\")",
+      "Bash(rm -rf \"D:/siyuan/data/storage/local/\")",
+      "Bash(ls -la \"D:/siyuan/data/storage/\" 2>/dev/null)",
+      "Bash(grep -i \"icon\" \"D:/siyuan/data/storage/local.json\" | head -10)",
+      "Bash(rm -rf \"D:/siyuan/data/history/.cache/\")",
+      "Bash(rm -rf \"C:/Users/Administrator/.siyuan/cache/\")",
+      "Bash(mkdir -p \"D:/siyuan/data/plugins/siyuan-things/\")",
+      "Bash(git commit -m '更新插件图标为 todo_logo *)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\Administrator\\Downloads\\icon"
     ]
   }
 }

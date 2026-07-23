@@ -28,8 +28,24 @@ export default class ThingsPlugin extends Plugin {
     this.store = new StoreManager(this);
 
     this.addIcons(`
-      <symbol id="iconThings" viewBox="0 0 32 32">
-        <path d="M16 2C8.268 2 2 8.268 2 16s6.268 14 14 14 14-6.268 14-14S23.732 2 16 2zm0 2c6.627 0 12 5.373 12 12s-5.373 12-12 12S4 22.627 4 16 9.373 4 16 4zm-2 6l-4 4 1.41 1.41L14 12.83l6.59 6.59L22 18l-8-8z"/>
+      <symbol id="iconThings" viewBox="0 0 512 512">
+        <defs>
+          <linearGradient id="todoCheckGradient" x1="120" y1="120" x2="180" y2="380" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#5BEA72"/>
+            <stop offset="1" stop-color="#19B957"/>
+          </linearGradient>
+          <linearGradient id="todoLineGradient" x1="250" y1="120" x2="400" y2="380" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#71849A"/>
+            <stop offset="1" stop-color="#91A5B8"/>
+          </linearGradient>
+        </defs>
+        <rect x="24" y="24" width="464" height="464" rx="96" fill="#F7FAFD"/>
+        <path d="M92 157 L139 204 L214 124" stroke="url(#todoCheckGradient)" stroke-width="34" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <rect x="260" y="143" width="168" height="28" rx="14" fill="url(#todoLineGradient)"/>
+        <path d="M92 269 L139 316 L214 236" stroke="url(#todoCheckGradient)" stroke-width="34" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <rect x="260" y="255" width="168" height="28" rx="14" fill="url(#todoLineGradient)"/>
+        <circle cx="153" cy="390" r="34" stroke="#8FA3B7" stroke-width="14" fill="none"/>
+        <rect x="260" y="376" width="168" height="28" rx="14" fill="#AFC0CF"/>
       </symbol>
       <symbol id="iconInbox" viewBox="0 0 32 32">
         <path d="M26 4H6a2 2 0 00-2 2v18a2 2 0 002 2h20a2 2 0 002-2V6a2 2 0 00-2-2zm0 2v8h-6.41L18 15.59V14h-4v1.59L12.41 14H6V6h20zm-2 18H8v-4h4.59L14 21.41V20h4v1.41L19.41 20H24v4z"/>
