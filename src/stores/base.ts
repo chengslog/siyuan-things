@@ -28,6 +28,8 @@ export abstract class BaseStore<T extends { id: string }> {
         for (const item of data) {
           this.items.set(item.id, item);
         }
+        // 触发变化事件，通知组件数据已加载
+        this.emit('change', []);
       }
     } catch (e) {
       console.error(`[Things] Failed to load ${this.fileName}:`, e);

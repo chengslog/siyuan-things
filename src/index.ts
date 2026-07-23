@@ -141,18 +141,21 @@ export default class ThingsPlugin extends Plugin {
       name: STORAGE_NAME,
     });
 
+    // 添加设置项
     this.settingUtils.addItem({
-      key: "showCompletedTasks",
-      value: false,
-      type: "checkbox",
-      title: "显示已完成任务",
-    });
-
-    this.settingUtils.addItem({
-      key: "showCanceledTasks",
-      value: false,
-      type: "checkbox",
-      title: "显示已取消任务",
+      key: "defaultView",
+      value: "today",
+      type: "select",
+      title: "启动时默认显示",
+      description: "每次打开思源时默认显示的视图",
+      options: {
+        inbox: "收件箱",
+        today: "今天",
+        upcoming: "计划",
+        anytime: "随时",
+        someday: "某天",
+        log: "日志",
+      },
     });
 
     console.log("[Things] Plugin loaded");
@@ -165,11 +168,38 @@ export default class ThingsPlugin extends Plugin {
 
     if (this.dockElement) {
       this.updateCounts(this.dockElement);
+
+      // 关闭所有已存在的 Things 标签页
+      const existingTabs = document.querySelectorAll(`[data-type="${TAB_TYPE}"]`);
+      existingTabs.forEach(tab => {
+        const closeBtn = tab.querySelector('.item__close');
+        if (closeBtn) {
+          (closeBtn as HTMLElement).click();
+        }
+      });
+
+      // 获取默认视图设置
+      const defaultView = this.settingUtils.get("defaultView") || "today";
+
+      // 延迟打开默认视图，确保旧标签页已关闭
+      setTimeout(() => {
+        this.openThingsTab(defaultView as ViewType);
+        this.setActive(this.dockElement!, defaultView as ViewType);
+      }, 100);
     }
   }
 
   async onunload() {
     console.log("[Things] Plugin unloaded");
+
+    // 关闭所有 Things 相关的标签页
+    const tabs = document.querySelectorAll(`[data-type="${TAB_TYPE}"]`);
+    tabs.forEach(tab => {
+      const closeBtn = tab.querySelector('.item__close');
+      if (closeBtn) {
+        (closeBtn as HTMLElement).click();
+      }
+    });
   }
 
   /**
@@ -664,15 +694,45 @@ export default class ThingsPlugin extends Plugin {
 
     const settingsEl = dialog.element.querySelector("#things-settings");
     if (settingsEl) {
-      ["showCompletedTasks", "showCanceledTasks"].forEach(key => {
-        const el = this.settingUtils.getElement(key);
-        if (el) {
-          const wrapper = document.createElement("div");
-          wrapper.style.marginBottom = "16px";
-          wrapper.appendChild(el);
-          settingsEl.appendChild(wrapper);
+      // 添加设置项
+      const key = "defaultView";
+      const el = this.settingUtils.getElement(key);
+      if (el) {
+        // 更新元素值为当前设置值
+        const item = this.settingUtils.settings.get(key);
+        if (item && item.setEleVal) {
+          item.setEleVal(el, item.value);
         }
-      });
+
+        const wrapper = document.createElement("div");
+        wrapper.style.marginBottom = "16px";
+
+        // 添加标签
+        const label = document.createElement("label");
+        label.style.display = "block";
+        label.style.marginBottom = "4px";
+        label.style.fontWeight = "500";
+        label.textContent = "启动时默认显示";
+        wrapper.appendChild(label);
+
+        // 添加描述
+        const desc = document.createElement("div");
+        desc.style.fontSize = "12px";
+        desc.style.color = "#666";
+        desc.style.marginBottom = "8px";
+        desc.textContent = "每次打开思源时默认显示的视图";
+        wrapper.appendChild(desc);
+
+        // 添加变化事件监听
+        el.addEventListener('change', async () => {
+          const value = (el as HTMLSelectElement).value;
+          await this.settingUtils.setAndSave(key, value);
+          console.log(`[Things] Setting ${key} saved:`, value);
+        });
+
+        wrapper.appendChild(el);
+        settingsEl.appendChild(wrapper);
+      }
     }
   }
 }

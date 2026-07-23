@@ -17,6 +17,7 @@ export interface Task {
   updated: number;
   startDate?: number;    // 开始日期（计划日期）- 出现在"今天"的日期
   deadline?: number;     // 截止日期
+  someday?: boolean;     // 是否是"某天"任务
   completedDate?: number;
 
   // 组织

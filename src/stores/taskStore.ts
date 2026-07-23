@@ -205,25 +205,25 @@ export class TaskStore extends BaseStore<Task> {
   }
 
   /**
-   * 获取收件箱任务（无项目、无区域、无父任务）
+   * 获取收件箱任务
+   * 没有设置日期、项目、区域的任务
    */
   getInboxTasks(): Task[] {
     return this.getAll().filter(t =>
       t.status === 'todo' &&
+      !t.startDate &&
+      !t.someday &&
+      !t.parentId &&
       !t.projectId &&
-      !t.areaId &&
-      !t.parentId
+      !t.areaId
     );
   }
 
   /**
-   * 获取今天的任务（开始日期是今天）
+   * 获取今天的任务
+   * 开始日期 <= 今天，包括过期未完成的任务
    */
   getTodayTasks(): Task[] {
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayStartTs = todayStart.getTime();
-
     const todayEnd = new Date();
     todayEnd.setHours(23, 59, 59, 999);
     const todayEndTs = todayEnd.getTime();
@@ -231,13 +231,14 @@ export class TaskStore extends BaseStore<Task> {
     return this.getAll().filter(t =>
       t.status === 'todo' &&
       t.startDate &&
-      t.startDate >= todayStartTs &&
-      t.startDate <= todayEndTs
+      t.startDate <= todayEndTs &&
+      !t.someday
     );
   }
 
   /**
-   * 获取即将到来的任务（有开始日期，但不是今天）
+   * 获取即将到来的任务
+   * 开始日期 > 今天，或者只有截止日期的任务
    */
   getUpcomingTasks(): Task[] {
     const todayEnd = new Date();
@@ -246,30 +247,35 @@ export class TaskStore extends BaseStore<Task> {
 
     return this.getAll().filter(t =>
       t.status === 'todo' &&
-      t.startDate &&
-      t.startDate > todayEndTs
+      !t.someday && (
+        (t.startDate && t.startDate > todayEndTs) ||
+        (t.deadline && !t.startDate)
+      )
     );
   }
 
   /**
-   * 获取"任何时候"任务（无开始日期，有项目或区域）
+   * 获取"随时"任务
+   * 没有日期但有项目、区域或标签的任务（可操作但没有时间限制）
    */
   getAnytimeTasks(): Task[] {
     return this.getAll().filter(t =>
       t.status === 'todo' &&
       !t.startDate &&
+      !t.someday &&
       !t.parentId &&
-      (t.projectId || t.areaId)
+      (t.projectId || t.areaId || (t.tags && t.tags.length > 0))
     );
   }
 
   /**
    * 获取"某天"任务
+   * 标记为someday的任务
    */
   getSomedayTasks(): Task[] {
     return this.getAll().filter(t =>
-      t.status === 'someday' as any ||
-      (t.status === 'todo' && !t.startDate && !t.projectId && !t.areaId && !t.parentId)
+      t.status === 'todo' &&
+      t.someday === true
     );
   }
 

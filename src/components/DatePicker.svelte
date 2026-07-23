@@ -74,24 +74,30 @@
   }
 
   function handleQuickOption(option: string) {
+    console.log('[Things DatePicker] handleQuickOption:', option);
     switch (option) {
       case "today":
         timestamp = getTodayStart();
+        console.log('[Things DatePicker] dispatching change:', { timestamp, someday: false });
+        dispatch("change", { timestamp, someday: false });
         break;
       case "tonight": {
         const tonight = new Date();
         tonight.setHours(18, 0, 0, 0);
         timestamp = tonight.getTime();
+        dispatch("change", { timestamp, someday: false });
         break;
       }
       case "someday":
         timestamp = undefined;
+        dispatch("change", { timestamp: undefined, someday: true });
         break;
       case "clear":
         timestamp = undefined;
+        dispatch("change", { timestamp: undefined, someday: false });
         break;
     }
-    dispatch("change", { timestamp });
+    console.log('[Things DatePicker] dispatching close');
     dispatch("close");
   }
 
@@ -108,13 +114,13 @@
 
 <div class="date-picker" on:click|stopPropagation>
   <!-- 今天 -->
-  <button class="date-picker__option" on:click={() => handleQuickOption("today")}>
+  <button class="date-picker__option" on:click={(e) => { e.stopPropagation(); handleQuickOption("today"); }}>
     <span class="date-picker__icon">⭐</span>
     <span class="date-picker__label">今天</span>
   </button>
 
   <!-- 今晚 -->
-  <button class="date-picker__option" on:click={() => handleQuickOption("tonight")}>
+  <button class="date-picker__option" on:click={(e) => { e.stopPropagation(); handleQuickOption("tonight"); }}>
     <span class="date-picker__icon">🌙</span>
     <span class="date-picker__label">今晚</span>
   </button>
@@ -151,7 +157,7 @@
   </div>
 
   <!-- 某天 -->
-  <button class="date-picker__option" on:click={() => handleQuickOption("someday")}>
+  <button class="date-picker__option" on:click={(e) => { e.stopPropagation(); handleQuickOption("someday"); }}>
     <span class="date-picker__icon">💭</span>
     <span class="date-picker__label">某天</span>
   </button>
@@ -159,7 +165,7 @@
   <div class="date-picker__separator"></div>
 
   <!-- 添加提醒 -->
-  <button class="date-picker__option" on:click={() => showTimePicker = !showTimePicker}>
+  <button class="date-picker__option" on:click={(e) => { e.stopPropagation(); showTimePicker = !showTimePicker; }}>
     <span class="date-picker__icon">🔔</span>
     <span class="date-picker__label">+添加提醒</span>
   </button>
@@ -177,7 +183,7 @@
   <!-- 清除 -->
   {#if showClear && timestamp}
     <div class="date-picker__separator"></div>
-    <button class="date-picker__option date-picker__option--clear" on:click={() => handleQuickOption("clear")}>
+    <button class="date-picker__option date-picker__option--clear" on:click={(e) => { e.stopPropagation(); handleQuickOption("clear"); }}>
       <span class="date-picker__icon">✕</span>
       <span class="date-picker__label">清除</span>
     </button>

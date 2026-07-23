@@ -21,16 +21,18 @@
 
   // 获取数量的函数
   function getCounts() {
-    return {
-      inbox: store.tasks.getInboxTasks().length,
-      today: store.tasks.getTodayTasks().length,
-      upcoming: store.tasks.getUpcomingTasks().length,
-      anytime: store.tasks.getAnytimeTasks().length,
-    };
+    const inbox = store.tasks.getInboxTasks().length;
+    const today = store.tasks.getTodayTasks().length;
+    const upcoming = store.tasks.getUpcomingTasks().length;
+    const anytime = store.tasks.getAnytimeTasks().length;
+    return { inbox, today, upcoming, anytime };
   }
 
-  // 响应式数量
-  $: counts = taskVersion ? getCounts() : getCounts();
+  // 响应式数量 - 每次任务变化时重新计算
+  $: counts = (() => {
+    void taskVersion; // 依赖 taskVersion 触发更新
+    return getCounts();
+  })();
 
   // 侧边栏项目
   $: mainItems = [

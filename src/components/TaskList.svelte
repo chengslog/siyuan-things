@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import TaskItem from "./TaskItem.svelte";
-  import TaskCreate from "./TaskCreate.svelte";
+  import TaskCard from "./TaskCard.svelte";
   import DragSort from "./DragSort.svelte";
   import type { ViewType, Task } from "@/types";
   import type { StoreManager } from "@/stores";
@@ -27,10 +26,10 @@
     };
   });
 
-  // 根据视图获取任务列表
-  $: tasks = getTasks(view, viewId, searchQuery, refreshKey);
+  // 根据视图获取任务列表 - 使用响应式声明确保视图切换时刷新
+  $: tasks = getTasks(view, viewId, searchQuery, refreshKey, store.tasks.count);
 
-  function getTasks(view: ViewType, viewId?: string, query?: string, _key?: number): Task[] {
+  function getTasks(view: ViewType, viewId?: string, query?: string, _key?: number, _count?: number): Task[] {
     if (query) {
       return store.tasks.search(query);
     }
@@ -215,9 +214,10 @@
 
   <!-- 创建任务表单 -->
   {#if showCreateForm}
-    <TaskCreate
+    <TaskCard
+      mode="create"
       {store}
-      defaultView={view}
+      currentView={view}
       on:created={handleTaskCreated}
       on:cancel={() => showCreateForm = false}
     />
@@ -267,11 +267,12 @@
               class="task-list__item-wrapper"
               class:is-dragging={draggedId === task.id}
             >
-              <TaskItem
+              <TaskCard
+                mode="edit"
                 {task}
                 {store}
-                showProject={view !== "project"}
                 isDragging={draggedId === task.id}
+                currentView={view}
                 {registerItem}
                 {unregisterItem}
                 on:dragstart={(e) => handleDragStart(e.detail.event, task.id)}

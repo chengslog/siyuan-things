@@ -33,7 +33,12 @@
       "Bash(rm -rf .git)",
       "Bash(git init *)",
       "Bash(git branch *)",
-      "Bash(git commit -m '重构拖拽排序和组件优化 *)"
+      "Bash(git commit -m '重构拖拽排序和组件优化 *)",
+      "WebFetch(domain:culturedcode.com)",
+      "Bash(ls -la \"D:/siyuan/data/storage/petal/siyuan-things/\" 2>/dev/null || echo \"目录不存在\")",
+      "Bash(ls -la \"D:/siyuan/data/storage/petal/siyuan-things/things-config.json\" 2>/dev/null || echo \"文件不存在\")",
+      "Bash(cat \"D:/siyuan/data/storage/petal/siyuan-things/things-config.json\" 2>/dev/null || echo \"文件不存在\")",
+      "Bash(git commit -m '重构为统一 TaskCard 组件 *)"
     ]
   }
 }

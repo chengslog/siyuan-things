@@ -18,6 +18,7 @@
   let notes = "";
   let startDate: number | undefined = undefined;
   let deadline: number | undefined = undefined;
+  let someday: boolean = false;
   let selectedTags: string[] = [];
   let checklist: Array<{ id: string; title: string; completed: boolean }> = [
     { id: "empty", title: "", completed: false }
@@ -41,6 +42,10 @@
 
   // 获取日期按钮显示文本和图标
   function getDateButtonText(): { icon: string; text: string } {
+    if (someday) {
+      return { icon: "💭", text: "某天" };
+    }
+
     if (!startDate) {
       return { icon: "⭐", text: "今天" };
     }
@@ -103,6 +108,7 @@
       notes: notes.trim(),
       startDate,
       deadline,
+      someday,
       tags: selectedTags,
     };
 
@@ -130,6 +136,7 @@
     notes = "";
     startDate = defaultView === "today" ? getTodayStart() : undefined;
     deadline = undefined;
+    someday = false;
     selectedTags = [];
     checklist = [{ id: Date.now().toString(), title: "", completed: false }];
 
@@ -149,6 +156,7 @@
   // 日期变化处理
   function handleDateChange(e: CustomEvent) {
     startDate = e.detail.timestamp;
+    someday = e.detail.someday || false;
     showDatePicker = false;
     isInteracting = false;
   }

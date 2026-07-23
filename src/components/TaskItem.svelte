@@ -13,6 +13,7 @@
   export let showProject: boolean = true;
   export let store: StoreManager;
   export let isDragging: boolean = false;
+  export let currentView: string = "inbox";
   export let registerItem: (id: string, el: HTMLElement) => void = () => {};
   export let unregisterItem: (id: string) => void = () => {};
 
@@ -163,9 +164,61 @@
   async function saveAndCollapse() {
     await saveTitle();
     await saveNotes();
-    expanded = false;
+
+    // 检查任务是否需要移动到其他列表
+    const currentView = getCurrentView();
+    const shouldMove = shouldTaskMoveToDifferentView(currentView);
+
+    if (shouldMove) {
+      // 需要移动：先置灰，再滑出
+      isMovingOut = true;
+      await new Promise(resolve => setTimeout(resolve, 300)); // 置灰 300ms
+      expanded = false;
+      await new Promise(resolve => setTimeout(resolve, 300)); // 滑出动画 300ms
+    } else {
+      // 不需要移动：直接折叠
+      expanded = false;
+    }
+
     document.removeEventListener('click', handleOutsideClick);
   }
+
+  // 获取当前视图类型
+  function getCurrentView(): string {
+    return currentView;
+  }
+
+  // 检查任务是否需要移动到其他列表
+  function shouldTaskMoveToDifferentView(currentView: string): boolean {
+    const todayEnd = new Date();
+    todayEnd.setHours(23, 59, 59, 999);
+    const todayEndTs = todayEnd.getTime();
+
+    const nextWeek = new Date();
+    nextWeek.setDate(nextWeek.getDate() + 7);
+    nextWeek.setHours(23, 59, 59, 999);
+    const nextWeekTs = nextWeek.getTime();
+
+    // 根据任务属性判断应该在哪个列表
+    let targetView = 'inbox';
+
+    if (task.someday) {
+      targetView = 'someday';
+    } else if (task.startDate) {
+      if (task.startDate <= todayEndTs) {
+        targetView = 'today';
+      } else {
+        targetView = 'upcoming';
+      }
+    } else if (task.projectId || task.areaId || (task.tags && task.tags.length > 0)) {
+      targetView = 'anytime';
+    }
+
+    return targetView !== currentView;
+  }
+
+  // 移除任务动画状态
+  let isMovingOut = false;
 
   // 主任务拖动 - 向父组件派发事件
   let dragTimer: any = null;
@@ -242,7 +295,11 @@
 
   // 日期变化处理
   async function handleDateChange(e: CustomEvent) {
-    await store.tasks.updateTask(task.id, { startDate: e.detail.timestamp });
+    console.log('[Things] Date change:', e.detail);
+    await store.tasks.updateTask(task.id, { startDate: e.detail.timestamp, someday: e.detail.someday || false });
+    showDatePicker = false;
+    // 日期改变后，检查是否需要移动到其他列表
+    await checkAndMoveAfterChange();
   }
 
   // 日期选择器关闭
@@ -253,6 +310,9 @@
   // 截止日期变化处理
   async function handleDeadlineChange(e: CustomEvent) {
     await store.tasks.updateTask(task.id, { deadline: e.detail.timestamp });
+    showDeadlinePicker = false;
+    // 截止日期改变后，检查是否需要移动到其他列表
+    await checkAndMoveAfterChange();
   }
 
   // 截止日期选择器关闭
@@ -263,6 +323,30 @@
   // 标签变化处理
   async function handleTagChange(e: CustomEvent) {
     await store.tasks.updateTask(task.id, { tags: e.detail.tags });
+    showTagPicker = false;
+    // 标签改变后，检查是否需要移动到其他列表
+    await checkAndMoveAfterChange();
+  }
+
+  // 标签选择器关闭
+  function handleTagPickerClose() {
+    showTagPicker = false;
+  }
+
+  // 检查并移动任务到正确的列表
+  async function checkAndMoveAfterChange() {
+    const currentView = getCurrentView();
+    const shouldMove = shouldTaskMoveToDifferentView(currentView);
+    console.log('[Things] Check move:', { currentView, shouldMove, startDate: task.startDate, someday: task.someday });
+
+    if (shouldMove) {
+      // 需要移动：先置灰，再滑出
+      isMovingOut = true;
+      await new Promise(resolve => setTimeout(resolve, 300)); // 置灰 300ms
+      expanded = false;
+      await new Promise(resolve => setTimeout(resolve, 300)); // 滑出动画 300ms
+      isMovingOut = false;
+    }
   }
 
   // 子任务变化处理
@@ -305,17 +389,92 @@
     }
   }
 
-  // 获取日期按钮文本
-  function getDateButtonText(): string {
-    if (!task.startDate) return "";
-    if (isTodayDate(task.startDate)) return "今天";
-    if (isTomorrowDate(task.startDate)) return "明天";
-    const date = new Date(task.startDate);
-    if (date.getHours() !== 0 || date.getMinutes() !== 0) {
-      return `${formatDateFull(task.startDate)} ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
+  // 获取日期显示文本和图标
+  function getDateDisplay(): { icon: string; text: string } | null {
+    if (!task.startDate || task.someday) {
+      if (task.someday) return { icon: "💭", text: "" };
+      return null;
     }
-    return formatDateFull(task.startDate);
+
+    if (task.startDate) {
+      const date = new Date(task.startDate);
+      const hasTime = date.getHours() !== 0 || date.getMinutes() !== 0;
+
+      // 检查是否是今晚（18:00）
+      const isTonight = isTodayDate(task.startDate) && date.getHours() === 18 && date.getMinutes() === 0;
+
+      if (isTonight) {
+        return { icon: "🌙", text: "" };
+      }
+
+      if (isTodayDate(task.startDate)) {
+        if (hasTime) {
+          return { icon: "🗓", text: `今天 ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}` };
+        }
+        return { icon: "⭐", text: "" };
+      }
+
+      if (isTomorrowDate(task.startDate)) {
+        if (hasTime) {
+          return { icon: "🗓", text: `明天 ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}` };
+        }
+        return { icon: "🗓", text: "明天" };
+      }
+
+      if (hasTime) {
+        return { icon: "🗓", text: `${formatDateFull(task.startDate)} ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}` };
+      }
+      return { icon: "🗓", text: formatDateFull(task.startDate) };
+    }
+
+    return null;
   }
+
+  // 获取截止日期显示文本和图标
+  function getDeadlineDisplay(): { icon: string; text: string } | null {
+    if (!task.deadline) return null;
+
+    const date = new Date(task.deadline);
+    const hasTime = date.getHours() !== 0 || date.getMinutes() !== 0;
+
+    if (isTodayDate(task.deadline)) {
+      if (hasTime) {
+        return { icon: "⚑", text: `今天 ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}` };
+      }
+      return { icon: "⚑", text: "今天" };
+    }
+
+    if (isTomorrowDate(task.deadline)) {
+      if (hasTime) {
+        return { icon: "⚑", text: `明天 ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}` };
+      }
+      return { icon: "⚑", text: "明天" };
+    }
+
+    if (hasTime) {
+      return { icon: "⚑", text: `${formatDateFull(task.deadline)} ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}` };
+    }
+    return { icon: "⚑", text: formatDateFull(task.deadline) };
+  }
+
+  // 清除日期
+  async function clearStartDate() {
+    await store.tasks.updateTask(task.id, { startDate: undefined, someday: false });
+  }
+
+  // 清除标签
+  async function clearTags() {
+    await store.tasks.updateTask(task.id, { tags: [] });
+  }
+
+  // 清除截止日期
+  async function clearDeadline() {
+    await store.tasks.updateTask(task.id, { deadline: undefined });
+  }
+
+  // 响应式计算显示项
+  $: dateDisplay = getDateDisplay();
+  $: deadlineDisplay = getDeadlineDisplay();
 </script>
 
 <!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -325,6 +484,7 @@
   class:is-expanded={expanded}
   class:is-moving={isMoving}
   class:is-dragging={isDragging}
+  class:is-moving-out={isMovingOut}
   data-task-id={task.id}
   bind:this={cardEl}
   on:mousedown={handleMouseDown}
@@ -417,81 +577,164 @@
 
       <!-- 底部操作栏 -->
       <div class="task-card__toolbar">
-        <!-- 日期选择 -->
-        <div class="task-card__action-group">
-          <button
-            class="task-card__tool-btn"
-            class:is-active={task.startDate}
-            title="设置日期"
-            on:click|stopPropagation={() => { showDatePicker = !showDatePicker; showDeadlinePicker = false; showTagPicker = false; }}
-          >
-            <span>⭐</span>
-          </button>
+        <!-- 左侧：已设置项 -->
+        <div class="task-card__toolbar-left">
+          <!-- 日期显示 -->
+          {#if dateDisplay}
+            <div class="task-card__tag-item">
+              <button
+                class="task-card__tag-btn"
+                on:click|stopPropagation={() => { showDatePicker = !showDatePicker; showDeadlinePicker = false; showTagPicker = false; }}
+              >
+                <span>{dateDisplay.icon}</span>
+                {#if dateDisplay.text}
+                  <span>{dateDisplay.text}</span>
+                {/if}
+              </button>
+              <button class="task-card__tag-remove" on:click|stopPropagation={clearStartDate}>×</button>
 
-          {#if showDatePicker}
-            <div class="task-card__dropdown">
-              <DatePicker
-                timestamp={task.startDate}
-                on:change={handleDateChange}
-                on:close={handleDatePickerClose}
-              />
+              {#if showDatePicker}
+                <div class="task-card__dropdown">
+                  <DatePicker
+                    timestamp={task.startDate}
+                    on:change={handleDateChange}
+                    on:close={handleDatePickerClose}
+                  />
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- 标签显示 -->
+          {#if tags.length > 0}
+            <div class="task-card__tag-item">
+              <button
+                class="task-card__tag-btn"
+                on:click|stopPropagation={() => { showTagPicker = !showTagPicker; showDatePicker = false; showDeadlinePicker = false; }}
+              >
+                <span>🏷</span>
+                <span>{tags.map(t => t.name).join(', ')}</span>
+              </button>
+              <button class="task-card__tag-remove" on:click|stopPropagation={clearTags}>×</button>
+
+              {#if showTagPicker}
+                <div class="task-card__dropdown">
+                  <TagPicker
+                    store={store}
+                    selectedTags={task.tags}
+                    on:change={handleTagChange}
+                  />
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- 截止日期显示 -->
+          {#if deadlineDisplay}
+            <div class="task-card__tag-item">
+              <button
+                class="task-card__tag-btn"
+                on:click|stopPropagation={() => { showDeadlinePicker = !showDeadlinePicker; showDatePicker = false; showTagPicker = false; }}
+              >
+                <span>{deadlineDisplay.icon}</span>
+                <span>{deadlineDisplay.text}</span>
+              </button>
+              <button class="task-card__tag-remove" on:click|stopPropagation={clearDeadline}>×</button>
+
+              {#if showDeadlinePicker}
+                <div class="task-card__dropdown">
+                  <DeadlinePicker
+                    timestamp={task.deadline}
+                    on:change={handleDeadlineChange}
+                    on:close={handleDeadlinePickerClose}
+                  />
+                </div>
+              {/if}
             </div>
           {/if}
         </div>
 
-        <!-- 标签 -->
-        <div class="task-card__action-group">
-          <button
-            class="task-card__tool-btn"
-            class:is-active={task.tags.length > 0}
-            title="标签"
-            on:click|stopPropagation={() => { showTagPicker = !showTagPicker; showDatePicker = false; showDeadlinePicker = false; }}
-          >
-            <span>🏷</span>
-          </button>
+        <!-- 右侧：功能按钮 -->
+        <div class="task-card__toolbar-right">
+          <!-- 日期选择（未设置时显示） -->
+          {#if !task.startDate && !task.someday}
+            <div class="task-card__action-group">
+              <button
+                class="task-card__tool-btn"
+                title="设置日期"
+                on:click|stopPropagation={() => { showDatePicker = !showDatePicker; showDeadlinePicker = false; showTagPicker = false; }}
+              >
+                <span>⭐</span>
+              </button>
 
-          {#if showTagPicker}
-            <div class="task-card__dropdown">
-              <TagPicker
-                store={store}
-                selectedTags={task.tags}
-                on:change={handleTagChange}
-              />
+              {#if showDatePicker}
+                <div class="task-card__dropdown task-card__dropdown--right">
+                  <DatePicker
+                    timestamp={task.startDate}
+                    on:change={handleDateChange}
+                    on:close={handleDatePickerClose}
+                  />
+                </div>
+              {/if}
             </div>
           {/if}
-        </div>
 
-        <!-- 子任务 -->
-        <button class="task-card__tool-btn" title="添加子任务" on:click|stopPropagation={addSubTask}>
-          <span>☷</span>
-        </button>
+          <!-- 标签（未设置时显示） -->
+          {#if tags.length === 0}
+            <div class="task-card__action-group">
+              <button
+                class="task-card__tool-btn"
+                title="标签"
+                on:click|stopPropagation={() => { showTagPicker = !showTagPicker; showDatePicker = false; showDeadlinePicker = false; }}
+              >
+                <span>🏷</span>
+              </button>
 
-        <!-- 截止日期 -->
-        <div class="task-card__action-group">
-          <button
-            class="task-card__tool-btn"
-            class:is-active={task.deadline}
-            title="设置截止日期"
-            on:click|stopPropagation={() => { showDeadlinePicker = !showDeadlinePicker; showDatePicker = false; showTagPicker = false; }}
-          >
-            <span>⚑</span>
-          </button>
-
-          {#if showDeadlinePicker}
-            <div class="task-card__dropdown">
-              <DeadlinePicker
-                timestamp={task.deadline}
-                on:change={handleDeadlineChange}
-                on:close={handleDeadlinePickerClose}
-              />
+              {#if showTagPicker}
+                <div class="task-card__dropdown task-card__dropdown--right">
+                  <TagPicker
+                    store={store}
+                    selectedTags={task.tags}
+                    on:change={handleTagChange}
+                  />
+                </div>
+              {/if}
             </div>
           {/if}
-        </div>
 
-        <!-- 删除 -->
-        <button class="task-card__tool-btn task-card__tool-btn--delete" title="删除" on:click|stopPropagation={handleDelete}>
-          <span>×</span>
-        </button>
+          <!-- 截止日期（未设置时显示） -->
+          {#if !task.deadline}
+            <div class="task-card__action-group">
+              <button
+                class="task-card__tool-btn"
+                title="设置截止日期"
+                on:click|stopPropagation={() => { showDeadlinePicker = !showDeadlinePicker; showDatePicker = false; showTagPicker = false; }}
+              >
+                <span>⚑</span>
+              </button>
+
+              {#if showDeadlinePicker}
+                <div class="task-card__dropdown task-card__dropdown--right">
+                  <DeadlinePicker
+                    timestamp={task.deadline}
+                    on:change={handleDeadlineChange}
+                    on:close={handleDeadlinePickerClose}
+                  />
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- 子任务 -->
+          <button class="task-card__tool-btn" title="添加子任务" on:click|stopPropagation={addSubTask}>
+            <span>☷</span>
+          </button>
+
+          <!-- 删除 -->
+          <button class="task-card__tool-btn task-card__tool-btn--delete" title="删除" on:click|stopPropagation={handleDelete}>
+            <span>×</span>
+          </button>
+        </div>
       </div>
     </div>
   {/if}
@@ -523,6 +766,14 @@
 
     &.is-dragging {
       opacity: 0;
+      pointer-events: none;
+    }
+
+    &.is-moving-out {
+      opacity: 0.5;
+      background: #f3f4f6;
+      transform: translateX(-100%);
+      transition: opacity 0.3s ease, transform 0.3s ease;
       pointer-events: none;
     }
 
@@ -684,10 +935,74 @@
     &__toolbar {
       display: flex;
       align-items: center;
-      gap: 4px;
+      justify-content: space-between;
+      gap: 8px;
       margin-top: 4px;
       padding-top: 8px;
       border-top: 1px solid #f3f4f6;
+    }
+
+    &__toolbar-left {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      flex: 1;
+      min-width: 0;
+    }
+
+    &__toolbar-right {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    &__tag-item {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      background: #f3f4f6;
+      border-radius: 12px;
+      padding: 2px 4px 2px 8px;
+      font-size: 12px;
+      position: relative;
+    }
+
+    &__tag-btn {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      padding: 2px 4px;
+      font-size: 12px;
+      color: #4b5563;
+      border-radius: 8px;
+
+      &:hover {
+        background: #e5e7eb;
+      }
+    }
+
+    &__tag-remove {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      color: #9ca3af;
+      font-size: 12px;
+      border-radius: 50%;
+
+      &:hover {
+        background: #e5e7eb;
+        color: #dc2626;
+      }
     }
 
     &__action-group {
@@ -718,7 +1033,6 @@
       }
 
       &--delete {
-        margin-left: auto;
         font-size: 18px;
         color: #9ca3af;
 
@@ -740,6 +1054,11 @@
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
       padding: 8px;
       margin-top: 4px;
+
+      &--right {
+        left: auto;
+        right: 0;
+      }
     }
   }
 </style>

@@ -1,0 +1,1162 @@
+<script lang="ts">
+  import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
+  import type { Task } from "@/types";
+  import type { StoreManager } from "@/stores";
+  import { formatDateShort, isOverdue } from "@/utils/date";
+  import { isTodayDate, isTomorrowDate, formatDateFull } from "@/utils/calendar";
+  import DatePicker from "./DatePicker.svelte";
+  import DeadlinePicker from "./DeadlinePicker.svelte";
+  import TagPicker from "./TagPicker.svelte";
+  import Checklist from "./Checklist.svelte";
+
+  // 模式：create 或 edit
+  export let mode: 'create' | 'edit' = 'edit';
+  // 编辑模式传入的任务
+  export let task: Task | null = null;
+  export let store: StoreManager;
+  export let currentView: string = "inbox";
+  export let isDragging: boolean = false;
+  export let registerItem: (id: string, el: HTMLElement) => void = () => {};
+  export let unregisterItem: (id: string) => void = () => {};
+
+  const dispatch = createEventDispatcher();
+
+  let cardEl: HTMLElement;
+
+  // 表单数据
+  let title = "";
+  let notes = "";
+  let startDate: number | undefined = undefined;
+  let deadline: number | undefined = undefined;
+  let someday: boolean = false;
+  let selectedTags: string[] = [];
+  let checklist: Array<{ id: string; title: string; completed: boolean }> = [
+    { id: "empty", title: "", completed: false }
+  ];
+
+  // UI 状态
+  let expanded = mode === 'create'; // 新建模式默认展开
+  let showDatePicker = false;
+  let showDeadlinePicker = false;
+  let showTagPicker = false;
+  let showChecklist = true;
+  let isInteracting = false;
+  let isMovingOut = false;
+  let titleInput: HTMLInputElement;
+
+  // 拖拽状态
+  let dragTimer: any = null;
+  let isClick = true;
+
+  // 初始化
+  onMount(() => {
+    if (mode === 'edit' && task) {
+      title = task.title;
+      notes = task.notes || "";
+      startDate = task.startDate;
+      deadline = task.deadline;
+      someday = task.someday || false;
+      selectedTags = [...(task.tags || [])];
+      // 加载子任务
+      const subTasks = store.tasks.getSubTasks(task.id);
+      if (subTasks.length > 0) {
+        checklist = subTasks.map(t => ({
+          id: t.id,
+          title: t.title,
+          completed: t.status === 'done'
+        }));
+      }
+      // 注册元素
+      if (cardEl) {
+        registerItem(task.id, cardEl);
+      }
+    } else if (mode === 'create') {
+      if (currentView === 'today') {
+        startDate = getTodayStart();
+      }
+      setTimeout(() => titleInput?.focus(), 100);
+    }
+  });
+
+  onDestroy(() => {
+    if (mode === 'edit' && task) {
+      unregisterItem(task.id);
+    }
+    if (moveTimeout) clearTimeout(moveTimeout);
+  });
+
+  // 辅助函数
+  function getTodayStart(): number {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return today.getTime();
+  }
+
+  // 响应式数据
+  $: subTasks = mode === 'edit' && task ? store.tasks.getSubTasks(task.id) : [];
+  $: tags = mode === 'edit' && task ? task.tags.map((id) => store.tags.get(id)).filter(Boolean) : [];
+  $: isDeadlineOverdue = mode === 'edit' && task?.deadline && isOverdue(task.deadline);
+
+  // 日期显示
+  $: dateDisplay = getDateDisplay();
+  $: deadlineDisplay = getDeadlineDisplay();
+
+  function getDateDisplay(): { icon: string; text: string } | null {
+    const date = mode === 'edit' && task ? task.startDate : startDate;
+    const isSomeday = mode === 'edit' && task ? task.someday : someday;
+
+    if (isSomeday) return { icon: "💭", text: "" };
+    if (!date) return null;
+
+    const d = new Date(date);
+    const hasTime = d.getHours() !== 0 || d.getMinutes() !== 0;
+    const isTonight = isTodayDate(date) && d.getHours() === 18 && d.getMinutes() === 0;
+
+    if (isTonight) return { icon: "🌙", text: "" };
+    if (isTodayDate(date)) {
+      if (hasTime) return { icon: "🗓", text: `今天 ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}` };
+      return { icon: "⭐", text: "" };
+    }
+    if (isTomorrowDate(date)) {
+      if (hasTime) return { icon: "🗓", text: `明天 ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}` };
+      return { icon: "🗓", text: "明天" };
+    }
+    if (hasTime) return { icon: "🗓", text: `${formatDateFull(date)} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}` };
+    return { icon: "🗓", text: formatDateFull(date) };
+  }
+
+  function getDeadlineDisplay(): { icon: string; text: string } | null {
+    const date = mode === 'edit' && task ? task.deadline : deadline;
+    if (!date) return null;
+
+    const d = new Date(date);
+    const hasTime = d.getHours() !== 0 || d.getMinutes() !== 0;
+
+    if (isTodayDate(date)) {
+      if (hasTime) return { icon: "⚑", text: `今天 ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}` };
+      return { icon: "⚑", text: "今天" };
+    }
+    if (isTomorrowDate(date)) {
+      if (hasTime) return { icon: "⚑", text: `明天 ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}` };
+      return { icon: "⚑", text: "明天" };
+    }
+    if (hasTime) return { icon: "⚑", text: `${formatDateFull(date)} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}` };
+    return { icon: "⚑", text: formatDateFull(date) };
+  }
+
+  // 卡片点击
+  function handleCardClick(e?: Event) {
+    if (mode === 'create') return; // 新建模式不需要展开/折叠
+
+    if (e) {
+      const target = e.target as HTMLElement;
+      if (target.closest('.task-card__toolbar') ||
+          target.closest('.task-card__action-group') ||
+          target.closest('.task-card__dropdown') ||
+          target.closest('.task-card__check') ||
+          target.closest('input') ||
+          target.closest('textarea') ||
+          target.closest('.checklist')) {
+        return;
+      }
+    }
+
+    const hasOpenDropdown = showDatePicker || showDeadlinePicker || showTagPicker;
+    if (hasOpenDropdown) {
+      showDatePicker = false;
+      showDeadlinePicker = false;
+      showTagPicker = false;
+      return;
+    }
+
+    expanded = !expanded;
+    if (expanded && task) {
+      title = task.title;
+      notes = task.notes || "";
+      window.dispatchEvent(new CustomEvent('card-expanded', { detail: { cardId: task.id } }));
+      setTimeout(() => {
+        document.addEventListener('click', handleOutsideClick);
+      }, 10);
+    } else {
+      document.removeEventListener('click', handleOutsideClick);
+    }
+  }
+
+  // 点击外部关闭
+  function handleOutsideClick(e: MouseEvent) {
+    const target = e.target as HTMLElement;
+    const card = target.closest('.task-card');
+    if (!card || (task && card.dataset.taskId !== task.id)) {
+      showDatePicker = false;
+      showDeadlinePicker = false;
+      showTagPicker = false;
+      saveAndCollapse();
+    }
+  }
+
+  // 保存并折叠
+  async function saveAndCollapse() {
+    if (mode === 'edit' && task) {
+      await saveTitle();
+      await saveNotes();
+      // 检查是否需要移动
+      const shouldMove = shouldTaskMoveToDifferentView();
+      if (shouldMove) {
+        isMovingOut = true;
+        await new Promise(resolve => setTimeout(resolve, 300));
+        expanded = false;
+        await new Promise(resolve => setTimeout(resolve, 300));
+        isMovingOut = false;
+      } else {
+        expanded = false;
+      }
+    }
+    document.removeEventListener('click', handleOutsideClick);
+  }
+
+  // 保存标题
+  async function saveTitle() {
+    if (task && title !== task.title) {
+      await store.tasks.updateTask(task.id, { title });
+    }
+  }
+
+  // 保存备注
+  async function saveNotes() {
+    if (task && notes !== (task.notes || "")) {
+      await store.tasks.updateTask(task.id, { notes });
+    }
+  }
+
+  // 切换完成状态
+  let moveTimeout: any = null;
+  let isMoving = false;
+
+  async function handleToggle(e: Event) {
+    e.stopPropagation();
+    if (!task) return;
+
+    if (task.status === "done") {
+      await store.tasks.toggleTask(task.id);
+      await store.tasks.updateTask(task.id, { completedDate: undefined });
+    } else {
+      await store.tasks.toggleTask(task.id);
+      isMoving = true;
+      moveTimeout = setTimeout(async () => {
+        await store.tasks.updateTask(task.id, { startDate: undefined });
+        isMoving = false;
+      }, 3000);
+    }
+  }
+
+  // 删除任务
+  async function handleDelete(e: Event) {
+    e.stopPropagation();
+    if (task) {
+      await store.tasks.delete(task.id);
+    }
+  }
+
+  // 添加子任务
+  async function addSubTask() {
+    if (task) {
+      await store.tasks.createTask({
+        title: "",
+        parentId: task.id,
+      });
+    }
+  }
+
+  // 日期变化
+  async function handleDateChange(e: CustomEvent) {
+    if (mode === 'create') {
+      startDate = e.detail.timestamp;
+      someday = e.detail.someday || false;
+    } else if (task) {
+      await store.tasks.updateTask(task.id, { startDate: e.detail.timestamp, someday: e.detail.someday || false });
+      await checkAndMoveAfterChange();
+    }
+    showDatePicker = false;
+  }
+
+  // 截止日期变化
+  async function handleDeadlineChange(e: CustomEvent) {
+    if (mode === 'create') {
+      deadline = e.detail.timestamp;
+    } else if (task) {
+      await store.tasks.updateTask(task.id, { deadline: e.detail.timestamp });
+      await checkAndMoveAfterChange();
+    }
+    showDeadlinePicker = false;
+  }
+
+  // 标签变化
+  async function handleTagChange(e: CustomEvent) {
+    if (mode === 'create') {
+      selectedTags = e.detail.tags;
+    } else if (task) {
+      await store.tasks.updateTask(task.id, { tags: e.detail.tags });
+      await checkAndMoveAfterChange();
+    }
+    showTagPicker = false;
+  }
+
+  // 检查清单变化
+  async function handleChecklistChange(e: CustomEvent) {
+    const { items: newItems } = e.detail;
+    if (!newItems) return;
+
+    if (mode === 'create') {
+      checklist = newItems;
+    } else if (task) {
+      const currentSubTasks = store.tasks.getSubTasks(task.id);
+      for (const newItem of newItems) {
+        const oldItem = currentSubTasks.find(t => t.id === newItem.id);
+        if (oldItem) {
+          if (oldItem.title !== newItem.title || (oldItem.status === 'done') !== newItem.completed) {
+            await store.tasks.updateTask(newItem.id, {
+              title: newItem.title,
+              status: newItem.completed ? 'done' : 'todo'
+            });
+          }
+        } else {
+          if (newItem.title.trim()) {
+            await store.tasks.createTask({
+              title: newItem.title,
+              parentId: task.id,
+              status: newItem.completed ? 'done' : 'todo'
+            });
+          }
+        }
+      }
+      for (const oldItem of currentSubTasks) {
+        if (!newItems.find((n: any) => n.id === oldItem.id)) {
+          await store.tasks.delete(oldItem.id);
+        }
+      }
+    }
+  }
+
+  // 清除日期
+  async function clearStartDate() {
+    if (mode === 'create') {
+      startDate = undefined;
+      someday = false;
+    } else if (task) {
+      await store.tasks.updateTask(task.id, { startDate: undefined, someday: false });
+      await checkAndMoveAfterChange();
+    }
+  }
+
+  // 清除标签
+  async function clearTags() {
+    if (mode === 'create') {
+      selectedTags = [];
+    } else if (task) {
+      await store.tasks.updateTask(task.id, { tags: [] });
+      await checkAndMoveAfterChange();
+    }
+  }
+
+  // 清除截止日期
+  async function clearDeadline() {
+    if (mode === 'create') {
+      deadline = undefined;
+    } else if (task) {
+      await store.tasks.updateTask(task.id, { deadline: undefined });
+      await checkAndMoveAfterChange();
+    }
+  }
+
+  // 检查是否需要移动到其他列表
+  function shouldTaskMoveToDifferentView(): boolean {
+    if (!task) return false;
+
+    const todayEnd = new Date();
+    todayEnd.setHours(23, 59, 59, 999);
+    const todayEndTs = todayEnd.getTime();
+
+    let targetView = 'inbox';
+    if (task.someday) {
+      targetView = 'someday';
+    } else if (task.startDate) {
+      if (task.startDate <= todayEndTs) {
+        targetView = 'today';
+      } else {
+        targetView = 'upcoming';
+      }
+    } else if (task.projectId || task.areaId || (task.tags && task.tags.length > 0)) {
+      targetView = 'anytime';
+    }
+
+    return targetView !== currentView;
+  }
+
+  // 检查并移动
+  async function checkAndMoveAfterChange() {
+    const shouldMove = shouldTaskMoveToDifferentView();
+    if (shouldMove) {
+      isMovingOut = true;
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expanded = false;
+      await new Promise(resolve => setTimeout(resolve, 300));
+      isMovingOut = false;
+    }
+  }
+
+  // 拖拽处理
+  function handleMouseDown(e: MouseEvent) {
+    if (mode === 'create') return;
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('button') || target.closest('input') || target.closest('textarea')) return;
+
+    isClick = true;
+    dragTimer = setTimeout(() => {
+      if (isClick) {
+        isClick = false;
+        dispatch('dragstart', { event: e });
+      }
+    }, 200);
+  }
+
+  function handleMouseUp(e: MouseEvent) {
+    if (mode === 'create') return;
+    if (dragTimer) {
+      clearTimeout(dragTimer);
+      dragTimer = null;
+    }
+    if (isClick) {
+      handleCardClick(e);
+    }
+    isClick = true;
+  }
+
+  // 创建任务
+  async function handleCreate() {
+    if (!title.trim()) {
+      const firstChecklist = checklist.find(item => item.title.trim());
+      if (firstChecklist) {
+        title = firstChecklist.title;
+        checklist = checklist.filter(item => item.id !== firstChecklist.id);
+      } else {
+        return;
+      }
+    }
+
+    const taskData: Partial<Task> & { title: string } = {
+      title: title.trim(),
+      notes: notes.trim(),
+      startDate,
+      deadline,
+      someday,
+      tags: selectedTags,
+    };
+
+    if (currentView === "today" && !startDate) {
+      taskData.startDate = getTodayStart();
+    }
+
+    const newTask = await store.tasks.createTask(taskData);
+
+    for (const item of checklist) {
+      if (item.title.trim()) {
+        await store.tasks.createTask({
+          title: item.title,
+          parentId: newTask.id,
+          status: item.completed ? "done" : "todo",
+        });
+      }
+    }
+
+    dispatch("created", { task: newTask });
+
+    // 重置
+    title = "";
+    notes = "";
+    startDate = currentView === "today" ? getTodayStart() : undefined;
+    deadline = undefined;
+    someday = false;
+    selectedTags = [];
+    checklist = [{ id: Date.now().toString(), title: "", completed: false }];
+    titleInput?.focus();
+  }
+
+  // 键盘事件
+  function handleKeydown(e: KeyboardEvent) {
+    if (mode !== 'create') return;
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleCreate();
+    }
+    if (e.key === "Escape") {
+      dispatch("cancel");
+    }
+  }
+
+  // 焦点丢失
+  function handleBlur(e: FocusEvent) {
+    if (mode !== 'create' || isInteracting) return;
+    setTimeout(() => {
+      const activeElement = document.activeElement;
+      if (cardEl && !cardEl.contains(activeElement)) {
+        const hasContent = title.trim() || notes.trim() || checklist.some(item => item.title.trim());
+        if (hasContent) {
+          handleCreate();
+        } else {
+          dispatch("cancel");
+        }
+      }
+    }, 100);
+  }
+</script>
+
+<!-- svelte-ignore a11y-click-events-have-key-events -->
+<div
+  class="task-card"
+  class:is-create={mode === 'create'}
+  class:is-edit={mode === 'edit'}
+  class:is-done={task?.status === "done"}
+  class:is-expanded={expanded}
+  class:is-moving={isMoving}
+  class:is-dragging={isDragging}
+  class:is-moving-out={isMovingOut}
+  data-task-id={task?.id}
+  bind:this={cardEl}
+  on:mousedown={handleMouseDown}
+  on:mouseup={handleMouseUp}
+  on:focusout={mode === 'create' ? handleBlur : undefined}
+>
+  <!-- 标题区域 -->
+  <div class="task-card__header">
+    <!-- 复选框 -->
+    {#if mode === 'edit'}
+      <button
+        class="task-card__check"
+        class:is-checked={task?.status === "done"}
+        on:click={handleToggle}
+      >
+        {#if task?.status === "done"}
+          <svg><use xlink:href="#iconCheck" /></svg>
+        {/if}
+      </button>
+    {:else}
+      <span class="task-card__check-placeholder"></span>
+    {/if}
+
+    <!-- 标题 -->
+    {#if mode === 'create' || expanded}
+      <input
+        bind:this={titleInput}
+        type="text"
+        class="task-card__title-input"
+        placeholder={mode === 'create' ? "新建待办事项" : "任务标题"}
+        bind:value={title}
+        on:blur={mode === 'create' ? undefined : saveTitle}
+        on:keydown={handleKeydown}
+        on:click|stopPropagation
+      />
+    {:else}
+      <div class="task-card__title" class:is-done={task?.status === "done"}>
+        {task?.title}
+      </div>
+    {/if}
+
+    <!-- 日期徽章（收缩态） -->
+    {#if mode === 'edit' && !expanded && task?.startDate}
+      <span class="task-card__date-badge">
+        {formatDateShort(task.startDate)}
+      </span>
+    {/if}
+  </div>
+
+  <!-- 备注预览（收缩态） -->
+  {#if mode === 'edit' && !expanded && task?.notes}
+    <div class="task-card__notes-preview">
+      {task.notes}
+    </div>
+  {/if}
+
+  <!-- 标签预览（收缩态） -->
+  {#if mode === 'edit' && !expanded && tags.length > 0}
+    <div class="task-card__tags-preview">
+      {#each tags as tag}
+        <span class="task-card__tag">{tag.name}</span>
+      {/each}
+    </div>
+  {/if}
+
+  <!-- 展开详情 -->
+  {#if expanded}
+    <div class="task-card__details" on:click|stopPropagation>
+      <!-- 备注 -->
+      <textarea
+        class="task-card__notes"
+        bind:value={notes}
+        on:blur={mode === 'edit' ? saveNotes : undefined}
+        placeholder="添加备注..."
+        rows="2"
+      ></textarea>
+
+      <!-- 标签 -->
+      {#if mode === 'edit' && tags.length > 0}
+        <div class="task-card__tags">
+          {#each tags as tag}
+            <span class="task-card__tag">{tag.name}</span>
+          {/each}
+        </div>
+      {/if}
+
+      <!-- 检查清单 -->
+      <div class="task-card__subtasks">
+        <Checklist
+          items={mode === 'edit' ? subTasks.map(t => ({ id: t.id, title: t.title, completed: t.status === 'done' })) : checklist}
+          showDragHandle={mode === 'edit'}
+          on:change={handleChecklistChange}
+        />
+      </div>
+
+      <!-- 工具栏 -->
+      <div class="task-card__toolbar">
+        <!-- 左侧：已设置项 -->
+        <div class="task-card__toolbar-left">
+          <!-- 日期 -->
+          {#if dateDisplay}
+            <div class="task-card__tag-item">
+              <button
+                class="task-card__tag-btn"
+                on:click|stopPropagation={() => { showDatePicker = !showDatePicker; showDeadlinePicker = false; showTagPicker = false; }}
+              >
+                <span>{dateDisplay.icon}</span>
+                {#if dateDisplay.text}
+                  <span>{dateDisplay.text}</span>
+                {/if}
+              </button>
+              <button class="task-card__tag-remove" on:click|stopPropagation={clearStartDate}>×</button>
+
+              {#if showDatePicker}
+                <div class="task-card__dropdown">
+                  <DatePicker
+                    timestamp={mode === 'edit' && task ? task.startDate : startDate}
+                    on:change={handleDateChange}
+                    on:close={() => showDatePicker = false}
+                  />
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- 标签 -->
+          {#if mode === 'edit' && tags.length > 0}
+            <div class="task-card__tag-item">
+              <button
+                class="task-card__tag-btn"
+                on:click|stopPropagation={() => { showTagPicker = !showTagPicker; showDatePicker = false; showDeadlinePicker = false; }}
+              >
+                <span>🏷</span>
+                <span>{tags.map(t => t.name).join(', ')}</span>
+              </button>
+              <button class="task-card__tag-remove" on:click|stopPropagation={clearTags}>×</button>
+
+              {#if showTagPicker}
+                <div class="task-card__dropdown">
+                  <TagPicker
+                    store={store}
+                    selectedTags={task?.tags || []}
+                    on:change={handleTagChange}
+                  />
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- 截止日期 -->
+          {#if deadlineDisplay}
+            <div class="task-card__tag-item">
+              <button
+                class="task-card__tag-btn"
+                on:click|stopPropagation={() => { showDeadlinePicker = !showDeadlinePicker; showDatePicker = false; showTagPicker = false; }}
+              >
+                <span>{deadlineDisplay.icon}</span>
+                <span>{deadlineDisplay.text}</span>
+              </button>
+              <button class="task-card__tag-remove" on:click|stopPropagation={clearDeadline}>×</button>
+
+              {#if showDeadlinePicker}
+                <div class="task-card__dropdown">
+                  <DeadlinePicker
+                    timestamp={mode === 'edit' && task ? task.deadline : deadline}
+                    on:change={handleDeadlineChange}
+                    on:close={() => showDeadlinePicker = false}
+                  />
+                </div>
+              {/if}
+            </div>
+          {/if}
+        </div>
+
+        <!-- 右侧：功能按钮 -->
+        <div class="task-card__toolbar-right">
+          <!-- 日期（未设置时） -->
+          {#if !dateDisplay}
+            <div class="task-card__action-group">
+              <button
+                class="task-card__tool-btn"
+                title="设置日期"
+                on:click|stopPropagation={() => { showDatePicker = !showDatePicker; showDeadlinePicker = false; showTagPicker = false; }}
+              >
+                <span>⭐</span>
+              </button>
+
+              {#if showDatePicker}
+                <div class="task-card__dropdown task-card__dropdown--right">
+                  <DatePicker
+                    timestamp={mode === 'edit' && task ? task.startDate : startDate}
+                    on:change={handleDateChange}
+                    on:close={() => showDatePicker = false}
+                  />
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- 标签（未设置时） -->
+          {#if mode === 'edit' && tags.length === 0}
+            <div class="task-card__action-group">
+              <button
+                class="task-card__tool-btn"
+                title="标签"
+                on:click|stopPropagation={() => { showTagPicker = !showTagPicker; showDatePicker = false; showDeadlinePicker = false; }}
+              >
+                <span>🏷</span>
+              </button>
+
+              {#if showTagPicker}
+                <div class="task-card__dropdown task-card__dropdown--right">
+                  <TagPicker
+                    store={store}
+                    selectedTags={task?.tags || []}
+                    on:change={handleTagChange}
+                  />
+                </div>
+              {/if}
+            </div>
+          {:else if mode === 'create'}
+            <div class="task-card__action-group">
+              <button
+                class="task-card__tool-btn"
+                class:is-active={selectedTags.length > 0}
+                title="标签"
+                on:click|stopPropagation={() => { showTagPicker = !showTagPicker; showDatePicker = false; showDeadlinePicker = false; }}
+              >
+                <span>🏷</span>
+              </button>
+
+              {#if showTagPicker}
+                <div class="task-card__dropdown task-card__dropdown--right">
+                  <TagPicker
+                    store={store}
+                    selectedTags={selectedTags}
+                    on:change={handleTagChange}
+                  />
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- 检查清单（新建模式） -->
+          {#if mode === 'create'}
+            <button
+              class="task-card__tool-btn"
+              class:is-active={showChecklist}
+              on:click={() => showChecklist = !showChecklist}
+            >
+              <span>☷</span>
+            </button>
+          {:else}
+            <button class="task-card__tool-btn" title="添加子任务" on:click|stopPropagation={addSubTask}>
+              <span>☷</span>
+            </button>
+          {/if}
+
+          <!-- 截止日期（未设置时） -->
+          {#if !deadlineDisplay}
+            <div class="task-card__action-group">
+              <button
+                class="task-card__tool-btn"
+                title="设置截止日期"
+                on:click|stopPropagation={() => { showDeadlinePicker = !showDeadlinePicker; showDatePicker = false; showTagPicker = false; }}
+              >
+                <span>⚑</span>
+              </button>
+
+              {#if showDeadlinePicker}
+                <div class="task-card__dropdown task-card__dropdown--right">
+                  <DeadlinePicker
+                    timestamp={mode === 'edit' && task ? task.deadline : deadline}
+                    on:change={handleDeadlineChange}
+                    on:close={() => showDeadlinePicker = false}
+                  />
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- 删除（编辑模式） -->
+          {#if mode === 'edit'}
+            <button class="task-card__tool-btn task-card__tool-btn--delete" title="删除" on:click|stopPropagation={handleDelete}>
+              <span>×</span>
+            </button>
+          {/if}
+        </div>
+      </div>
+    </div>
+  {/if}
+</div>
+
+<style lang="scss">
+  .task-card {
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid #f3f4f6;
+    border-radius: 0;
+    padding: 10px 0;
+    margin-bottom: 0;
+    cursor: pointer;
+    transition: all 0.2s ease;
+
+    &:hover {
+      background: #f9fafb;
+    }
+
+    &.is-create {
+      background: #ffffff;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
+      border-radius: 16px;
+      border: none;
+      padding: 16px 20px;
+      margin: 8px;
+      cursor: default;
+      position: relative;
+      z-index: 10;
+    }
+
+    &.is-done {
+      opacity: 0.6;
+    }
+
+    &.is-moving {
+      opacity: 0.4;
+      background: #f9fafb;
+    }
+
+    &.is-dragging {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    &.is-moving-out {
+      opacity: 0.5;
+      background: #f3f4f6;
+      transform: translateX(-100%);
+      transition: opacity 0.3s ease, transform 0.3s ease;
+      pointer-events: none;
+    }
+
+    &.is-expanded {
+      background: #ffffff;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
+      border-radius: 16px;
+      border: none;
+      padding: 16px 20px;
+      position: relative;
+      z-index: 10;
+      margin: 8px 12px;
+    }
+
+    &__header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    &__check {
+      flex-shrink: 0;
+      width: 16px;
+      height: 16px;
+      padding: 0;
+      border: 1.5px solid #d1d5db;
+      border-radius: 4px;
+      background: transparent;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+
+      svg {
+        width: 10px;
+        height: 10px;
+        color: white;
+      }
+
+      &:hover {
+        border-color: #3b82f6;
+      }
+
+      &.is-checked {
+        background: #3b82f6;
+        border-color: #3b82f6;
+      }
+    }
+
+    &__check-placeholder {
+      flex-shrink: 0;
+      width: 16px;
+      height: 16px;
+      border: 1.5px solid #d1d5db;
+      border-radius: 4px;
+    }
+
+    &__title {
+      flex: 1;
+      font-size: 15px;
+      font-weight: 600;
+      color: #1f2937;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+
+      &.is-done {
+        text-decoration: line-through;
+        color: #9ca3af;
+        opacity: 0.7;
+      }
+    }
+
+    &__title-input {
+      flex: 1;
+      font-size: 15px;
+      font-weight: 600;
+      color: #1f2937;
+      border: none;
+      outline: none;
+      padding: 2px 0;
+      background: transparent;
+      min-width: 0;
+    }
+
+    &__date-badge {
+      font-size: 11px;
+      color: #6b7280;
+      padding: 2px 8px;
+      background: #f3f4f6;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+
+    &__notes-preview {
+      margin-top: 6px;
+      padding-left: 28px;
+      font-size: 13px;
+      color: #6b7280;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    &__tags-preview {
+      margin-top: 6px;
+      padding-left: 28px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    &__tag {
+      font-size: 11px;
+      padding: 2px 8px;
+      background: #f3f4f6;
+      color: #6b7280;
+      border-radius: 10px;
+    }
+
+    &__details {
+      margin-top: 12px;
+      padding-left: 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+
+      .is-create & {
+        padding-left: 26px;
+      }
+    }
+
+    &__notes {
+      width: 100%;
+      padding: 4px 0;
+      border: none;
+      outline: none;
+      font-size: 13px;
+      color: #4b5563;
+      background: transparent;
+      resize: none;
+      overflow: hidden;
+      min-height: 20px;
+      line-height: 1.5;
+
+      &::placeholder {
+        color: #9ca3af;
+      }
+
+      &:focus {
+        min-height: 40px;
+      }
+    }
+
+    &__tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    &__subtasks {
+      margin-top: 4px;
+    }
+
+    &__toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 4px;
+      padding-top: 8px;
+      border-top: 1px solid #f3f4f6;
+    }
+
+    &__toolbar-left {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      flex: 1;
+      min-width: 0;
+    }
+
+    &__toolbar-right {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    &__tag-item {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      background: #f3f4f6;
+      border-radius: 12px;
+      padding: 2px 4px 2px 8px;
+      font-size: 12px;
+      position: relative;
+    }
+
+    &__tag-btn {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      padding: 2px 4px;
+      font-size: 12px;
+      color: #4b5563;
+      border-radius: 8px;
+
+      &:hover {
+        background: #e5e7eb;
+      }
+    }
+
+    &__tag-remove {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      color: #9ca3af;
+      font-size: 12px;
+      border-radius: 50%;
+
+      &:hover {
+        background: #e5e7eb;
+        color: #dc2626;
+      }
+    }
+
+    &__action-group {
+      position: relative;
+    }
+
+    &__tool-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      border-radius: 6px;
+      font-size: 14px;
+      color: #6b7280;
+      transition: all 0.2s;
+
+      &:hover {
+        background: #f3f4f6;
+      }
+
+      &.is-active {
+        color: #3b82f6;
+        background: #eff6ff;
+      }
+
+      &--delete {
+        font-size: 18px;
+        color: #9ca3af;
+
+        &:hover {
+          background: #fee2e2;
+          color: #dc2626;
+        }
+      }
+    }
+
+    &__dropdown {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      z-index: 100;
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      padding: 8px;
+      margin-top: 4px;
+
+      &--right {
+        left: auto;
+        right: 0;
+      }
+    }
+  }
+</style>
