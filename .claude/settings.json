@@ -31,7 +31,9 @@
       "Bash(netsh winhttp *)",
       "Bash(git gc *)",
       "Bash(rm -rf .git)",
-      "Bash(git init *)"
+      "Bash(git init *)",
+      "Bash(git branch *)",
+      "Bash(git commit -m '重构拖拽排序和组件优化 *)"
     ]
   }
 }

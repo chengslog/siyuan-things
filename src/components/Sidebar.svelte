@@ -210,6 +210,29 @@
     background: var(--b3-theme-surface);
     border-right: 1px solid var(--b3-border-color);
     overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+
+    &:hover {
+      scrollbar-color: var(--b3-border-color) transparent;
+    }
+
+    &::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    &::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    &::-webkit-scrollbar-thumb {
+      background-color: transparent;
+      border-radius: 3px;
+    }
+
+    &:hover::-webkit-scrollbar-thumb {
+      background-color: var(--b3-border-color);
+    }
 
     &__header {
       display: flex;
@@ -234,6 +257,29 @@
       flex: 1;
       overflow-y: auto;
       padding: 8px 0;
+      scrollbar-width: thin;
+      scrollbar-color: transparent transparent;
+
+      &:hover {
+        scrollbar-color: var(--b3-border-color) transparent;
+      }
+
+      &::-webkit-scrollbar {
+        width: 6px;
+      }
+
+      &::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
+      &::-webkit-scrollbar-thumb {
+        background-color: transparent;
+        border-radius: 3px;
+      }
+
+      &:hover::-webkit-scrollbar-thumb {
+        background-color: var(--b3-border-color);
+      }
     }
 
     &__section {

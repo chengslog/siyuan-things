@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import TaskItem from "./TaskItem.svelte";
   import TaskCreate from "./TaskCreate.svelte";
+  import DragSort from "./DragSort.svelte";
   import type { ViewType, Task } from "@/types";
   import type { StoreManager } from "@/stores";
   import { showMessage } from "siyuan";
@@ -14,6 +15,7 @@
   let showCreateForm = false;
   let showFabMenu = false;
   let refreshKey = 0;
+  let dragSortRef: DragSort;
 
   // 监听 store 变化
   onMount(() => {
@@ -45,7 +47,6 @@
       case "someday":
         return store.tasks.getSomedayTasks();
       case "log":
-        // 日志簿显示已完成的任务
         return store.tasks.getCompletedTasks();
       case "project":
         return viewId ? store.tasks.getProjectTasks(viewId) : [];
@@ -68,11 +69,9 @@
 
   function sortTasks(tasks: Task[]): Task[] {
     return [...tasks].sort((a, b) => {
-      // 首先按 order 排序
       if (a.order !== b.order) {
         return a.order - b.order;
       }
-      // 如果 order 相同，按创建时间倒序
       return b.created - a.created;
     });
   }
@@ -113,23 +112,19 @@
     showCreateForm = false;
   }
 
-  function handleTaskClick(event: CustomEvent) {
-    // 任务点击由 TaskItem 内部处理展开/折叠
-  }
-
   // 处理拖拽排序
-  async function handleReorder(event: CustomEvent) {
-    const { draggedId, targetId, position } = event.detail;
+  async function handleReorder(e: CustomEvent) {
+    const { fromIndex, toIndex, id } = e.detail;
+    const currentTasks = [...sortedTasks];
 
-    const draggedTask = store.tasks.get(draggedId);
-    const targetTask = store.tasks.get(targetId);
+    // 重新排列
+    const [movedTask] = currentTasks.splice(fromIndex, 1);
+    currentTasks.splice(toIndex, 0, movedTask);
 
-    if (!draggedTask || !targetTask) return;
-
-    // 交换排序值
-    const tempOrder = draggedTask.order;
-    await store.tasks.updateTask(draggedId, { order: targetTask.order });
-    await store.tasks.updateTask(targetId, { order: tempOrder });
+    // 更新所有任务的 order
+    for (let i = 0; i < currentTasks.length; i++) {
+      await store.tasks.updateTask(currentTasks[i].id, { order: i });
+    }
   }
 
   // 悬浮按钮菜单
@@ -166,6 +161,7 @@
       showFabMenu = false;
     }
   }
+
   // 视图标题
   $: viewTitle = getViewTitle(view, viewId);
 
@@ -254,13 +250,35 @@
         {#if view === "upcoming" && groupedTasks.size > 1}
           <div class="task-list__group">{group}</div>
         {/if}
-        {#each groupTasks as task (task.id)}
-          <TaskItem
-            {task}
-            {store}
-            showProject={view !== "project"}
-          />
-        {/each}
+        <DragSort
+          bind:this={dragSortRef}
+          items={groupTasks}
+          itemKey="id"
+          on:reorder={handleReorder}
+          let:items={displayItems}
+          let:isDragging
+          let:draggedId
+          let:registerItem
+          let:unregisterItem
+          let:handleDragStart
+        >
+          {#each displayItems as task (task.id)}
+            <div
+              class="task-list__item-wrapper"
+              class:is-dragging={draggedId === task.id}
+            >
+              <TaskItem
+                {task}
+                {store}
+                showProject={view !== "project"}
+                isDragging={draggedId === task.id}
+                {registerItem}
+                {unregisterItem}
+                on:dragstart={(e) => handleDragStart(e.detail.event, task.id)}
+              />
+            </div>
+          {/each}
+        </DragSort>
       {/each}
     {/if}
   </div>
@@ -315,6 +333,13 @@
     &__items {
       flex: 1;
       overflow-y: auto;
+    }
+
+    &__item-wrapper {
+      &.is-dragging {
+        opacity: 0;
+        pointer-events: none;
+      }
     }
 
     &__group {

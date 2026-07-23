@@ -1,24 +1,58 @@
 <script lang="ts">
-  import { createEventDispatcher, onDestroy } from "svelte";
+  import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import type { Task } from "@/types";
   import type { StoreManager } from "@/stores";
-  import { formatDateShort, formatTime, hasTime, isOverdue } from "@/utils/date";
+  import { formatDateShort, isOverdue } from "@/utils/date";
+  import { isTodayDate, isTomorrowDate, formatDateFull } from "@/utils/calendar";
+  import DatePicker from "./DatePicker.svelte";
+  import DeadlinePicker from "./DeadlinePicker.svelte";
+  import TagPicker from "./TagPicker.svelte";
+  import Checklist from "./Checklist.svelte";
 
   export let task: Task;
   export let showProject: boolean = true;
   export let store: StoreManager;
+  export let isDragging: boolean = false;
+  export let registerItem: (id: string, el: HTMLElement) => void = () => {};
+  export let unregisterItem: (id: string) => void = () => {};
 
   const dispatch = createEventDispatcher();
 
-  // 组件销毁时清理事件监听
+  let cardEl: HTMLElement;
+
+  // 注册元素
+  $: if (cardEl && task.id) {
+    registerItem(task.id, cardEl);
+  }
+
+  // 监听其他卡片展开事件
+  function handleCardExpanded(e: CustomEvent) {
+    const { cardId } = e.detail;
+    if (cardId !== task.id && expanded) {
+      // 其他卡片展开了，收起当前卡片
+      saveAndCollapse();
+    }
+  }
+
+  onMount(() => {
+    window.addEventListener('card-expanded', handleCardExpanded as EventListener);
+  });
+
   onDestroy(() => {
     document.removeEventListener('click', handleOutsideClick);
+    window.removeEventListener('card-expanded', handleCardExpanded as EventListener);
+    if (moveTimeout) clearTimeout(moveTimeout);
+    unregisterItem(task.id);
   });
 
   let expanded = false;
   let editTitle = task.title;
   let editNotes = task.notes;
-  let newSubTaskTitle = "";
+
+  // UI 状态
+  let showDatePicker = false;
+  let showDeadlinePicker = false;
+  let showTagPicker = false;
 
   $: subTasks = store.tasks.getSubTasks(task.id);
   $: completedSubTasks = subTasks.filter((t) => t.status === "done");
@@ -27,23 +61,100 @@
   $: isDeadlineOverdue = task.deadline && isOverdue(task.deadline);
 
   // 点击展开/折叠
-  function handleCardClick() {
-    expanded = !expanded;
+  function handleCardClick(e?: Event) {
+    // 如果卡片已展开，点击卡片内部不折叠
     if (expanded) {
-      editTitle = task.title;
-      editNotes = task.notes;
-      // 监听外部点击
-      setTimeout(() => {
-        document.addEventListener('click', handleOutsideClick);
-      }, 0);
+      // 只处理功能卡片的关闭
+      const hasOpenDropdown = showDatePicker || showDeadlinePicker || showTagPicker;
+      if (hasOpenDropdown) {
+        showDatePicker = false;
+        showDeadlinePicker = false;
+        showTagPicker = false;
+      }
+      return;
     }
+
+    // 如果有事件，检查点击位置
+    if (e) {
+      const target = e.target as HTMLElement;
+
+      // 如果点击的是工具栏按钮，不触发展开
+      if (target.closest('.task-card__tool-btn')) {
+        return;
+      }
+
+      // 如果点击的是下拉菜单内部，不触发展开
+      if (target.closest('.task-card__dropdown')) {
+        return;
+      }
+
+      // 如果点击的是完成按钮，不触发展开
+      if (target.closest('.task-card__check')) {
+        return;
+      }
+    }
+
+    // 卡片未展开时，点击展开卡片
+    expanded = true;
+    editTitle = task.title;
+    editNotes = task.notes;
+    // 通知其他卡片收起
+    window.dispatchEvent(new CustomEvent('card-expanded', { detail: { cardId: task.id } }));
+    // 延迟添加事件监听，避免立即触发
+    setTimeout(() => {
+      document.addEventListener('click', handleOutsideClick);
+    }, 10);
+  }
+
+  // 保存标题
+  async function saveTitle() {
+    if (editTitle !== task.title) {
+      await store.tasks.updateTask(task.id, { title: editTitle });
+    }
+  }
+
+  // 保存备注
+  async function saveNotes() {
+    if (editNotes !== task.notes) {
+      await store.tasks.updateTask(task.id, { notes: editNotes });
+    }
+  }
+
+  // 切换完成状态
+  let moveTimeout: any = null;
+  let isMoving = false;
+
+  async function handleToggle(e: Event) {
+    e.stopPropagation();
+    if (task.status === "done") {
+      await store.tasks.toggleTask(task.id);
+      await store.tasks.updateTask(task.id, { completedDate: undefined });
+    } else {
+      await store.tasks.toggleTask(task.id);
+      isMoving = true;
+      moveTimeout = setTimeout(async () => {
+        await store.tasks.updateTask(task.id, { startDate: undefined });
+        isMoving = false;
+      }, 3000);
+    }
+  }
+
+  // 删除任务
+  async function handleDelete(e: Event) {
+    e.stopPropagation();
+    await store.tasks.delete(task.id);
   }
 
   // 点击外部关闭
   function handleOutsideClick(e: MouseEvent) {
     const target = e.target as HTMLElement;
+
+    // 点击卡片外部时，关闭所有下拉菜单并折叠卡片
     const card = target.closest('.task-card');
     if (!card || card.dataset.taskId !== task.id) {
+      showDatePicker = false;
+      showDeadlinePicker = false;
+      showTagPicker = false;
       saveAndCollapse();
     }
   }
@@ -56,163 +167,69 @@
     document.removeEventListener('click', handleOutsideClick);
   }
 
-  // 切换完成状态
-  let moveTimeout: any = null;
-  let isMoving = false;
+  // 主任务拖动 - 向父组件派发事件
+  let dragTimer: any = null;
+  let isClick = true;
 
-  async function handleToggle(e: Event) {
-    e.stopPropagation();
+  function handleMouseDown(e: MouseEvent) {
+    // 只有左键触发拖动
+    if (e.button !== 0) return;
+    // 如果点击的是按钮或输入框，不触发拖动
+    const target = e.target as HTMLElement;
+    if (target.closest('button') || target.closest('input') || target.closest('textarea')) return;
 
-    if (task.status === "done") {
-      // 取消完成，移回今天
-      if (moveTimeout) {
-        clearTimeout(moveTimeout);
-        moveTimeout = null;
+    isClick = true;
+
+    // 延迟判断：200ms后如果还没mouseup，则认为是拖动
+    dragTimer = setTimeout(() => {
+      if (isClick) {
+        isClick = false;
+        dispatch('dragstart', { event: e });
       }
-      isMoving = false;
-      await store.tasks.updateTask(task.id, {
-        status: "todo",
-        startDate: Date.now(),
-        completedDate: undefined,
-      });
-    } else {
-      // 标记完成，延迟3秒后移到日志
-      await store.tasks.toggleTask(task.id);
-      isMoving = true;
+    }, 200);
+  }
 
-      moveTimeout = setTimeout(async () => {
-        await store.tasks.updateTask(task.id, {
-          startDate: undefined,
-        });
-        isMoving = false;
-        moveTimeout = null;
-      }, 3000);
+  function handleMouseUp(e: MouseEvent) {
+    // 如果在200ms内松开，则是点击
+    if (dragTimer) {
+      clearTimeout(dragTimer);
+      dragTimer = null;
     }
-  }
 
-  // 保存标题
-  async function saveTitle() {
-    if (editTitle.trim() && editTitle !== task.title) {
-      await store.tasks.updateTask(task.id, { title: editTitle.trim() });
+    if (isClick) {
+      // 是点击，触发展开/折叠（传递事件对象用于检查）
+      handleCardClick(e);
     }
+
+    isClick = true;
   }
 
-  // 保存备注
-  async function saveNotes() {
-    if (editNotes !== task.notes) {
-      await store.tasks.updateTask(task.id, { notes: editNotes });
+  function handleTouchStart(e: TouchEvent) {
+    // 如果点击的是按钮或输入框，不触发拖动
+    const target = e.target as HTMLElement;
+    if (target.closest('button') || target.closest('input') || target.closest('textarea')) return;
+
+    isClick = true;
+
+    dragTimer = setTimeout(() => {
+      if (isClick) {
+        isClick = false;
+        dispatch('dragstart', { event: e });
+      }
+    }, 200);
+  }
+
+  function handleTouchEnd(e: TouchEvent) {
+    if (dragTimer) {
+      clearTimeout(dragTimer);
+      dragTimer = null;
     }
-  }
 
-  // 删除任务
-  async function handleDelete(e: Event) {
-    e.stopPropagation();
-    await store.tasks.delete(task.id);
-  }
-
-  // 主任务拖动
-  function handleDragStart(e: DragEvent) {
-    if (!e.dataTransfer) return;
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', task.id);
-    // 添加拖动样式
-    const el = e.target as HTMLElement;
-    el.classList.add('is-dragging');
-  }
-
-  function handleDragEnd(e: DragEvent) {
-    const el = e.target as HTMLElement;
-    el.classList.remove('is-dragging');
-    // 移除所有目标样式
-    document.querySelectorAll('.task-card--drag-target').forEach(el => {
-      el.classList.remove('task-card--drag-target');
-    });
-  }
-
-  function handleDragOver(e: DragEvent) {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.dataTransfer) {
-      e.dataTransfer.dropEffect = 'move';
+    if (isClick) {
+      handleCardClick();
     }
-    const el = e.target as HTMLElement;
-    el.closest('.task-card')?.classList.add('task-card--drag-target');
-  }
 
-  function handleDragLeave(e: DragEvent) {
-    const el = e.target as HTMLElement;
-    el.closest('.task-card')?.classList.remove('task-card--drag-target');
-  }
-
-  async function handleDrop(e: DragEvent) {
-    e.preventDefault();
-    e.stopPropagation();
-
-    const el = e.target as HTMLElement;
-    el.closest('.task-card')?.classList.remove('task-card--drag-target');
-
-    const draggedId = e.dataTransfer?.getData('text/plain');
-    if (!draggedId || draggedId === task.id) return;
-
-    const draggedTask = store.tasks.get(draggedId);
-    if (!draggedTask) return;
-
-    // 交换排序值
-    const tempOrder = draggedTask.order;
-    await store.tasks.updateTask(draggedId, { order: task.order });
-    await store.tasks.updateTask(task.id, { order: tempOrder });
-  }
-
-  // 子任务拖动
-  let draggedSubId: string | null = null;
-  let dragOverSubId: string | null = null;
-
-  function handleSubDragStart(e: DragEvent, subId: string) {
-    e.stopPropagation();
-    draggedSubId = subId;
-    if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', subId);
-      e.dataTransfer.setData('application/things-subtask', subId);
-    }
-    const el = e.target as HTMLElement;
-    setTimeout(() => el.style.opacity = '0.5', 0);
-  }
-
-  function handleSubDragEnd(e: DragEvent) {
-    const el = e.target as HTMLElement;
-    el.style.opacity = '1';
-    draggedSubId = null;
-    dragOverSubId = null;
-  }
-
-  function handleSubDragOver(e: DragEvent, targetId: string) {
-    e.preventDefault();
-    e.stopPropagation();
-    if (draggedSubId && draggedSubId !== targetId) {
-      dragOverSubId = targetId;
-    }
-  }
-
-  function handleSubDragLeave() {
-    dragOverSubId = null;
-  }
-
-  async function handleSubDrop(e: DragEvent, targetId: string) {
-    e.preventDefault();
-    e.stopPropagation();
-    dragOverSubId = null;
-
-    if (!draggedSubId || draggedSubId === targetId) return;
-
-    const draggedTask = store.tasks.get(draggedSubId);
-    const targetTask = store.tasks.get(targetId);
-
-    if (draggedTask && targetTask) {
-      const tempOrder = draggedTask.order;
-      await store.tasks.updateTask(draggedSubId, { order: targetTask.order });
-      await store.tasks.updateTask(targetId, { order: tempOrder });
-    }
+    isClick = true;
   }
 
   // 添加子任务
@@ -222,6 +239,83 @@
       parentId: task.id,
     });
   }
+
+  // 日期变化处理
+  async function handleDateChange(e: CustomEvent) {
+    await store.tasks.updateTask(task.id, { startDate: e.detail.timestamp });
+  }
+
+  // 日期选择器关闭
+  function handleDatePickerClose() {
+    showDatePicker = false;
+  }
+
+  // 截止日期变化处理
+  async function handleDeadlineChange(e: CustomEvent) {
+    await store.tasks.updateTask(task.id, { deadline: e.detail.timestamp });
+  }
+
+  // 截止日期选择器关闭
+  function handleDeadlinePickerClose() {
+    showDeadlinePicker = false;
+  }
+
+  // 标签变化处理
+  async function handleTagChange(e: CustomEvent) {
+    await store.tasks.updateTask(task.id, { tags: e.detail.tags });
+  }
+
+  // 子任务变化处理
+  async function handleSubtasksChange(e: CustomEvent) {
+    const { items: newItems } = e.detail;
+    if (!newItems) return;
+
+    // 获取当前子任务
+    const currentSubTasks = store.tasks.getSubTasks(task.id);
+
+    // 遍历新items，更新变更的子任务
+    for (const newItem of newItems) {
+      const oldItem = currentSubTasks.find(t => t.id === newItem.id);
+
+      if (oldItem) {
+        // 检查是否有变更
+        if (oldItem.title !== newItem.title || (oldItem.status === 'done') !== newItem.completed) {
+          await store.tasks.updateTask(newItem.id, {
+            title: newItem.title,
+            status: newItem.completed ? 'done' : 'todo'
+          });
+        }
+      } else {
+        // 新增的子任务
+        if (newItem.title.trim()) {
+          await store.tasks.createTask({
+            title: newItem.title,
+            parentId: task.id,
+            status: newItem.completed ? 'done' : 'todo'
+          });
+        }
+      }
+    }
+
+    // 检查是否有删除的子任务
+    for (const oldItem of currentSubTasks) {
+      if (!newItems.find((n: any) => n.id === oldItem.id)) {
+        await store.tasks.delete(oldItem.id);
+      }
+    }
+  }
+
+  // 获取日期按钮文本
+  function getDateButtonText(): string {
+    if (!task.startDate) return "";
+    if (isTodayDate(task.startDate)) return "今天";
+    if (isTomorrowDate(task.startDate)) return "明天";
+    const date = new Date(task.startDate);
+    if (date.getHours() !== 0 || date.getMinutes() !== 0) {
+      return `${formatDateFull(task.startDate)} ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
+    }
+    return formatDateFull(task.startDate);
+  }
 </script>
 
 <!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -230,14 +324,13 @@
   class:is-done={task.status === "done"}
   class:is-expanded={expanded}
   class:is-moving={isMoving}
+  class:is-dragging={isDragging}
   data-task-id={task.id}
-  draggable="true"
-  on:click={handleCardClick}
-  on:dragstart={handleDragStart}
-  on:dragend={handleDragEnd}
-  on:dragover={handleDragOver}
-  on:dragleave={handleDragLeave}
-  on:drop={handleDrop}
+  bind:this={cardEl}
+  on:mousedown={handleMouseDown}
+  on:mouseup={handleMouseUp}
+  on:touchstart={handleTouchStart}
+  on:touchend={handleTouchEnd}
 >
   <!-- 任务头部 -->
   <div class="task-card__header">
@@ -274,118 +367,129 @@
         {formatDateShort(task.startDate)}
       </span>
     {/if}
-
-    <!-- 优先级 -->
-    {#if task.priority !== "none"}
-      <span class="task-card__priority task-card__priority--{task.priority}">
-        {task.priority === "high" ? "!!" : task.priority === "medium" ? "!" : "↓"}
-      </span>
-    {/if}
   </div>
+
+  <!-- 备注预览（收缩状态，有内容时显示） -->
+  {#if !expanded && task.notes}
+    <div class="task-card__notes-preview">
+      {task.notes}
+    </div>
+  {/if}
+
+  <!-- 标签预览（收缩状态，有标签时显示） -->
+  {#if !expanded && tags.length > 0}
+    <div class="task-card__tags-preview">
+      {#each tags as tag}
+        <span class="task-card__tag">{tag.name}</span>
+      {/each}
+    </div>
+  {/if}
 
   <!-- 展开的详情 -->
   {#if expanded}
     <div class="task-card__details" on:click|stopPropagation>
-      <!-- 备注编辑（紧贴标题，无标题） -->
+      <!-- 备注编辑 -->
       <textarea
         class="task-card__notes"
         bind:value={editNotes}
         on:blur={saveNotes}
         placeholder="添加备注..."
-        rows="1"
+        rows="2"
       ></textarea>
 
-      <!-- 子任务 -->
+      <!-- 标签 -->
+      {#if tags.length > 0}
+        <div class="task-card__tags">
+          {#each tags as tag}
+            <span class="task-card__tag">{tag.name}</span>
+          {/each}
+        </div>
+      {/if}
+
+      <!-- 子任务/检查清单 -->
       <div class="task-card__subtasks">
-        {#each subTasks as subTask, index}
-          <div
-            class="task-card__subtask"
-            class:is-drag-over={dragOverSubId === subTask.id}
-            draggable="true"
-            on:dragstart={(e) => handleSubDragStart(e, subTask.id)}
-            on:dragend={handleSubDragEnd}
-            on:dragover={(e) => handleSubDragOver(e, subTask.id)}
-            on:dragleave={handleSubDragLeave}
-            on:drop={(e) => handleSubDrop(e, subTask.id)}
-          >
-            <div
-              class="task-card__subtask-drag"
-              title="拖动排序"
-            >
-              <svg viewBox="0 0 24 24" fill="currentColor">
-                <circle cx="9" cy="6" r="1.5"/>
-                <circle cx="15" cy="6" r="1.5"/>
-                <circle cx="9" cy="12" r="1.5"/>
-                <circle cx="15" cy="12" r="1.5"/>
-              </svg>
-            </div>
-            <button
-              class="task-card__subtask-check"
-              class:is-done={subTask.status === "done"}
-              on:click={() => store.tasks.toggleTask(subTask.id)}
-            >
-              {#if subTask.status === "done"}
-                <svg><use xlink:href="#iconCheck" /></svg>
-              {/if}
-            </button>
-            <input
-              type="text"
-              class="task-card__subtask-input"
-              class:is-done={subTask.status === "done"}
-              value={subTask.title}
-              on:blur={(e) => {
-                if (e.currentTarget.value !== subTask.title) {
-                  store.tasks.updateTask(subTask.id, { title: e.currentTarget.value });
-                }
-              }}
-              on:keydown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  store.tasks.updateTask(subTask.id, { title: e.currentTarget.value });
-                  const nextInput = e.currentTarget.parentElement?.nextElementSibling?.querySelector('.task-card__subtask-input');
-                  if (nextInput) {
-                    nextInput.focus();
-                  } else {
-                    addSubTask();
-                  }
-                }
-              }}
-              on:click|stopPropagation
-            />
-            <button
-              class="task-card__subtask-delete"
-              on:click|stopPropagation={() => store.tasks.delete(subTask.id)}
-            >
-              ×
-            </button>
-          </div>
-        {/each}
+        <Checklist
+          items={subTasks.map(t => ({ id: t.id, title: t.title, completed: t.status === 'done' }))}
+          showDragHandle={true}
+          on:change={handleSubtasksChange}
+        />
       </div>
 
       <!-- 底部操作栏 -->
-      <div class="task-card__toolbar" on:click|stopPropagation>
-        <!-- 时间选择 -->
-        <button class="task-card__tool-btn" title="设置时间">
-          <span>⭐</span>
-        </button>
+      <div class="task-card__toolbar">
+        <!-- 日期选择 -->
+        <div class="task-card__action-group">
+          <button
+            class="task-card__tool-btn"
+            class:is-active={task.startDate}
+            title="设置日期"
+            on:click|stopPropagation={() => { showDatePicker = !showDatePicker; showDeadlinePicker = false; showTagPicker = false; }}
+          >
+            <span>⭐</span>
+          </button>
+
+          {#if showDatePicker}
+            <div class="task-card__dropdown">
+              <DatePicker
+                timestamp={task.startDate}
+                on:change={handleDateChange}
+                on:close={handleDatePickerClose}
+              />
+            </div>
+          {/if}
+        </div>
 
         <!-- 标签 -->
-        <button class="task-card__tool-btn" title="添加标签">
-          <span>🏷</span>
-        </button>
+        <div class="task-card__action-group">
+          <button
+            class="task-card__tool-btn"
+            class:is-active={task.tags.length > 0}
+            title="标签"
+            on:click|stopPropagation={() => { showTagPicker = !showTagPicker; showDatePicker = false; showDeadlinePicker = false; }}
+          >
+            <span>🏷</span>
+          </button>
+
+          {#if showTagPicker}
+            <div class="task-card__dropdown">
+              <TagPicker
+                store={store}
+                selectedTags={task.tags}
+                on:change={handleTagChange}
+              />
+            </div>
+          {/if}
+        </div>
 
         <!-- 子任务 -->
-        <button class="task-card__tool-btn" title="添加子任务" on:click={addSubTask}>
+        <button class="task-card__tool-btn" title="添加子任务" on:click|stopPropagation={addSubTask}>
           <span>☷</span>
         </button>
 
         <!-- 截止日期 -->
-        <button class="task-card__tool-btn" title="设置截止日期">
-          <span>⚑</span>
-        </button>
+        <div class="task-card__action-group">
+          <button
+            class="task-card__tool-btn"
+            class:is-active={task.deadline}
+            title="设置截止日期"
+            on:click|stopPropagation={() => { showDeadlinePicker = !showDeadlinePicker; showDatePicker = false; showTagPicker = false; }}
+          >
+            <span>⚑</span>
+          </button>
+
+          {#if showDeadlinePicker}
+            <div class="task-card__dropdown">
+              <DeadlinePicker
+                timestamp={task.deadline}
+                on:change={handleDeadlineChange}
+                on:close={handleDeadlinePickerClose}
+              />
+            </div>
+          {/if}
+        </div>
 
         <!-- 删除 -->
-        <button class="task-card__tool-btn task-card__tool-btn--delete" title="删除" on:click={handleDelete}>
+        <button class="task-card__tool-btn task-card__tool-btn--delete" title="删除" on:click|stopPropagation={handleDelete}>
           <span>×</span>
         </button>
       </div>
@@ -395,16 +499,17 @@
 
 <style lang="scss">
   .task-card {
-    background: #ffffff;
-    border: 2px solid #e5e7eb;
-    border-radius: 12px;
-    padding: 14px 18px;
-    margin-bottom: 10px;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid #f3f4f6;
+    border-radius: 0;
+    padding: 10px 0;
+    margin-bottom: 0;
     cursor: pointer;
-    transition: all 0.3s ease;
+    transition: all 0.2s ease;
 
     &:hover {
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+      background: #f9fafb;
     }
 
     &.is-done {
@@ -417,15 +522,19 @@
     }
 
     &.is-dragging {
-      opacity: 0.5;
-    }
-
-    &--drag-target {
-      border-top: 2px solid #3b82f6;
+      opacity: 0;
+      pointer-events: none;
     }
 
     &.is-expanded {
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      background: #ffffff;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
+      border-radius: 16px;
+      border: none;
+      padding: 16px 20px;
+      position: relative;
+      z-index: 10;
+      margin: 8px 12px;
     }
 
     &__header {
@@ -436,10 +545,10 @@
 
     &__check {
       flex-shrink: 0;
-      width: 18px;
-      height: 18px;
+      width: 16px;
+      height: 16px;
       padding: 0;
-      border: 2px solid #d1d5db;
+      border: 1.5px solid #d1d5db;
       border-radius: 4px;
       background: transparent;
       cursor: pointer;
@@ -449,8 +558,8 @@
       transition: all 0.2s;
 
       svg {
-        width: 12px;
-        height: 12px;
+        width: 10px;
+        height: 10px;
         color: white;
       }
 
@@ -469,10 +578,15 @@
       font-size: 15px;
       font-weight: 600;
       color: #1f2937;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
 
       &.is-done {
         text-decoration: line-through;
         color: #9ca3af;
+        opacity: 0.7;
       }
     }
 
@@ -485,28 +599,7 @@
       outline: none;
       padding: 2px 0;
       background: transparent;
-    }
-
-    &__priority {
-      font-size: 11px;
-      font-weight: 600;
-      padding: 2px 6px;
-      border-radius: 4px;
-
-      &--high {
-        background: #fee2e2;
-        color: #dc2626;
-      }
-
-      &--medium {
-        background: #fef3c7;
-        color: #d97706;
-      }
-
-      &--low {
-        background: #f3f4f6;
-        color: #6b7280;
-      }
+      min-width: 0;
     }
 
     &__date-badge {
@@ -518,13 +611,44 @@
       flex-shrink: 0;
     }
 
-    // 展开详情
-    &__details {
-      margin-top: 8px;
-      padding-left: 30px;
+    &__notes-preview {
+      margin-top: 6px;
+      padding-left: 28px;
+      font-size: 13px;
+      color: #6b7280;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
     }
 
-    // 备注输入框
+    &__tags-preview {
+      margin-top: 6px;
+      padding-left: 28px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    &__tag {
+      font-size: 11px;
+      padding: 2px 8px;
+      background: #f3f4f6;
+      color: #6b7280;
+      border-radius: 10px;
+    }
+
+    &__details {
+      margin-top: 12px;
+      padding-left: 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
     &__notes {
       width: 100%;
       padding: 4px 0;
@@ -536,6 +660,7 @@
       resize: none;
       overflow: hidden;
       min-height: 20px;
+      line-height: 1.5;
 
       &::placeholder {
         color: #9ca3af;
@@ -546,128 +671,27 @@
       }
     }
 
-    // 子任务
+    &__tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
     &__subtasks {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
+      margin-top: 4px;
     }
 
-    &__subtask {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 2px 0;
-      border-top: 2px solid transparent;
-
-      &.is-drag-over {
-        border-top-color: #3b82f6;
-      }
-    }
-
-    &__subtask-drag {
-      flex-shrink: 0;
-      width: 16px;
-      height: 20px;
-      cursor: grab;
-      color: #9ca3af;
-      display: flex;
-      align-items: center;
-      opacity: 0;
-      transition: opacity 0.2s;
-
-      svg {
-        width: 14px;
-        height: 14px;
-      }
-
-      &:active {
-        cursor: grabbing;
-      }
-    }
-
-    .task-card__subtask:hover .task-card__subtask-drag {
-      opacity: 1;
-    }
-
-    &__subtask-check {
-      flex-shrink: 0;
-      width: 16px;
-      height: 16px;
-      padding: 0;
-      border: 1.5px solid #d1d5db;
-      border-radius: 50%;
-      background: transparent;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-
-      svg {
-        width: 10px;
-        height: 10px;
-        color: white;
-      }
-
-      &.is-done {
-        background: #3b82f6;
-        border-color: #3b82f6;
-      }
-    }
-
-    &__subtask-input {
-      flex: 1;
-      border: none;
-      outline: none;
-      font-size: 13px;
-      color: #1f2937;
-      background: transparent;
-      padding: 2px 0;
-
-      &.is-done {
-        text-decoration: line-through;
-        color: #9ca3af;
-      }
-
-      &::placeholder {
-        color: #9ca3af;
-      }
-    }
-
-    &__subtask-delete {
-      flex-shrink: 0;
-      width: 20px;
-      height: 20px;
-      padding: 0;
-      border: none;
-      background: transparent;
-      cursor: pointer;
-      color: #9ca3af;
-      font-size: 14px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: 4px;
-      opacity: 0;
-
-      &:hover {
-        background: #fee2e2;
-        color: #dc2626;
-      }
-    }
-
-    .task-card__subtask:hover .task-card__subtask-delete {
-      opacity: 1;
-    }
-
-    // 底部工具栏
     &__toolbar {
       display: flex;
       align-items: center;
       gap: 4px;
-      margin-top: 8px;
+      margin-top: 4px;
       padding-top: 8px;
       border-top: 1px solid #f3f4f6;
+    }
+
+    &__action-group {
+      position: relative;
     }
 
     &__tool-btn {
@@ -682,9 +706,15 @@
       border-radius: 6px;
       font-size: 14px;
       color: #6b7280;
+      transition: all 0.2s;
 
       &:hover {
         background: #f3f4f6;
+      }
+
+      &.is-active {
+        color: #3b82f6;
+        background: #eff6ff;
       }
 
       &--delete {
@@ -697,6 +727,19 @@
           color: #dc2626;
         }
       }
+    }
+
+    &__dropdown {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      z-index: 100;
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      padding: 8px;
+      margin-top: 4px;
     }
   }
 </style>
