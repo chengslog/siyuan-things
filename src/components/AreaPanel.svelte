@@ -1,8 +1,8 @@
 <script lang="ts">
   /**
-   * 区域页面板：区域内项目列表（进度/截止，点击进项目）+ 备注 + ⋯ 管理（改名/删除，含级联）。
+   * 区域页面板：区域内项目列表（进度/截止，点击进项目）+ 备注。
+   * 改名/删除已移到侧边栏区域行（双击改名 / × 删除，含级联），面板不再有 ⋯ 菜单。
    */
-  import { onDestroy } from "svelte";
   import type { StoreManager } from "@/stores";
   import type { Area, Project } from "@/types";
   import { formatDateFull } from "@/utils/calendar";
@@ -13,56 +13,8 @@
   export let area: Area;
   export let projects: Project[];
 
-  let showMenu = false;
-  let renaming = false;
-  let nameDraft = "";
-  let confirmDelete = false;
   let editingNotes = false;
   let notesDraft = "";
-  let menuEl: HTMLElement;
-
-  onDestroy(() => {
-    document.removeEventListener("click", closeMenuOnOutside);
-  });
-
-  function toggleMenu() {
-    showMenu = !showMenu;
-    confirmDelete = false;
-    if (showMenu) {
-      setTimeout(() => document.addEventListener("click", closeMenuOnOutside), 0);
-    } else {
-      document.removeEventListener("click", closeMenuOnOutside);
-    }
-  }
-
-  function closeMenuOnOutside(e: MouseEvent) {
-    if (menuEl && !menuEl.contains(e.target as HTMLElement)) {
-      showMenu = false;
-      confirmDelete = false;
-      document.removeEventListener("click", closeMenuOnOutside);
-    }
-  }
-
-  function menuAction(fn: () => void) {
-    return (e: MouseEvent) => {
-      e.stopPropagation();
-      fn();
-    };
-  }
-
-  function startRename() {
-    nameDraft = area.name;
-    renaming = true;
-    showMenu = false;
-  }
-
-  async function commitRename() {
-    const name = nameDraft.trim();
-    if (name && name !== area.name) {
-      await store.areas.updateArea(area.id, { name });
-    }
-    renaming = false;
-  }
 
   function startEditNotes() {
     notesDraft = area.notes || "";
@@ -80,20 +32,6 @@
     window.dispatchEvent(new CustomEvent("things-navigate", { detail: { view: "project", viewId: id } }));
   }
 
-  // 删除区域：其下项目与任务解除归属（不删数据），然后导航回收件箱
-  async function deleteArea() {
-    for (const p of projects) {
-      await store.projects.updateProject(p.id, { areaId: undefined });
-    }
-    for (const t of store.tasks.getAll()) {
-      if (t.areaId === area.id) {
-        await store.tasks.updateTask(t.id, { areaId: undefined });
-      }
-    }
-    await store.areas.delete(area.id);
-    window.dispatchEvent(new CustomEvent("things-navigate", { detail: { view: "inbox" } }));
-  }
-
   function projectProgress(p: Project): { done: number; total: number } {
     const ts = store.tasks.getProjectTasks(p.id);
     return { done: ts.filter((t) => t.status === "done").length, total: ts.length };
@@ -102,36 +40,7 @@
 
 <div class="area-panel" on:click|stopPropagation>
   <div class="area-panel__header">
-    {#if renaming}
-      <input
-        class="area-panel__rename"
-        type="text"
-        bind:value={nameDraft}
-        on:blur={commitRename}
-        on:keydown={(e) => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") renaming = false; }}
-        autofocus
-      />
-    {:else}
-      <span class="area-panel__section-title">项目</span>
-    {/if}
-
-    <div class="area-panel__menu-wrap" bind:this={menuEl}>
-      <button class="area-panel__menu-btn" title="区域管理" on:click|stopPropagation={toggleMenu}>⋯</button>
-      {#if showMenu}
-        <div class="area-panel__menu">
-          <button class="area-panel__menu-item" on:click={menuAction(startRename)}>修改名称</button>
-          <div class="area-panel__menu-sep"></div>
-          {#if confirmDelete}
-            <div class="area-panel__confirm">
-              <p>删除后，区域内项目与任务将解除归属（数据保留）。</p>
-              <button class="area-panel__confirm-btn" on:click={menuAction(deleteArea)}>确认删除</button>
-            </div>
-          {:else}
-            <button class="area-panel__menu-item is-danger" on:click={menuAction(() => { confirmDelete = true; })}>删除区域…</button>
-          {/if}
-        </div>
-      {/if}
-    </div>
+    <span class="area-panel__section-title">项目</span>
   </div>
 
   {#each projects as p (p.id)}
@@ -186,113 +95,12 @@
       letter-spacing: 0.03em;
     }
 
-    &__rename {
-      flex: 1;
-      font-size: 15px;
-      font-weight: 600;
-      border: 1px solid var(--b3-theme-primary);
-      border-radius: 6px;
-      padding: 4px 8px;
-      outline: none;
-      background: var(--b3-theme-surface);
-      color: var(--b3-theme-on-surface);
-    }
-
-    &__menu-wrap {
-      position: relative;
-      margin-left: auto;
-    }
-
-    &__menu-btn {
-      width: 28px;
-      height: 28px;
-      border: none;
-      border-radius: 6px;
-      background: transparent;
-      cursor: pointer;
-      font-size: 15px;
-      color: var(--b3-theme-on-surface-light);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-
-      &:hover {
-        background: var(--b3-theme-surface-light);
-        color: var(--b3-theme-on-surface);
-      }
-    }
-
-    &__menu {
-      position: absolute;
-      top: calc(100% + 4px);
-      right: 0;
-      z-index: 60;
-      min-width: 180px;
-      padding: 6px;
-      background: var(--b3-theme-surface);
-      border: 1px solid var(--b3-border-color);
-      border-radius: 8px;
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-    }
-
-    &__menu-item {
-      display: block;
-      width: 100%;
-      padding: 7px 10px;
-      border: none;
-      border-radius: 6px;
-      background: transparent;
-      cursor: pointer;
-      font-size: 13px;
-      text-align: left;
-      color: var(--b3-theme-on-surface);
-
-      &:hover {
-        background: var(--b3-theme-surface-light);
-      }
-
-      &.is-danger {
-        color: var(--b3-theme-error);
-      }
-    }
-
-    &__menu-sep {
-      height: 1px;
-      background: var(--b3-border-color);
-      margin: 5px 4px;
-    }
-
-    &__confirm {
-      padding: 8px 10px;
-
-      p {
-        margin: 0 0 8px;
-        font-size: 12px;
-        color: var(--b3-theme-on-surface-light);
-      }
-    }
-
-    &__confirm-btn {
-      width: 100%;
-      padding: 6px 10px;
-      border: none;
-      border-radius: 6px;
-      background: var(--b3-theme-error);
-      color: #fff;
-      font-size: 13px;
-      cursor: pointer;
-
-      &:hover {
-        opacity: 0.9;
-      }
-    }
-
     &__project {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
       width: 100%;
-      padding: 8px 10px;
+      padding: 9px 12px;
       border: none;
       border-radius: 8px;
       background: transparent;
@@ -307,6 +115,7 @@
     &__project-name {
       flex: 1;
       font-size: 14px;
+      font-weight: 500;
       color: var(--b3-theme-on-surface);
       overflow: hidden;
       text-overflow: ellipsis;
@@ -319,6 +128,7 @@
       gap: 3px;
       font-size: 12px;
       color: #dc2626;
+      white-space: nowrap;
 
       &.is-overdue {
         font-weight: 600;
@@ -328,7 +138,7 @@
     &__project-count {
       font-size: 12px;
       color: var(--b3-theme-on-surface-light);
-      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
     }
 
     &__empty {
@@ -373,6 +183,7 @@
       resize: vertical;
       background: var(--b3-theme-surface);
       color: var(--b3-theme-on-surface);
+      box-sizing: border-box;
     }
   }
 </style>

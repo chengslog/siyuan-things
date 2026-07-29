@@ -11,6 +11,8 @@
   import AreaPanel from "./AreaPanel.svelte";
   import EntityForm from "./EntityForm.svelte";
   import ProjectOverview from "./ProjectOverview.svelte";
+  import AreaOverview from "./AreaOverview.svelte";
+  import TagOverview from "./TagOverview.svelte";
 
   export let view: ViewType;
   export let viewId: string | undefined;
@@ -95,6 +97,10 @@
         return store.tasks.getCompletedTasks();
       case "projects":
         return []; // 项目总览不渲染任务列表，由 ProjectOverview 接管
+      case "areas":
+        return []; // 区域总览由 AreaOverview 接管
+      case "tags":
+        return []; // 标签总览由 TagOverview 接管
       case "project":
         return viewId ? store.tasks.getProjectTasks(viewId) : [];
       case "area":
@@ -329,7 +335,17 @@
         break;
       }
     }
+    // 悬停组变化时，收起上一个目标组的避让槽位与指引线
+    if (dragOverGroup && dragOverGroup !== over && dragOverGroup !== dragFromGroup) {
+      dragSortRefs[dragOverGroup]?.clearGap();
+    }
     dragOverGroup = over;
+    // 跨组拖拽：在目标组内撑开槽位（后续任务下移避让）+ 指引线；
+    // 槽位高度 = 被拖任务高度（从源组 DragSort 取）
+    if (over && over !== dragFromGroup && dragSortRefs[over]) {
+      const gapH = dragSortRefs[dragFromGroup!]?.getItemHeight() || 40;
+      dragSortRefs[over].showGapAt(e.clientY, gapH);
+    }
   }
 
   function handleGroupDragStart(group: string) {
@@ -338,6 +354,10 @@
   }
 
   function handleGroupDragEnd() {
+    // 清理所有分组可能残留的避让位移与指引线（源组位移由 DragSort cleanup 处理，目标组在这里）
+    for (const key of Object.keys(dragSortRefs)) {
+      dragSortRefs[key]?.clearGap();
+    }
     dragFromGroup = null;
     dragOverGroup = null;
     document.removeEventListener("mousemove", trackDragOver);
@@ -466,6 +486,8 @@
       someday: "某天",
       log: "日志",
       projects: "项目",
+      areas: "区域",
+      tags: "标签",
       search: "搜索",
     };
 
@@ -585,7 +607,13 @@
     {#if view === "projects"}
       <ProjectOverview store={store} version={refreshKey} />
     {/if}
-    {#if sortedTasks.length === 0 && view !== "today" && view !== "upcoming" && view !== "projects"}
+    {#if view === "areas"}
+      <AreaOverview store={store} version={refreshKey} />
+    {/if}
+    {#if view === "tags"}
+      <TagOverview store={store} version={refreshKey} />
+    {/if}
+    {#if sortedTasks.length === 0 && view !== "today" && view !== "upcoming" && view !== "projects" && view !== "areas" && view !== "tags"}
       <div class="task-list__empty">
         <Icon name={emptyState.icon} size={48} klass="task-list__empty-icon" />
         <p>{emptyState.text}</p>

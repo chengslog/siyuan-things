@@ -84,6 +84,8 @@ export type ViewType =
   | 'someday'
   | 'log'
   | 'projects'
+  | 'areas'
+  | 'tags'
   | 'project'
   | 'area'
   | 'tag'

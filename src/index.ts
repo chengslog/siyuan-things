@@ -267,27 +267,12 @@ export default class ThingsPlugin extends Plugin {
       html += `</div>`;
     }
 
-    // 区域
+    // 项目（整行可点 = 全部项目总览）
     html += `
       <div class="things-nav__section">
-        <div class="things-nav__header">
+        <div class="things-nav__header" data-view="projects" title="查看全部项目">
           <span class="things-nav__header-label">
-            <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsArea"></use></svg>区域
-          </span>
-          <span class="things-nav__add" data-add="area" title="新建区域">
-            <svg><use xlink:href="#iconThingsAdd"></use></svg>
-          </span>
-        </div>
-        <div id="things-areas"></div>
-      </div>
-    `;
-
-    // 项目（首行为"全部项目"总览入口）
-    html += `
-      <div class="things-nav__section">
-        <div class="things-nav__header">
-          <span class="things-nav__header-label">
-            <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsProject"></use></svg>项目
+            <svg class="things-nav__icon"><use xlink:href="#iconThingsProject"></use></svg>项目
           </span>
           <span class="things-nav__add" data-add="project" title="新建项目">
             <svg><use xlink:href="#iconThingsAdd"></use></svg>
@@ -297,12 +282,27 @@ export default class ThingsPlugin extends Plugin {
       </div>
     `;
 
-    // 标签
+    // 区域（整行可点 = 全部区域总览）
     html += `
       <div class="things-nav__section">
-        <div class="things-nav__header">
+        <div class="things-nav__header" data-view="areas" title="查看全部区域">
           <span class="things-nav__header-label">
-            <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsTag"></use></svg>标签
+            <svg class="things-nav__icon"><use xlink:href="#iconThingsArea"></use></svg>区域
+          </span>
+          <span class="things-nav__add" data-add="area" title="新建区域">
+            <svg><use xlink:href="#iconThingsAdd"></use></svg>
+          </span>
+        </div>
+        <div id="things-areas"></div>
+      </div>
+    `;
+
+    // 标签（整行可点 = 全部标签总览）
+    html += `
+      <div class="things-nav__section">
+        <div class="things-nav__header" data-view="tags" title="查看全部标签">
+          <span class="things-nav__header-label">
+            <svg class="things-nav__icon"><use xlink:href="#iconThingsTagColor"></use></svg>标签
           </span>
           <span class="things-nav__add" data-add="tag" title="新建标签">
             <svg><use xlink:href="#iconThingsAdd"></use></svg>
@@ -339,17 +339,24 @@ export default class ThingsPlugin extends Plugin {
       });
     });
 
-    // 添加项目/区域/标签
+    // 区块头整行可点 = 全部项目/全部区域/全部标签 总览（＋ 按钮自身 stopPropagation，不触发导航）
+    element.querySelectorAll('.things-nav__header[data-view]').forEach(el => {
+      el.addEventListener('click', () => {
+        const view = (el as HTMLElement).dataset.view as ViewType;
+        if (view) {
+          this.openThingsTab(view);
+          this.setActive(element, view);
+        }
+      });
+    });
+
+    // 添加项目/区域/标签：弹出悬浮创建卡片
     element.querySelectorAll('.things-nav__add').forEach(el => {
       el.addEventListener('click', (e) => {
         e.stopPropagation();
-        const type = (el as HTMLElement).dataset.add;
-        if (type === 'project') {
-          this.addProject(element);
-        } else if (type === 'area') {
-          this.addArea(element);
-        } else if (type === 'tag') {
-          this.addTag(element);
+        const type = (el as HTMLElement).dataset.add as 'project' | 'area' | 'tag';
+        if (type) {
+          this.showCreateCard(element, type, el as HTMLElement);
         }
       });
     });
@@ -371,32 +378,50 @@ export default class ThingsPlugin extends Plugin {
     if (!container) return;
 
     const projects = this.store.projects.getActiveProjects();
-    // 首行："全部项目"总览入口
-    let html = `
-      <div class="things-nav__item things-nav__item--sub things-nav__item--all" data-view="projects">
-        <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsProject"></use></svg>
-        <span class="things-nav__label">全部项目</span>
-      </div>
-    `;
+    let html = '';
 
     for (const p of projects) {
       html += `
-        <div class="things-nav__item things-nav__item--sub" data-view="project" data-id="${p.id}">
-          <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsProject"></use></svg>
-          <span class="things-nav__label">${p.name}</span>
+        <div class="things-nav__item things-nav__item--sub things-nav-row" data-view="project" data-id="${p.id}" title="双击重命名 · 按住拖动排序">
+          <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsFolder"></use></svg>
+          <span class="things-nav__label things-nav-row__name">${p.name}</span>
+          <span class="things-nav-row__del" title="删除项目">×</span>
         </div>
       `;
     }
 
+    if (projects.length === 0) {
+      html = '<div class="things-nav__empty">暂无</div>';
+    }
+
     container.innerHTML = html;
 
-    container.querySelectorAll('.things-nav__item').forEach(el => {
-      el.addEventListener('click', () => {
-        const view = (el as HTMLElement).dataset.view as ViewType;
-        const id = (el as HTMLElement).dataset.id;
-        this.openThingsTab(view, id);
-        this.setActive(element, view, id);
+    container.querySelectorAll('.things-nav-row').forEach(el => {
+      const node = el as HTMLElement;
+      const id = node.dataset.id!;
+      let clickTimer: any = null;
+
+      // 单击 → 打开项目页（延迟 250ms，给双击改名让路）
+      node.addEventListener('click', (e) => {
+        if (node.dataset.justDragged) { delete node.dataset.justDragged; return; }
+        const target = e.target as HTMLElement;
+        if (target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
+        if (clickTimer) clearTimeout(clickTimer);
+        clickTimer = setTimeout(() => {
+          this.openThingsTab('project' as ViewType, id);
+          this.setActive(element, 'project' as ViewType, id);
+        }, 250);
       });
+
+      // 双击名称 → 内联改名
+      node.addEventListener('dblclick', (e) => {
+        const target = e.target as HTMLElement;
+        if (target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
+        if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+        this.startRowRename(element, node, id, 'project');
+      });
+
+      this.bindRowDelete(node, id, 'project');
     });
     this.bindSectionDragSort(container, 'project');
   }
@@ -413,9 +438,10 @@ export default class ThingsPlugin extends Plugin {
 
     for (const a of areas) {
       html += `
-        <div class="things-nav__item things-nav__item--sub" data-view="area" data-id="${a.id}">
-          <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsArea"></use></svg>
-          <span class="things-nav__label">${a.name}</span>
+        <div class="things-nav__item things-nav__item--sub things-nav-row" data-view="area" data-id="${a.id}" title="双击重命名 · 按住拖动排序">
+          <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsLayers"></use></svg>
+          <span class="things-nav__label things-nav-row__name">${a.name}</span>
+          <span class="things-nav-row__del" title="删除区域">×</span>
         </div>
       `;
     }
@@ -426,13 +452,32 @@ export default class ThingsPlugin extends Plugin {
 
     container.innerHTML = html;
 
-    container.querySelectorAll('.things-nav__item').forEach(el => {
-      el.addEventListener('click', () => {
-        const view = (el as HTMLElement).dataset.view as ViewType;
-        const id = (el as HTMLElement).dataset.id;
-        this.openThingsTab(view, id);
-        this.setActive(element, view, id);
+    container.querySelectorAll('.things-nav-row').forEach(el => {
+      const node = el as HTMLElement;
+      const id = node.dataset.id!;
+      let clickTimer: any = null;
+
+      // 单击 → 打开区域页（延迟 250ms，给双击改名让路）
+      node.addEventListener('click', (e) => {
+        if (node.dataset.justDragged) { delete node.dataset.justDragged; return; }
+        const target = e.target as HTMLElement;
+        if (target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
+        if (clickTimer) clearTimeout(clickTimer);
+        clickTimer = setTimeout(() => {
+          this.openThingsTab('area' as ViewType, id);
+          this.setActive(element, 'area' as ViewType, id);
+        }, 250);
       });
+
+      // 双击名称 → 内联改名
+      node.addEventListener('dblclick', (e) => {
+        const target = e.target as HTMLElement;
+        if (target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
+        if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+        this.startRowRename(element, node, id, 'area');
+      });
+
+      this.bindRowDelete(node, id, 'area');
     });
     this.bindSectionDragSort(container, 'area');
   }
@@ -449,15 +494,16 @@ export default class ThingsPlugin extends Plugin {
 
     const renderLevel = (tags: any[], depth: number) => {
       for (const t of tags) {
-        // 有色标签显示色点，无色标签显示标签图标
-        const marker = t.color
-          ? `<span class="things-nav__tag-dot" style="background: ${t.color}"></span>`
-          : `<svg class="things-nav__icon things-nav__icon--sm" style="fill:currentColor"><use xlink:href="#iconThingsTag"></use></svg>`;
+        // 色点 = 换色开关（占 16px 图标位保持对齐）；无色标签显示虚线空点
+        const dot = t.color
+          ? `<span class="things-tag-row__dot" title="更换颜色"><span style="background: ${t.color}"></span></span>`
+          : `<span class="things-tag-row__dot things-tag-row__dot--empty" title="设置颜色"><span></span></span>`;
         html += `
-          <div class="things-nav__item things-nav__item--sub" data-view="tag" data-id="${t.id}"
-               style="padding-left: ${12 + depth * 16}px" title="右键管理">
-            ${marker}
-            <span class="things-nav__label">${t.name}</span>
+          <div class="things-nav__item things-nav__item--sub things-tag-row things-nav-row${depth === 0 ? ' things-tag-row--root' : ''}" data-view="tag" data-id="${t.id}"
+               style="padding-left: ${12 + depth * 16}px" title="双击重命名 · 按住拖动排序">
+            ${dot}
+            <span class="things-nav__label things-nav-row__name">${t.name}</span>
+            <span class="things-nav-row__del" title="删除标签">×</span>
           </div>
         `;
         const children = this.store.tags.getChildTags(t.id).sort((a, b) => a.order - b.order);
@@ -467,265 +513,387 @@ export default class ThingsPlugin extends Plugin {
     renderLevel(roots, 0);
 
     if (roots.length === 0) {
-      html = '<div class="things-nav__empty">暂无（右键可管理）</div>';
+      html = '<div class="things-nav__empty">暂无</div>';
     }
 
     container.innerHTML = html;
 
-    container.querySelectorAll('.things-nav__item').forEach(el => {
-      el.addEventListener('click', () => {
-        const id = (el as HTMLElement).dataset.id;
-        this.openThingsTab('tag' as ViewType, id);
-        this.setActive(element, 'tag' as ViewType, id);
+    container.querySelectorAll('.things-tag-row').forEach(el => {
+      const row = el as HTMLElement;
+      const id = row.dataset.id!;
+      let clickTimer: any = null;
+
+      // 单击 → 打开标签视图（延迟 250ms，给双击改名让路）
+      row.addEventListener('click', (e) => {
+        if (row.dataset.justDragged) { delete row.dataset.justDragged; return; }
+        const target = e.target as HTMLElement;
+        if (target.closest('.things-tag-row__dot') || target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
+        if (clickTimer) clearTimeout(clickTimer);
+        clickTimer = setTimeout(() => {
+          this.openThingsTab('tag' as ViewType, id);
+          this.setActive(element, 'tag' as ViewType, id);
+        }, 250);
       });
-      el.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        const id = (el as HTMLElement).dataset.id;
-        if (id) this.showTagContextMenu(element, id, e.clientX, e.clientY);
+
+      // 双击名称 → 内联改名
+      row.addEventListener('dblclick', (e) => {
+        const target = e.target as HTMLElement;
+        if (target.closest('.things-tag-row__dot') || target.closest('.things-nav-row__del')) return;
+        if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+        this.startRowRename(element, row, id, 'tag');
       });
+
+      // 点色点 → 调色板
+      row.querySelector('.things-tag-row__dot')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.showTagPalette(row, id);
+      });
+
+      this.bindRowDelete(row, id, 'tag');
     });
     this.bindSectionDragSort(container, 'tag');
   }
 
   /**
-   * 侧边栏分节拖拽排序（仅限同节内：区域/项目/标签各自排序，交换 order 值）
+   * 侧边栏分节拖拽排序（同节内）。自定义鼠标拖拽：
+   * 5px 阈值区分点击/拖动 → 幽灵卡片跟随 + 邻居挤占动画 + 插入指引线 → 松手按新序列重写 order。
    */
   private bindSectionDragSort(container: Element, kind: 'area' | 'project' | 'tag') {
-    container.querySelectorAll('.things-nav__item').forEach(el => {
+    // 标签只允许顶层行参与排序（嵌套子标签不介入，避免打乱层级）
+    const rowSel = kind === 'tag' ? '.things-tag-row--root' : '.things-nav__item';
+    container.querySelectorAll(rowSel).forEach(el => {
       const node = el as HTMLElement;
-      node.draggable = true;
-      node.addEventListener('dragstart', (e) => {
-        e.dataTransfer!.setData('text/things-kind', kind);
-        e.dataTransfer!.setData('text/things-id', node.dataset.id || '');
-        e.dataTransfer!.effectAllowed = 'move';
-        node.classList.add('is-dragging-src');
-      });
-      node.addEventListener('dragend', () => node.classList.remove('is-dragging-src'));
-      node.addEventListener('dragover', (e) => e.preventDefault());
-      node.addEventListener('drop', (e) => {
-        e.preventDefault();
-        const srcKind = e.dataTransfer!.getData('text/things-kind');
-        const srcId = e.dataTransfer!.getData('text/things-id');
-        const targetId = node.dataset.id;
-        if (srcKind === kind && srcId && targetId && srcId !== targetId) {
-          this.swapEntityOrder(kind, srcId, targetId);
-        }
+      node.addEventListener('mousedown', (e) => {
+        const ev = e as MouseEvent;
+        if (ev.button !== 0) return;
+        const target = ev.target as HTMLElement;
+        // 交互元素上不启动拖拽（加号、标签色点、删除按钮、改名输入框）
+        if (target.closest('.things-nav__add') || target.closest('.things-tag-row__dot') ||
+            target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
+        ev.preventDefault(); // 阻止文本选中
+        this.startSectionDrag(ev, node, container as HTMLElement, kind, rowSel);
       });
     });
   }
 
-  private async swapEntityOrder(kind: 'area' | 'project' | 'tag', aId: string, bId: string) {
-    if (kind === 'area') {
-      const a = this.store.areas.get(aId);
-      const b = this.store.areas.get(bId);
-      if (!a || !b) return;
-      const [ao, bo] = a.order === b.order ? [a.order, a.order + 1] : [b.order, a.order];
-      await this.store.areas.updateArea(a.id, { order: ao });
-      await this.store.areas.updateArea(b.id, { order: bo });
-    } else if (kind === 'project') {
-      const a = this.store.projects.get(aId);
-      const b = this.store.projects.get(bId);
-      if (!a || !b) return;
-      const [ao, bo] = a.order === b.order ? [a.order, a.order + 1] : [b.order, a.order];
-      await this.store.projects.updateProject(a.id, { order: ao });
-      await this.store.projects.updateProject(b.id, { order: bo });
-    } else {
-      const a = this.store.tags.get(aId);
-      const b = this.store.tags.get(bId);
-      if (!a || !b) return;
-      const [ao, bo] = a.order === b.order ? [a.order, a.order + 1] : [b.order, a.order];
-      await this.store.tags.updateTag(a.id, { order: ao });
-      await this.store.tags.updateTag(b.id, { order: bo });
+  private startSectionDrag(startEv: MouseEvent, node: HTMLElement, container: HTMLElement, kind: 'area' | 'project' | 'tag', rowSel: string) {
+    const startY = startEv.clientY;
+    const rect = node.getBoundingClientRect();
+    const offsetY = startY - rect.top;
+    const itemH = rect.height;
+    let dragging = false;
+    let ghost: HTMLElement | null = null;
+    let indicator: HTMLElement | null = null;
+    let insertIdx = -1;
+
+    const rows = () => Array.from(container.querySelectorAll(rowSel)) as HTMLElement[];
+    const others0 = rows().filter(r => r !== node);
+    // 起始中心位置用于落点判定（不受挤占位移影响，避免反馈抖动）
+    const centers0 = others0.map(r => {
+      const rc = r.getBoundingClientRect();
+      return rc.top + rc.height / 2;
+    });
+
+    const layout = (pointerY: number) => {
+      // 目标插入索引（相对"去除源"的列表）；源的最终全局位置即 idx
+      let idx = others0.length;
+      for (let i = 0; i < centers0.length; i++) {
+        if (pointerY < centers0[i]) { idx = i; break; }
+      }
+      if (idx === insertIdx) return;
+      insertIdx = idx;
+
+      // 挤占动画：原位置与目标位置之间的邻居平移一个槽位，空槽"流"向落点
+      const all = rows();
+      const origFull = all.indexOf(node);
+      const targetFull = idx;
+      all.forEach((r, full) => {
+        if (r === node) return;
+        let shift = 0;
+        if (targetFull > origFull && full > origFull && full <= targetFull) shift = -itemH; // 向下拖：中间的上去
+        else if (targetFull < origFull && full >= targetFull && full < origFull) shift = itemH; // 向上拖：中间的下来
+        r.style.transform = shift ? `translateY(${shift}px)` : '';
+      });
+
+      // 指引线落在挤占后布局的目标槽位边界
+      if (indicator) {
+        const others = rows().filter(r => r !== node);
+        const cRect = container.getBoundingClientRect();
+        let y: number;
+        if (others.length === 0) {
+          y = cRect.top;
+        } else if (idx <= 0) {
+          y = others[0].getBoundingClientRect().top - 4;
+        } else if (idx >= others.length) {
+          y = others[others.length - 1].getBoundingClientRect().bottom + 4;
+        } else {
+          y = (others[idx - 1].getBoundingClientRect().bottom + others[idx].getBoundingClientRect().top) / 2;
+        }
+        indicator.style.top = `${y - cRect.top}px`;
+      }
+    };
+
+    const onMove = (ev: MouseEvent) => {
+      if (!dragging) {
+        if (Math.abs(ev.clientY - startY) < 5) return; // 阈值：区分点击与拖动
+        dragging = true;
+        ghost = node.cloneNode(true) as HTMLElement;
+        ghost.classList.add('things-drag-ghost');
+        ghost.style.left = `${rect.left}px`;
+        ghost.style.width = `${rect.width}px`;
+        document.body.appendChild(ghost);
+        node.style.visibility = 'hidden';
+        indicator = document.createElement('div');
+        indicator.className = 'things-drag-indicator';
+        container.appendChild(indicator);
+        layout(startEv.clientY); // 初始态：指引线落在源槽位
+      }
+      ghost!.style.top = `${ev.clientY - offsetY}px`;
+      layout(ev.clientY);
+    };
+
+    const onUp = async () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      if (!dragging) return;
+      node.dataset.justDragged = '1'; // 抑制本次拖拽后的 click（避免误触导航）
+
+      // 按新序列重写 order
+      const others = rows().filter(r => r !== node);
+      const newIds: string[] = [];
+      others.forEach((r, i) => {
+        if (i === insertIdx) newIds.push(node.dataset.id!);
+        newIds.push(r.dataset.id!);
+      });
+      if (insertIdx >= others.length) newIds.push(node.dataset.id!);
+
+      // 清理视觉状态
+      ghost?.remove();
+      indicator?.remove();
+      node.style.visibility = '';
+      rows().forEach(r => { r.style.transform = ''; });
+
+      await this.reorderSection(kind, newIds);
+    };
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+
+  private async reorderSection(kind: 'area' | 'project' | 'tag', ids: string[]) {
+    for (let i = 0; i < ids.length; i++) {
+      if (kind === 'area') await this.store.areas.updateArea(ids[i], { order: i });
+      else if (kind === 'project') await this.store.projects.updateProject(ids[i], { order: i });
+      else await this.store.tags.updateTag(ids[i], { order: i });
     }
   }
 
   /**
-   * 添加标签（内联表单，颜色按调色板自动循环）
+   * 悬浮创建卡片（项目/区域/标签统一逻辑）：
+   * 弹在侧边栏右缘外，输入框/下拉框等宽；无取消按钮——点卡片外任意处即取消，Enter 创建。
    */
-  private addTag(element: HTMLElement) {
-    const container = element.querySelector('#things-tags');
-    if (!container || container.parentElement!.querySelector('.things-nav__form')) return;
+  private closeCreateCard() {
+    document.getElementById('things-create-card')?.remove();
+  }
 
-    const form = document.createElement('div');
-    form.className = 'things-nav__form';
-    form.innerHTML = `
-      <input type="text" class="things-nav__form-input" placeholder="标签名称" />
-      <div class="things-nav__form-actions">
-        <button class="things-nav__form-ok">创建</button>
-        <button class="things-nav__form-cancel">取消</button>
-      </div>
+  private showCreateCard(element: HTMLElement, kind: 'project' | 'area' | 'tag', anchor: HTMLElement) {
+    this.closeCreateCard();
+
+    const meta = {
+      project: { title: '新建项目', placeholder: '项目名称' },
+      area: { title: '新建区域', placeholder: '区域名称' },
+      tag: { title: '新建标签', placeholder: '标签名称' },
+    }[kind];
+
+    let fieldsHtml = `<input type="text" class="things-create-card__field" placeholder="${meta.placeholder}" />`;
+    if (kind === 'project') {
+      const areas = this.store.areas.getAll().sort((a, b) => a.order - b.order);
+      const options = ['<option value="">无区域</option>']
+        .concat(areas.map(a => `<option value="${a.id}">${a.name}</option>`))
+        .join('');
+      fieldsHtml += `<select class="things-create-card__field">${options}</select>`;
+    }
+
+    const card = document.createElement('div');
+    card.className = 'things-create-card';
+    card.id = 'things-create-card';
+    card.innerHTML = `
+      <div class="things-create-card__title">${meta.title}</div>
+      ${fieldsHtml}
+      <button class="things-create-card__ok">创建</button>
     `;
-    container.parentElement!.insertBefore(form, container);
+    document.body.appendChild(card);
 
-    const input = form.querySelector('input')!;
+    // 定位：侧边栏右缘外 10px，纵向贴近加号按钮，超出视口时收回
+    const dockRect = element.getBoundingClientRect();
+    const anchorRect = anchor.getBoundingClientRect();
+    const cardH = card.offsetHeight;
+    let top = anchorRect.top - 4;
+    if (top + cardH > window.innerHeight - 8) top = window.innerHeight - cardH - 8;
+    card.style.left = `${dockRect.right + 10}px`;
+    card.style.top = `${Math.max(8, top)}px`;
+
+    const input = card.querySelector('input')!;
+    const select = card.querySelector('select') as HTMLSelectElement | null;
     input.focus();
-    const close = () => form.remove();
+
+    const close = () => {
+      card.remove();
+      document.removeEventListener('mousedown', onOutside);
+    };
+    const onOutside = (e: MouseEvent) => {
+      if (!card.contains(e.target as HTMLElement)) close();
+    };
     const submit = async () => {
       const name = input.value.trim();
       if (!name) { input.focus(); return; }
-      await this.store.tags.createTag({ name, color: nextTagColor(this.store.tags.count) });
+      if (kind === 'project') {
+        await this.store.projects.createProject({ name, areaId: select?.value || undefined });
+        showMessage(`项目已创建: ${name}`);
+      } else if (kind === 'area') {
+        await this.store.areas.createArea({ name });
+        showMessage(`区域已创建: ${name}`);
+      } else {
+        await this.store.tags.createTag({ name, color: nextTagColor(this.store.tags.count) });
+        showMessage(`标签已创建: ${name}`);
+      }
       close();
-      showMessage(`标签已创建: ${name}`);
     };
-    form.querySelector('.things-nav__form-ok')!.addEventListener('click', submit);
-    form.querySelector('.things-nav__form-cancel')!.addEventListener('click', close);
+
+    card.querySelector('.things-create-card__ok')!.addEventListener('click', submit);
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') submit();
       if (e.key === 'Escape') close();
     });
+    // 延迟挂外部监听，避免本次加号点击立即关掉卡片
+    setTimeout(() => document.addEventListener('mousedown', onOutside), 0);
   }
 
   /**
-   * 标签右键管理菜单：重命名 / 换色 / 上移下移 / 删除
+   * 标签直接操作：点色点弹调色板 / 双击名称内联改名 / 按住拖动排序 / × 删除
    */
-  private closeTagContextMenu() {
-    document.getElementById('things-ctx-menu')?.remove();
+  private closeTagPalette() {
+    document.getElementById('things-palette-pop')?.remove();
   }
 
-  private showTagContextMenu(element: HTMLElement, tagId: string, x: number, y: number) {
-    this.closeTagContextMenu();
-    const menu = document.createElement('div');
-    menu.className = 'things-ctx-menu';
-    menu.id = 'things-ctx-menu';
-    menu.style.left = `${Math.min(x, window.innerWidth - 190)}px`;
-    menu.style.top = `${Math.min(y, window.innerHeight - 230)}px`;
-    // "移动到"候选：除自身与自己的后代外（防环）的全部标签，DFS 顺序带路径名
-    const excluded = this.getDescendantTagIds(tagId);
-    excluded.add(tagId);
-    const candidates: { id: string; label: string }[] = [];
-    const buildCandidates = (parentId: string | undefined, prefix: string) => {
-      const list = (parentId
-        ? this.store.tags.getChildTags(parentId)
-        : this.store.tags.getRootTags()
-      ).sort((a, b) => a.order - b.order);
-      for (const t of list) {
-        if (excluded.has(t.id)) continue;
-        candidates.push({ id: t.id, label: prefix + t.name });
-        buildCandidates(t.id, prefix + t.name + ' / ');
-      }
-    };
-    buildCandidates(undefined, '');
+  private showTagPalette(row: HTMLElement, tagId: string) {
+    this.closeTagPalette();
+    const pop = document.createElement('div');
+    pop.className = 'things-palette-pop';
+    pop.id = 'things-palette-pop';
+    pop.innerHTML =
+      TAG_PALETTE.map(c => `<span class="things-palette-pop__swatch" data-color="${c}" style="background:${c}" title="${c}"></span>`).join('') +
+      `<span class="things-palette-pop__swatch things-palette-pop__none" data-color="" title="无颜色"></span>`;
+    document.body.appendChild(pop);
 
-    menu.innerHTML = `
-      <div class="things-ctx-item" data-act="rename">重命名</div>
-      <div class="things-ctx-item things-ctx-item--palette">更换颜色
-        <div class="things-ctx-palette">
-          ${TAG_PALETTE.map(c => `<span class="things-ctx-swatch" data-color="${c}" style="background:${c}"></span>`).join('')}
-        </div>
-      </div>
-      <div class="things-ctx-item things-ctx-item--palette">移动到
-        <div class="things-ctx-sub">
-          <div class="things-ctx-subitem" data-parent="">顶级标签</div>
-          ${candidates.map(c => `<div class="things-ctx-subitem" data-parent="${c.id}">${c.label}</div>`).join('')}
-        </div>
-      </div>
-      <div class="things-ctx-item" data-act="up">上移</div>
-      <div class="things-ctx-item" data-act="down">下移</div>
-      <div class="things-ctx-sep"></div>
-      <div class="things-ctx-item is-danger" data-act="delete">删除标签</div>
-    `;
-    document.body.appendChild(menu);
+    // 定位：行右侧，纵向居中于该行，超出视口时收回
+    const rect = row.getBoundingClientRect();
+    const popH = pop.offsetHeight;
+    let top = rect.top + rect.height / 2 - popH / 2;
+    top = Math.max(8, Math.min(top, window.innerHeight - popH - 8));
+    pop.style.left = `${rect.right + 10}px`;
+    pop.style.top = `${top}px`;
 
-    menu.addEventListener('click', (e) => {
-      const swatch = (e.target as HTMLElement).closest('.things-ctx-swatch') as HTMLElement | null;
-      if (swatch) {
-        this.store.tags.updateTag(tagId, { color: swatch.dataset.color });
-        this.closeTagContextMenu();
-        return;
-      }
-      const subitem = (e.target as HTMLElement).closest('.things-ctx-subitem') as HTMLElement | null;
-      if (subitem) {
-        const parentId = subitem.dataset.parent || undefined;
-        this.store.tags.updateTag(tagId, { parentId });
-        this.closeTagContextMenu();
-        return;
-      }
-      const item = (e.target as HTMLElement).closest('.things-ctx-item') as HTMLElement | null;
-      if (!item) return;
-      const act = item.dataset.act;
-      if (act === 'rename') {
-        this.closeTagContextMenu();
-        this.renameTagInline(element, tagId);
-      } else if (act === 'up' || act === 'down') {
-        this.moveTag(tagId, act === 'up' ? -1 : 1);
-        this.closeTagContextMenu();
-      } else if (act === 'delete') {
-        if (item.dataset.confirm) {
-          this.deleteTag(tagId);
-          this.closeTagContextMenu();
-        } else {
-          item.dataset.confirm = '1';
-          item.textContent = '确认删除？（任务将取消该标签）';
-        }
-      }
+    pop.addEventListener('click', (e) => {
+      const swatch = (e.target as HTMLElement).closest('.things-palette-pop__swatch') as HTMLElement | null;
+      if (!swatch) return;
+      this.store.tags.updateTag(tagId, { color: swatch.dataset.color || undefined });
+      this.closeTagPalette();
     });
-
-    const onDocClick = (ev: MouseEvent) => {
-      if (!menu.contains(ev.target as HTMLElement)) {
-        this.closeTagContextMenu();
-        document.removeEventListener('click', onDocClick);
+    const onOutside = (e: MouseEvent) => {
+      if (!pop.contains(e.target as HTMLElement)) {
+        this.closeTagPalette();
+        document.removeEventListener('mousedown', onOutside);
       }
     };
-    setTimeout(() => document.addEventListener('click', onDocClick), 0);
+    setTimeout(() => document.addEventListener('mousedown', onOutside), 0);
   }
 
-  private getDescendantTagIds(tagId: string): Set<string> {
-    const set = new Set<string>();
-    const walk = (id: string) => {
-      for (const c of this.store.tags.getChildTags(id)) {
-        set.add(c.id);
-        walk(c.id);
-      }
-    };
-    walk(tagId);
-    return set;
-  }
+  // 双击名称 → 原地变输入框（Enter/失焦保存，Esc 取消）。区域/项目/标签行通用
+  private startRowRename(element: HTMLElement, row: HTMLElement, id: string, kind: 'area' | 'project' | 'tag') {
+    const label = row.querySelector('.things-nav-row__name');
+    const current = kind === 'area' ? this.store.areas.get(id)?.name
+      : kind === 'project' ? this.store.projects.get(id)?.name
+      : this.store.tags.get(id)?.name;
+    if (!label || !current) return;
 
-  private renameTagInline(element: HTMLElement, tagId: string) {
-    const tag = this.store.tags.get(tagId);
-    const container = element.querySelector('#things-tags');
-    if (!tag || !container || container.parentElement!.querySelector('.things-nav__form')) return;
-
-    const form = document.createElement('div');
-    form.className = 'things-nav__form';
-    form.innerHTML = `
-      <input type="text" class="things-nav__form-input" />
-      <div class="things-nav__form-actions">
-        <button class="things-nav__form-ok">保存</button>
-        <button class="things-nav__form-cancel">取消</button>
-      </div>
-    `;
-    container.parentElement!.insertBefore(form, container);
-
-    const input = form.querySelector('input')!;
-    input.value = tag.name; // 赋值而非拼进 HTML，避免引号注入
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'things-nav-row__input';
+    input.value = current; // 属性赋值，避免引号注入
+    label.replaceWith(input);
     input.focus();
     input.select();
-    const close = () => form.remove();
-    const submit = async () => {
+
+    let done = false;
+    const finish = async (save: boolean) => {
+      if (done) return;
+      done = true;
       const name = input.value.trim();
-      if (name && name !== tag.name) {
-        await this.store.tags.updateTag(tagId, { name });
+      if (save && name && name !== current) {
+        if (kind === 'area') await this.store.areas.updateArea(id, { name });
+        else if (kind === 'project') await this.store.projects.updateProject(id, { name });
+        else await this.store.tags.updateTag(id, { name });
+        // store 事件会触发对应节重渲染
+      } else {
+        if (kind === 'area') this.renderAreas(element);
+        else if (kind === 'project') this.renderProjects(element);
+        else this.renderTags(element);
       }
-      close();
     };
-    form.querySelector('.things-nav__form-ok')!.addEventListener('click', submit);
-    form.querySelector('.things-nav__form-cancel')!.addEventListener('click', close);
     input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') submit();
-      if (e.key === 'Escape') close();
+      e.stopPropagation();
+      if (e.key === 'Enter') finish(true);
+      if (e.key === 'Escape') finish(false);
+    });
+    input.addEventListener('blur', () => finish(true));
+  }
+
+  // 行尾 × 删除：首次点击变"确认"，2.5 秒自动撤防；再点才真删。区域/项目/标签行通用
+  private bindRowDelete(row: HTMLElement, id: string, kind: 'area' | 'project' | 'tag') {
+    row.querySelector('.things-nav-row__del')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const btn = e.currentTarget as HTMLElement;
+      if (btn.dataset.confirm) {
+        if (kind === 'area') this.deleteAreaFromSidebar(id);
+        else if (kind === 'project') this.deleteProjectFromSidebar(id);
+        else this.deleteTag(id);
+      } else {
+        btn.dataset.confirm = '1';
+        btn.textContent = '确认';
+        btn.classList.add('is-arming');
+        setTimeout(() => {
+          if (btn.isConnected) {
+            delete btn.dataset.confirm;
+            btn.textContent = '×';
+            btn.classList.remove('is-arming');
+          }
+        }, 2500);
+      }
     });
   }
 
-  private async moveTag(tagId: string, dir: -1 | 1) {
-    const tags = this.store.tags.getRootTags().sort((a, b) => a.order - b.order);
-    const idx = tags.findIndex(t => t.id === tagId);
-    const target = idx + dir;
-    if (idx < 0 || target < 0 || target >= tags.length) return;
-    const a = tags[idx];
-    const b = tags[target];
-    await this.store.tags.updateTag(a.id, { order: b.order });
-    await this.store.tags.updateTag(b.id, { order: a.order });
+  private async deleteAreaFromSidebar(id: string) {
+    // 级联：区域内项目、直挂区域的任务解除归属（数据保留）
+    for (const p of this.store.projects.getAreaProjects(id)) {
+      await this.store.projects.updateProject(p.id, { areaId: undefined });
+    }
+    for (const t of this.store.tasks.getAll()) {
+      if (t.areaId === id) {
+        await this.store.tasks.updateTask(t.id, { areaId: undefined });
+      }
+    }
+    await this.store.areas.delete(id);
+    showMessage('区域已删除');
+  }
+
+  private async deleteProjectFromSidebar(id: string) {
+    // 项目内任务清除 projectId（回归收件箱）
+    for (const t of this.store.tasks.getProjectTasks(id)) {
+      await this.store.tasks.updateTask(t.id, { projectId: undefined });
+    }
+    await this.store.projects.delete(id);
+    showMessage('项目已删除');
   }
 
   private async deleteTag(tagId: string) {
@@ -754,6 +922,10 @@ export default class ThingsPlugin extends Plugin {
       if (elView === view && (!id || elId === id)) {
         el.classList.add('is-active');
       }
+    });
+    // 总览视图（项目/区域/标签）时高亮对应区块头
+    element.querySelectorAll('.things-nav__header[data-view]').forEach(el => {
+      el.classList.toggle('is-active', (el as HTMLElement).dataset.view === view);
     });
   }
 
@@ -1009,85 +1181,6 @@ export default class ThingsPlugin extends Plugin {
           console.log("[Things] Open task:", task);
         }
       });
-    });
-  }
-
-  /**
-   * 添加项目（内联表单：名称 + 所属区域，替代 prompt）
-   */
-  private addProject(element: HTMLElement) {
-    const container = element.querySelector('#things-projects');
-    if (!container || container.parentElement!.querySelector('.things-nav__form')) return;
-
-    const areas = this.store.areas.getAll().sort((a, b) => a.order - b.order);
-    const options = ['<option value="">无区域</option>']
-      .concat(areas.map(a => `<option value="${a.id}">${a.name}</option>`))
-      .join('');
-
-    const form = document.createElement('div');
-    form.className = 'things-nav__form';
-    form.innerHTML = `
-      <input type="text" class="things-nav__form-input" placeholder="项目名称" />
-      <select class="things-nav__form-select">${options}</select>
-      <div class="things-nav__form-actions">
-        <button class="things-nav__form-ok">创建</button>
-        <button class="things-nav__form-cancel">取消</button>
-      </div>
-    `;
-    container.parentElement!.insertBefore(form, container);
-
-    const input = form.querySelector('input')!;
-    const select = form.querySelector('select')!;
-    input.focus();
-    const close = () => form.remove();
-    const submit = async () => {
-      const name = input.value.trim();
-      if (!name) { input.focus(); return; }
-      await this.store.projects.createProject({ name, areaId: select.value || undefined });
-      close();
-      showMessage(`项目已创建: ${name}`);
-    };
-    form.querySelector('.things-nav__form-ok')!.addEventListener('click', submit);
-    form.querySelector('.things-nav__form-cancel')!.addEventListener('click', close);
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') submit();
-      if (e.key === 'Escape') close();
-    });
-  }
-
-  /**
-   * 添加区域（内联表单，替代 prompt）
-   */
-  private addArea(element: HTMLElement) {
-    const container = element.querySelector('#things-areas');
-    if (!container || container.parentElement!.querySelector('.things-nav__form')) return;
-
-    const form = document.createElement('div');
-    form.className = 'things-nav__form';
-    form.innerHTML = `
-      <input type="text" class="things-nav__form-input" placeholder="区域名称" />
-      <div class="things-nav__form-actions">
-        <button class="things-nav__form-ok">创建</button>
-        <button class="things-nav__form-cancel">取消</button>
-      </div>
-    `;
-    container.parentElement!.insertBefore(form, container);
-
-    const input = form.querySelector('input')!;
-    input.focus();
-    const close = () => form.remove();
-    const submit = async () => {
-      const name = input.value.trim();
-      if (!name) { input.focus(); return; }
-      await this.store.areas.createArea({ name });
-      close();
-      showMessage(`区域已创建: ${name}`);
-    };
-    form.querySelector('.things-nav__form-ok')!.addEventListener('click', submit);
-    form.querySelector('.things-nav__form-cancel')!.addEventListener('click', close);
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') submit();
-      if (e.key === 'Escape') close();
     });
   }
 

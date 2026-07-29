@@ -46,7 +46,8 @@
     padding: 6px 12px;
     margin: 0 8px;
     cursor: pointer;
-    transition: background 0.2s;
+    // transform 过渡 → 拖拽挤占动画
+    transition: background 0.2s, transform 0.2s ease;
     font-weight: 600;
     border-radius: 6px;
 
@@ -59,15 +60,11 @@
       color: var(--b3-theme-primary);
     }
 
+    // 与主导航同列对齐：margin 8 + padding 12，图标从 20px 起、文字从 44px 起
     &--sub {
-      padding-left: 28px;
+      padding-left: 12px;
       font-size: 12px;
       font-weight: 500;
-    }
-
-    // "全部项目"总览入口
-    &--all {
-      font-weight: 600;
     }
   }
 
@@ -77,10 +74,11 @@
     margin-right: 8px;
     flex-shrink: 0;
 
+    // 子项小一号图标：14px + 10px 右距，总占位仍为 24px → 文字与 16px 图标行严格同列
     &--sm {
       width: 14px;
       height: 14px;
-      margin-right: 6px;
+      margin-right: 10px;
     }
   }
 
@@ -128,23 +126,33 @@
     margin-top: 18px;
   }
 
+  // 区块头整行可点（= 全部项目/区域/标签 总览入口）
   &__header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 4px 12px;
+    // margin 与导航项一致 → 区块头图标与导航图标同一列
+    margin: 0 8px;
+    padding: 5px 12px;
     font-size: 12px;
     font-weight: 600;
     color: var(--b3-theme-on-surface);
+    cursor: pointer;
+    border-radius: 6px;
+    transition: background 0.15s, color 0.15s;
+
+    &:hover {
+      background: var(--b3-theme-surface-light);
+    }
+
+    &.is-active {
+      color: var(--b3-theme-primary);
+    }
   }
 
   &__header-label {
     display: flex;
     align-items: center;
-
-    .things-nav__icon {
-      margin-right: 6px;
-    }
   }
 
   &__add {
@@ -156,7 +164,7 @@
     align-items: center;
     justify-content: center;
     color: var(--b3-theme-on-surface-light);
-    transition: background 0.15s, color 0.15s;
+    transition: color 0.15s;
 
     svg {
       width: 12px;
@@ -165,165 +173,273 @@
       display: block;
     }
 
+    // 区块头已有 hover 底色，加号只做颜色反馈
     &:hover {
-      background: var(--b3-theme-surface-light);
       color: var(--b3-theme-on-surface);
     }
   }
 
   &__empty {
-    padding: 4px 12px 4px 28px;
+    // 与导航项文字同列（margin 8 + padding 12 + icon 16 + gap 8）
+    padding: 4px 12px 4px 44px;
     font-size: 11px;
     color: var(--b3-theme-on-surface-light);
   }
 
-  // 侧边栏内联创建表单（项目/区域，替代 prompt）
-  &__form {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 8px 12px;
+  // 拖拽落点容器（指引线绝对定位的基准）
+  #things-projects,
+  #things-areas,
+  #things-tags {
+    position: relative;
+  }
+}
+
+// 拖拽幽灵卡片（侧边栏排序时跟随指针）
+.things-drag-ghost {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: none;
+  margin: 0;
+  background: var(--b3-theme-surface);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  opacity: 0.95;
+}
+
+// 拖拽插入位置指引线（侧边栏 + 任务列表共用）
+.things-drag-indicator {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--b3-theme-primary);
+  pointer-events: none;
+  z-index: 40;
+  transition: top 0.15s ease;
+
+  &::before {
+    content: "";
+    position: absolute;
+    left: -3px;
+    top: -2.5px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--b3-theme-primary);
+  }
+}
+
+// 侧边栏交互行（区域/项目/标签通用）：双击改名 + 悬停出现删除
+.things-nav-row {
+  // 双击改名输入框
+  &__input {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    padding: 2px 6px;
+    border: 1px solid var(--b3-theme-primary);
+    border-radius: 4px;
+    outline: none;
+    background: var(--b3-theme-surface);
+    color: var(--b3-theme-on-surface);
   }
 
-  &__form-input,
-  &__form-select {
+  // 删除按钮：占位常驻（visibility 切换，不用 display——避免悬停时布局跳动抖动），
+  // 悬停行时显示；设防中变红
+  &__del {
+    display: flex;
+    visibility: hidden;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 3px;
+    margin-left: 4px;
+    border-radius: 4px;
+    font-size: 13px;
+    line-height: 1;
+    color: var(--b3-theme-on-surface-light);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.15s, color 0.15s, opacity 0.15s;
+
+    &:hover {
+      background: var(--b3-theme-error-light);
+      color: var(--b3-theme-error);
+    }
+
+    &.is-arming {
+      visibility: visible;
+      background: var(--b3-theme-error);
+      color: #fff;
+      font-size: 10px;
+
+      &:hover {
+        color: #fff;
+        opacity: 0.9;
+      }
+    }
+  }
+
+  &:hover .things-nav-row__del {
+    visibility: visible;
+  }
+}
+
+// 标签行专属：色点换色（改名/删除复用 .things-nav-row）
+.things-tag-row {
+  // 悬停效果与其他侧边栏行一致（仅整行底色），色点本身不做放大
+  &__dot {
+    width: 16px;
+    height: 16px;
+    margin-right: 8px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+
+    span {
+      display: block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    // 未设颜色：虚线空点，点击可设色
+    &--empty {
+      span {
+        width: 11px;
+        height: 11px;
+        background: transparent;
+        border: 1.5px dashed var(--b3-theme-on-surface-light);
+      }
+
+      &:hover span {
+        border-color: var(--b3-theme-primary);
+      }
+    }
+  }
+}
+
+// 标签调色板弹层（点色点弹出，挂在 body 上）
+.things-palette-pop {
+  position: fixed;
+  z-index: 9999;
+  display: grid;
+  grid-template-columns: repeat(4, 18px);
+  gap: 8px;
+  padding: 10px;
+  background: var(--b3-theme-surface);
+  border: 1px solid var(--b3-border-color);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  animation: things-card-in 0.15s ease-out;
+
+  &__swatch {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    cursor: pointer;
+    transition: transform 0.12s ease;
+
+    &:hover {
+      transform: scale(1.25);
+    }
+  }
+
+  // "无颜色"选项
+  &__none {
+    background: transparent;
+    border: 1.5px dashed var(--b3-theme-on-surface-light);
+    position: relative;
+
+    &::after {
+      content: "";
+      position: absolute;
+      left: 2px;
+      right: 2px;
+      top: 50%;
+      height: 1.5px;
+      background: var(--b3-theme-on-surface-light);
+      transform: rotate(-45deg);
+    }
+  }
+}
+
+// 侧边栏悬浮创建卡片（项目/区域/标签，挂在 body 上）
+.things-create-card {
+  position: fixed;
+  z-index: 9999;
+  width: 240px;
+  padding: 14px;
+  background: var(--b3-theme-surface);
+  border: 1px solid var(--b3-border-color);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.08);
+  animation: things-card-in 0.15s ease-out;
+
+  &__title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--b3-theme-on-surface);
+    margin-bottom: 10px;
+  }
+
+  // 输入框与下拉框共用同一 class → 宽度严格一致
+  &__field {
+    display: block;
     width: 100%;
-    font-size: 12px;
-    padding: 5px 8px;
+    box-sizing: border-box;
+    font-size: 13px;
+    padding: 8px 10px;
+    margin-bottom: 8px;
     border: 1px solid var(--b3-border-color);
-    border-radius: 6px;
+    border-radius: 8px;
     outline: none;
     background: var(--b3-theme-background);
     color: var(--b3-theme-on-surface);
+    transition: border-color 0.15s;
 
     &:focus {
       border-color: var(--b3-theme-primary);
     }
+
+    &::placeholder {
+      color: var(--b3-theme-on-surface-light);
+    }
   }
 
-  &__form-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 6px;
-  }
-
-  &__form-ok,
-  &__form-cancel {
-    padding: 4px 12px;
+  &__ok {
+    display: block;
+    width: 100%;
+    padding: 8px 10px;
+    margin-top: 4px;
     border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 12px;
-  }
-
-  &__form-ok {
+    border-radius: 8px;
     background: var(--b3-theme-primary);
     color: var(--b3-theme-on-primary);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: opacity 0.15s;
 
     &:hover {
-      opacity: 0.9;
+      opacity: 0.88;
     }
   }
+}
 
-  &__form-cancel {
-    background: transparent;
-    color: var(--b3-theme-on-surface-light);
-
-    &:hover {
-      background: var(--b3-theme-surface-light);
-    }
+@keyframes things-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
   }
-
-  &__tag-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
-  // 拖拽排序中的源项
-  &__item.is-dragging-src {
-    opacity: 0.4;
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
-// 标签右键管理菜单（挂在 body 上，须为顶层选择器）
-.things-ctx-menu {
-  position: fixed;
-  z-index: 9999;
-  min-width: 150px;
-  padding: 6px;
-  background: var(--b3-theme-surface);
-  border: 1px solid var(--b3-border-color);
-  border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
-  font-size: 13px;
-}
-
-.things-ctx-item {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 7px 10px;
-  border-radius: 6px;
-  cursor: pointer;
-  color: var(--b3-theme-on-surface);
-
-  &:hover {
-    background: var(--b3-theme-surface-light);
-  }
-
-  &.is-danger {
-    color: var(--b3-theme-error);
-  }
-}
-
-.things-ctx-sep {
-  height: 1px;
-  background: var(--b3-border-color);
-  margin: 5px 4px;
-}
-
-.things-ctx-palette {
-  display: grid;
-  grid-template-columns: repeat(6, 14px);
-  gap: 6px;
-  margin-top: 6px;
-  width: 100%;
-}
-
-.things-ctx-swatch {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  cursor: pointer;
-  transition: transform 0.1s ease;
-
-  &:hover {
-    transform: scale(1.25);
-  }
-}
-
-// 右键菜单内的子列表（移动到…）
-.things-ctx-sub {
-  width: 100%;
-  max-height: 160px;
-  overflow-y: auto;
-  margin-top: 6px;
-  padding-top: 4px;
-  border-top: 1px solid var(--b3-border-color);
-}
-
-.things-ctx-subitem {
-  padding: 5px 10px;
-  font-size: 12px;
-  border-radius: 6px;
-  cursor: pointer;
-  color: var(--b3-theme-on-surface);
-
-  &:hover {
-    background: var(--b3-theme-surface-light);
-  }
-}
 

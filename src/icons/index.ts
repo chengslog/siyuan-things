@@ -19,7 +19,9 @@ export const VIEW_ICON_MAP: Record<string, string> = {
   log: "iconThingsLog",
   projects: "iconThingsProject",
   project: "iconThingsProject",
+  areas: "iconThingsArea",
   area: "iconThingsArea",
+  tags: "iconThingsTag",
   search: "iconThingsSearch",
 };
 

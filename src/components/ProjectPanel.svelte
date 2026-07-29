@@ -1,7 +1,8 @@
 <script lang="ts">
   /**
-   * 项目页头部面板：进度、截止日期、备注、状态徽章、⋯ 管理菜单
-   * （改名/截止日期/移动区域/完成/暂停/作废/删除——对齐 Things 3 项目管理）。
+   * 项目页头部面板：进度、截止日期、备注、状态徽章、⋯ 管理菜单。
+   * 改名/删除已移到侧边栏项目行（双击改名 / × 删除），菜单只保留面板专属操作：
+   * 截止日期、移动区域、状态切换。截止日期/区域用独立浮动弹层，避免撑大菜单卡片。
    */
   import { createEventDispatcher, onDestroy } from "svelte";
   import type { StoreManager } from "@/stores";
@@ -18,17 +19,14 @@
   const dispatch = createEventDispatcher();
 
   let showMenu = false;
-  let showAreaPicker = false;
-  let showDeadlinePicker = false;
-  let renaming = false;
-  let nameDraft = "";
+  // 独立浮动弹层：'deadline' | 'area' | null（取代菜单内联展开，菜单卡片尺寸稳定）
+  let showPanel: "deadline" | "area" | null = null;
   let editingNotes = false;
   let notesDraft = "";
-  let confirmDelete = false;
   let menuEl: HTMLElement;
 
   onDestroy(() => {
-    document.removeEventListener("click", closeMenuOnOutside);
+    document.removeEventListener("click", closeOnOutside);
   });
 
   $: total = tasks.filter((t) => !t.parentId).length;
@@ -36,6 +34,7 @@
   $: progress = total === 0 ? 0 : Math.round((done / total) * 100);
   $: statusMeta = getStatusMeta(project.status);
   $: deadlineOverdue = project.deadline ? isOverdue(project.deadline) && project.status === "active" : false;
+  $: areas = store.areas.getAll().sort((a, b) => a.order - b.order);
 
   function getStatusMeta(status: ProjectStatus): { label: string; klass: string } | null {
     switch (status) {
@@ -46,24 +45,31 @@
     }
   }
 
-  // —— 菜单开关 ——
+  // —— 菜单 / 弹层开关 ——
   function toggleMenu() {
     showMenu = !showMenu;
-    confirmDelete = false;
-    showAreaPicker = false;
-    if (showMenu) {
-      setTimeout(() => document.addEventListener("click", closeMenuOnOutside), 0);
-    } else {
-      document.removeEventListener("click", closeMenuOnOutside);
+    showPanel = null;
+    syncListener();
+  }
+
+  function openPanel(panel: "deadline" | "area") {
+    showMenu = false;
+    showPanel = panel;
+    syncListener();
+  }
+
+  function syncListener() {
+    document.removeEventListener("click", closeOnOutside);
+    if (showMenu || showPanel) {
+      setTimeout(() => document.addEventListener("click", closeOnOutside), 0);
     }
   }
 
-  function closeMenuOnOutside(e: MouseEvent) {
+  function closeOnOutside(e: MouseEvent) {
     if (menuEl && !menuEl.contains(e.target as HTMLElement)) {
       showMenu = false;
-      confirmDelete = false;
-      showAreaPicker = false;
-      document.removeEventListener("click", closeMenuOnOutside);
+      showPanel = null;
+      document.removeEventListener("click", closeOnOutside);
     }
   }
 
@@ -75,20 +81,6 @@
   }
 
   // —— 管理操作 ——
-  function startRename() {
-    nameDraft = project.name;
-    renaming = true;
-    showMenu = false;
-  }
-
-  async function commitRename() {
-    const name = nameDraft.trim();
-    if (name && name !== project.name) {
-      await store.projects.updateProject(project.id, { name });
-    }
-    renaming = false;
-  }
-
   function startEditNotes() {
     notesDraft = project.notes || "";
     editingNotes = true;
@@ -109,90 +101,36 @@
 
   async function moveToArea(areaId?: string) {
     await store.projects.updateProject(project.id, { areaId });
-    showAreaPicker = false;
-    showMenu = false;
+    showPanel = null;
   }
 
   function handleDeadlineChange(e: CustomEvent) {
     store.projects.updateProject(project.id, { deadline: e.detail.timestamp });
-    showDeadlinePicker = false;
+    showPanel = null;
   }
-
-  async function deleteProject() {
-    // 其下任务清掉 projectId（回归收件箱），子任务随父任务保留、不单独处理
-    for (const t of store.tasks.getProjectTasks(project.id)) {
-      await store.tasks.updateTask(t.id, { projectId: undefined });
-    }
-    await store.projects.delete(project.id);
-    showMenu = false;
-    // 通知外壳导航离开（index.ts 监听 things-navigate）
-    window.dispatchEvent(new CustomEvent("things-navigate", { detail: { view: "inbox" } }));
-  }
-
-  $: areas = store.areas.getAll().sort((a, b) => a.order - b.order);
 </script>
 
 <div class="project-panel" on:click|stopPropagation>
   <!-- 进度行 -->
   <div class="project-panel__row">
-    {#if renaming}
-      <input
-        class="project-panel__rename"
-        type="text"
-        bind:value={nameDraft}
-        on:blur={commitRename}
-        on:keydown={(e) => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") renaming = false; }}
-        autofocus
-      />
-    {:else}
-      <span class="project-panel__progress-text">{done}/{total} 已完成</span>
-      <div class="project-panel__progress-bar">
-        <div class="project-panel__progress-fill" style="width: {progress}%"></div>
-      </div>
-      {#if statusMeta}
-        <span class="project-panel__badge {statusMeta.klass}">{statusMeta.label}</span>
-      {/if}
+    <span class="project-panel__progress-text">{done}/{total} 已完成</span>
+    <div class="project-panel__progress-bar">
+      <div class="project-panel__progress-fill" style="width: {progress}%"></div>
+    </div>
+    {#if statusMeta}
+      <span class="project-panel__badge {statusMeta.klass}">{statusMeta.label}</span>
     {/if}
 
     <!-- ⋯ 管理菜单 -->
     <div class="project-panel__menu-wrap" bind:this={menuEl}>
       <button class="project-panel__menu-btn" title="项目管理" on:click|stopPropagation={toggleMenu}>⋯</button>
+
       {#if showMenu}
         <div class="project-panel__menu">
-          <button class="project-panel__menu-item" on:click={menuAction(startRename)}>修改名称</button>
-          <button class="project-panel__menu-item" on:click={menuAction(() => { showDeadlinePicker = !showDeadlinePicker; showAreaPicker = false; })}>
+          <button class="project-panel__menu-item" on:click={menuAction(() => openPanel("deadline"))}>
             设定截止日期{project.deadline ? "（已有）" : ""}
           </button>
-          <button class="project-panel__menu-item" on:click={menuAction(() => { showAreaPicker = !showAreaPicker; showDeadlinePicker = false; })}>
-            移动到区域 ▸
-          </button>
-
-          {#if showAreaPicker}
-            <div class="project-panel__submenu">
-              <button
-                class="project-panel__menu-item"
-                class:is-selected={!project.areaId}
-                on:click={menuAction(() => moveToArea(undefined))}
-              >无</button>
-              {#each areas as area (area.id)}
-                <button
-                  class="project-panel__menu-item"
-                  class:is-selected={project.areaId === area.id}
-                  on:click={menuAction(() => moveToArea(area.id))}
-                >{area.name}</button>
-              {/each}
-            </div>
-          {/if}
-
-          {#if showDeadlinePicker}
-            <div class="project-panel__submenu">
-              <DeadlinePicker
-                timestamp={project.deadline}
-                on:change={handleDeadlineChange}
-                on:close={() => { showDeadlinePicker = false; }}
-              />
-            </div>
-          {/if}
+          <button class="project-panel__menu-item" on:click={menuAction(() => openPanel("area"))}>移动到区域 ▸</button>
 
           <div class="project-panel__menu-sep"></div>
 
@@ -203,17 +141,35 @@
           {:else}
             <button class="project-panel__menu-item" on:click={menuAction(() => setStatus("active"))}>恢复为活跃</button>
           {/if}
+        </div>
+      {/if}
 
-          <div class="project-panel__menu-sep"></div>
+      <!-- 截止日期弹层（独立浮动，不撑大菜单） -->
+      {#if showPanel === "deadline"}
+        <div class="project-panel__pop">
+          <DeadlinePicker
+            timestamp={project.deadline}
+            on:change={handleDeadlineChange}
+            on:close={() => (showPanel = null)}
+          />
+        </div>
+      {/if}
 
-          {#if confirmDelete}
-            <div class="project-panel__confirm">
-              <p>删除后，项目内任务将移回收件箱。</p>
-              <button class="project-panel__confirm-btn" on:click={menuAction(deleteProject)}>确认删除</button>
-            </div>
-          {:else}
-            <button class="project-panel__menu-item is-danger" on:click={menuAction(() => { confirmDelete = true; })}>删除项目…</button>
-          {/if}
+      <!-- 区域选择弹层 -->
+      {#if showPanel === "area"}
+        <div class="project-panel__pop project-panel__pop--area">
+          <button
+            class="project-panel__menu-item"
+            class:is-selected={!project.areaId}
+            on:click={menuAction(() => moveToArea(undefined))}
+          >无</button>
+          {#each areas as area (area.id)}
+            <button
+              class="project-panel__menu-item"
+              class:is-selected={project.areaId === area.id}
+              on:click={menuAction(() => moveToArea(area.id))}
+            >{area.name}</button>
+          {/each}
         </div>
       {/if}
     </div>
@@ -297,18 +253,6 @@
       }
     }
 
-    &__rename {
-      flex: 1;
-      font-size: 15px;
-      font-weight: 600;
-      border: 1px solid var(--b3-theme-primary);
-      border-radius: 6px;
-      padding: 4px 8px;
-      outline: none;
-      background: var(--b3-theme-surface);
-      color: var(--b3-theme-on-surface);
-    }
-
     &__menu-wrap {
       position: relative;
       margin-left: auto;
@@ -333,7 +277,9 @@
       }
     }
 
-    &__menu {
+    // 菜单与浮动弹层共用的卡片外观
+    &__menu,
+    &__pop {
       position: absolute;
       top: calc(100% + 4px);
       right: 0;
@@ -344,6 +290,11 @@
       border: 1px solid var(--b3-border-color);
       border-radius: 8px;
       box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+    }
+
+    &__pop--area {
+      max-height: 240px;
+      overflow-y: auto;
     }
 
     &__menu-item {
@@ -376,41 +327,6 @@
       height: 1px;
       background: var(--b3-border-color);
       margin: 5px 4px;
-    }
-
-    &__submenu {
-      margin: 4px 0;
-      padding: 4px;
-      border: 1px solid var(--b3-border-color);
-      border-radius: 6px;
-      background: var(--b3-theme-background);
-      max-height: 220px;
-      overflow-y: auto;
-    }
-
-    &__confirm {
-      padding: 8px 10px;
-
-      p {
-        margin: 0 0 8px;
-        font-size: 12px;
-        color: var(--b3-theme-on-surface-light);
-      }
-    }
-
-    &__confirm-btn {
-      width: 100%;
-      padding: 6px 10px;
-      border: none;
-      border-radius: 6px;
-      background: var(--b3-theme-error);
-      color: #fff;
-      font-size: 13px;
-      cursor: pointer;
-
-      &:hover {
-        opacity: 0.9;
-      }
     }
 
     &__meta {
