@@ -3,7 +3,7 @@
   import { fade } from "svelte/transition";
   import type { Task } from "@/types";
   import type { StoreManager } from "@/stores";
-  import { formatDateShort, isOverdue } from "@/utils/date";
+  import { formatRelativeDate, isOverdue } from "@/utils/date";
   import { isTodayDate, isTomorrowDate, formatDateFull } from "@/utils/calendar";
   import DatePicker from "./DatePicker.svelte";
   import DeadlinePicker from "./DeadlinePicker.svelte";
@@ -118,11 +118,33 @@
   let localChecklist: Array<{ id: string; title: string; completed: boolean }> = [];
   $: checklistItems = mode === 'edit' ? localChecklist : checklist;
 
-  // 日期显示
-  $: dateDisplay = getDateDisplay();
-  $: deadlineDisplay = getDeadlineDisplay();
+  // 收缩态：标题下方的所属项目/区域名
+  $: subtitle = getSubtitle(mode, task);
+  // 收缩态：检查清单条数（用于右侧辅助图标）
+  $: checklistCount = (mode === 'edit' ? localChecklist : checklist).filter(i => i.title && i.title.trim()).length;
 
-  function getDateDisplay(): { icon: string; text: string } | null {
+  function getSubtitle(mode: 'create' | 'edit', task: Task | null): string {
+    if (mode !== 'edit' || !task) return "";
+    if (task.projectId) {
+      const p = store.projects.get(task.projectId);
+      if (p) return p.name;
+    }
+    if (task.areaId) {
+      const a = store.areas.get(task.areaId);
+      if (a) return a.name;
+    }
+    return "";
+  }
+
+  // 日期显示
+  // 注意：必须把响应式变量作为参数显式传入。Svelte 的 $: 不会穿透函数调用追踪依赖，
+  // 若写成 getDateDisplay()（无参），只会在组件初始化时计算一次，设置/清除日期后胶囊不会刷新。
+  $: dateDisplay = getDateDisplay(mode, task, startDate, someday);
+  $: deadlineDisplay = getDeadlineDisplay(mode, task, deadline);
+  $: dateReminderDisplay = getDateReminderDisplay(mode, task, startDate);
+  $: deadlineReminderDisplay = getDeadlineReminderDisplay(mode, task, deadline);
+
+  function getDateDisplay(mode: 'create' | 'edit', task: Task | null, startDate: number | undefined, someday: boolean): { icon: string; text: string } | null {
     const date = mode === 'edit' && task ? task.startDate : startDate;
     const isSomeday = mode === 'edit' && task ? task.someday : someday;
 
@@ -130,39 +152,42 @@
     if (!date) return null;
 
     const d = new Date(date);
-    const hasTime = d.getHours() !== 0 || d.getMinutes() !== 0;
     const isTonight = isTodayDate(date) && d.getHours() === 18 && d.getMinutes() === 0;
 
     if (isTonight) return { icon: "🌙", text: "" };
-    if (isTodayDate(date)) {
-      if (hasTime) return { icon: "🗓", text: `今天 ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}` };
-      return { icon: "⭐", text: "" };
-    }
-    if (isTomorrowDate(date)) {
-      if (hasTime) return { icon: "🗓", text: `明天 ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}` };
-      return { icon: "🗓", text: "明天" };
-    }
-    if (hasTime) return { icon: "🗓", text: `${formatDateFull(date)} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}` };
+    if (isTodayDate(date)) return { icon: "⭐", text: "" };
+    if (isTomorrowDate(date)) return { icon: "🗓", text: "明天" };
     return { icon: "🗓", text: formatDateFull(date) };
   }
 
-  function getDeadlineDisplay(): { icon: string; text: string } | null {
+  // 日期提醒（设置了具体时间时单独展示为 🔔 胶囊）
+  function getDateReminderDisplay(mode: 'create' | 'edit', task: Task | null, startDate: number | undefined): { icon: string; text: string } | null {
+    const date = mode === 'edit' && task ? task.startDate : startDate;
+    const isSomeday = mode === 'edit' && task ? task.someday : false;
+    if (isSomeday || !date) return null;
+
+    const d = new Date(date);
+    if (d.getHours() === 0 && d.getMinutes() === 0) return null;
+    return { icon: "🔔", text: `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}` };
+  }
+
+  function getDeadlineDisplay(mode: 'create' | 'edit', task: Task | null, deadline: number | undefined): { icon: string; text: string } | null {
+    const date = mode === 'edit' && task ? task.deadline : deadline;
+    if (!date) return null;
+
+    if (isTodayDate(date)) return { icon: "⚑", text: "今天" };
+    if (isTomorrowDate(date)) return { icon: "⚑", text: "明天" };
+    return { icon: "⚑", text: formatDateFull(date) };
+  }
+
+  // 截止日期提醒（设置了具体时间时单独展示为 🔔 胶囊）
+  function getDeadlineReminderDisplay(mode: 'create' | 'edit', task: Task | null, deadline: number | undefined): { icon: string; text: string } | null {
     const date = mode === 'edit' && task ? task.deadline : deadline;
     if (!date) return null;
 
     const d = new Date(date);
-    const hasTime = d.getHours() !== 0 || d.getMinutes() !== 0;
-
-    if (isTodayDate(date)) {
-      if (hasTime) return { icon: "⚑", text: `今天 ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}` };
-      return { icon: "⚑", text: "今天" };
-    }
-    if (isTomorrowDate(date)) {
-      if (hasTime) return { icon: "⚑", text: `明天 ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}` };
-      return { icon: "⚑", text: "明天" };
-    }
-    if (hasTime) return { icon: "⚑", text: `${formatDateFull(date)} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}` };
-    return { icon: "⚑", text: formatDateFull(date) };
+    if (d.getHours() === 0 && d.getMinutes() === 0) return null;
+    return { icon: "🔔", text: `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}` };
   }
 
   // 卡片点击
@@ -576,34 +601,35 @@
         on:click|stopPropagation
       />
     {:else}
-      <div class="task-card__title" class:is-done={task?.status === "done" || pendingDone}>
-        {task?.title}
+      <div class="task-card__info">
+        <div class="task-card__title" class:is-done={task?.status === "done" || pendingDone}>
+          {task?.title}
+        </div>
+        {#if subtitle}
+          <div class="task-card__subtitle">{subtitle}</div>
+        {/if}
+      </div>
+
+      <!-- 右侧辅助信息（收缩态，弱化显示） -->
+      <div class="task-card__aux">
+        {#if task?.deadline}
+          <span class="task-card__aux-item task-card__aux-deadline" class:is-overdue={isDeadlineOverdue}>
+            <span class="task-card__flag">⚑</span>
+            <span>{formatRelativeDate(task.deadline)}</span>
+          </span>
+        {/if}
+        {#if checklistCount > 0}
+          <span class="task-card__aux-item" title="检查清单">☑ {checklistCount}</span>
+        {/if}
+        {#if task?.notes}
+          <span class="task-card__aux-item" title="备注">📄</span>
+        {/if}
+        {#if task?.tags && task.tags.length > 0}
+          <span class="task-card__aux-item" title="标签">🏷</span>
+        {/if}
       </div>
     {/if}
-
-    <!-- 日期徽章（收缩态） -->
-    {#if mode === 'edit' && !expanded && task?.startDate}
-      <span class="task-card__date-badge">
-        {formatDateShort(task.startDate)}
-      </span>
-    {/if}
   </div>
-
-  <!-- 备注预览（收缩态） -->
-  {#if mode === 'edit' && !expanded && task?.notes}
-    <div class="task-card__notes-preview">
-      {task.notes}
-    </div>
-  {/if}
-
-  <!-- 标签预览（收缩态） -->
-  {#if mode === 'edit' && !expanded && tags.length > 0}
-    <div class="task-card__tags-preview">
-      {#each tags as tag}
-        <span class="task-card__tag">{tag.name}</span>
-      {/each}
-    </div>
-  {/if}
 
   <!-- 展开详情 -->
   {#if expanded}
@@ -665,6 +691,14 @@
             </div>
           {/if}
 
+          <!-- 日期提醒 -->
+          {#if dateReminderDisplay}
+            <div class="task-card__tag-item task-card__tag-item--reminder">
+              <span>{dateReminderDisplay.icon}</span>
+              <span>{dateReminderDisplay.text}</span>
+            </div>
+          {/if}
+
           <!-- 标签 -->
           {#if mode === 'edit' && tags.length > 0}
             <div class="task-card__tag-item">
@@ -691,12 +725,12 @@
 
           <!-- 截止日期 -->
           {#if deadlineDisplay}
-            <div class="task-card__tag-item">
+            <div class="task-card__tag-item" class:is-overdue={isDeadlineOverdue}>
               <button
                 class="task-card__tag-btn"
                 on:click|stopPropagation={() => { showDeadlinePicker = !showDeadlinePicker; showDatePicker = false; showTagPicker = false; }}
               >
-                <span>{deadlineDisplay.icon}</span>
+                <span class="task-card__flag">{deadlineDisplay.icon}</span>
                 <span>{deadlineDisplay.text}</span>
               </button>
               <button class="task-card__tag-remove" on:click|stopPropagation={clearDeadline}>×</button>
@@ -710,6 +744,14 @@
                   />
                 </div>
               {/if}
+            </div>
+          {/if}
+
+          <!-- 截止日期提醒 -->
+          {#if deadlineReminderDisplay}
+            <div class="task-card__tag-item task-card__tag-item--reminder">
+              <span>{deadlineReminderDisplay.icon}</span>
+              <span>{deadlineReminderDisplay.text}</span>
             </div>
           {/if}
         </div>
@@ -737,6 +779,44 @@
                 </div>
               {/if}
             </div>
+          {/if}
+
+          <!-- 截止日期（未设置时） -->
+          {#if !deadlineDisplay}
+            <div class="task-card__action-group">
+              <button
+                class="task-card__tool-btn"
+                title="设置截止日期"
+                on:click|stopPropagation={() => { showDeadlinePicker = !showDeadlinePicker; showDatePicker = false; showTagPicker = false; }}
+              >
+                <span>⚑</span>
+              </button>
+
+              {#if showDeadlinePicker}
+                <div class="task-card__dropdown task-card__dropdown--right">
+                  <DeadlinePicker
+                    timestamp={mode === 'edit' && task ? task.deadline : deadline}
+                    on:change={handleDeadlineChange}
+                    on:close={() => showDeadlinePicker = false}
+                  />
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- 检查清单（新建模式） -->
+          {#if mode === 'create'}
+            <button
+              class="task-card__tool-btn"
+              class:is-active={showChecklist}
+              on:click={() => showChecklist = !showChecklist}
+            >
+              <span>☷</span>
+            </button>
+          {:else}
+            <button class="task-card__tool-btn" title="添加子任务" on:click|stopPropagation={addSubTask}>
+              <span>☷</span>
+            </button>
           {/if}
 
           <!-- 标签（未设置时） -->
@@ -783,44 +863,6 @@
             </div>
           {/if}
 
-          <!-- 截止日期（未设置时） -->
-          {#if !deadlineDisplay}
-            <div class="task-card__action-group">
-              <button
-                class="task-card__tool-btn"
-                title="设置截止日期"
-                on:click|stopPropagation={() => { showDeadlinePicker = !showDeadlinePicker; showDatePicker = false; showTagPicker = false; }}
-              >
-                <span>⚑</span>
-              </button>
-
-              {#if showDeadlinePicker}
-                <div class="task-card__dropdown task-card__dropdown--right">
-                  <DeadlinePicker
-                    timestamp={mode === 'edit' && task ? task.deadline : deadline}
-                    on:change={handleDeadlineChange}
-                    on:close={() => showDeadlinePicker = false}
-                  />
-                </div>
-              {/if}
-            </div>
-          {/if}
-
-          <!-- 检查清单（新建模式） -->
-          {#if mode === 'create'}
-            <button
-              class="task-card__tool-btn"
-              class:is-active={showChecklist}
-              on:click={() => showChecklist = !showChecklist}
-            >
-              <span>☷</span>
-            </button>
-          {:else}
-            <button class="task-card__tool-btn" title="添加子任务" on:click|stopPropagation={addSubTask}>
-              <span>☷</span>
-            </button>
-          {/if}
-
           <!-- 删除（编辑模式） -->
           {#if mode === 'edit'}
             <button class="task-card__tool-btn task-card__tool-btn--delete" title="删除" on:click|stopPropagation={handleDelete}>
@@ -837,12 +879,11 @@
   .task-card {
     background: transparent;
     border: none;
-    border-bottom: 1px solid #f3f4f6;
-    border-radius: 0;
-    padding: 10px 0;
-    margin-bottom: 0;
+    border-radius: 8px;
+    padding: 10px;
+    margin-bottom: 2px;
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: background-color 0.15s ease;
 
     &:hover {
       background: #f9fafb;
@@ -894,17 +935,60 @@
 
     &__header {
       display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    &__info {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    &__subtitle {
+      font-size: 13px;
+      font-weight: 400;
+      color: #9ca3af;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    &__aux {
+      display: flex;
       align-items: center;
       gap: 10px;
+      flex-shrink: 0;
+      align-self: center;
+    }
+
+    &__aux-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      font-size: 12px;
+      color: #9ca3af;
+      white-space: nowrap;
+    }
+
+    &__aux-deadline {
+      color: #dc2626;
+
+      &.is-overdue {
+        font-weight: 600;
+      }
     }
 
     &__check {
       flex-shrink: 0;
-      width: 16px;
-      height: 16px;
+      width: 18px;
+      height: 18px;
+      margin-top: 2px;
       padding: 0;
       border: 1.5px solid #d1d5db;
-      border-radius: 4px;
+      border-radius: 5px;
       background: transparent;
       cursor: pointer;
       display: flex;
@@ -930,16 +1014,16 @@
 
     &__check-placeholder {
       flex-shrink: 0;
-      width: 16px;
-      height: 16px;
+      width: 18px;
+      height: 18px;
+      margin-top: 2px;
       border: 1.5px solid #d1d5db;
-      border-radius: 4px;
+      border-radius: 5px;
     }
 
     &__title {
-      flex: 1;
-      font-size: 15px;
-      font-weight: 600;
+      font-size: 16px;
+      font-weight: 500;
       color: #1f2937;
       white-space: nowrap;
       overflow: hidden;
@@ -1083,6 +1167,26 @@
       padding: 2px 4px 2px 8px;
       font-size: 12px;
       position: relative;
+
+      &--reminder {
+        gap: 4px;
+        padding: 2px 8px;
+        background: #fef3c7;
+        color: #b45309;
+        font-variant-numeric: tabular-nums;
+      }
+
+      &.is-overdue {
+        background: #fee2e2;
+
+        .task-card__tag-btn {
+          color: #dc2626;
+        }
+      }
+    }
+
+    &__flag {
+      color: #dc2626;
     }
 
     &__tag-btn {

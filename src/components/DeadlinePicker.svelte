@@ -24,9 +24,9 @@
   let calendarYear = new Date().getFullYear();
   let showTimePicker = false;
 
-  // 时间状态
-  let selectedHour = 18;
-  let selectedMinute = 0;
+  // 时间状态（若已有截止时间则回显其时分，否则默认 18:00 即“今晚”）
+  let selectedHour = timestamp ? new Date(timestamp).getHours() : 18;
+  let selectedMinute = timestamp ? new Date(timestamp).getMinutes() : 0;
 
   // 日历数据
   $: calendarDays = generateCalendar(calendarYear, calendarMonth);

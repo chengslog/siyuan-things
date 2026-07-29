@@ -88,7 +88,35 @@
   // 按日期分组
   $: groupedTasks = groupTasks(sortedTasks, view);
 
+  // 判断是否为“今晚”任务（今天 18:00）
+  function isThisEvening(ts?: number): boolean {
+    if (!ts) return false;
+    const d = new Date(ts);
+    const now = new Date();
+    return (
+      d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() &&
+      d.getDate() === now.getDate() &&
+      d.getHours() === 18 &&
+      d.getMinutes() === 0
+    );
+  }
+
   function groupTasks(tasks: Task[], view: ViewType): Map<string, Task[]> {
+    // 今天视图：拆分为“今天”和“今晚”两组
+    if (view === "today") {
+      const day: Task[] = [];
+      const evening: Task[] = [];
+      for (const t of tasks) {
+        if (isThisEvening(t.startDate)) evening.push(t);
+        else day.push(t);
+      }
+      const map = new Map<string, Task[]>();
+      if (day.length) map.set("今天", day);
+      if (evening.length) map.set("今晚", evening);
+      return map;
+    }
+
     if (view !== "upcoming") {
       return new Map([["all", tasks]]);
     }
@@ -219,6 +247,7 @@
 <div class="task-list">
   <!-- 大标题 -->
   <div class="task-list__header">
+    <span class="task-list__title-icon">{viewIcon}</span>
     <h1 class="task-list__title">{viewTitle}</h1>
   </div>
 
@@ -259,6 +288,11 @@
       {#each [...groupedTasks.entries()] as [group, groupTasks]}
         {#if view === "upcoming" && groupedTasks.size > 1}
           <div class="task-list__group">{group}</div>
+        {:else if view === "today" && group === "今晚"}
+          <div class="task-list__group task-list__group--evening">
+            <span class="task-list__group-icon">🌙</span>
+            <span>今晚</span>
+          </div>
         {/if}
         <DragSort
           bind:this={dragSortRef}
@@ -330,12 +364,20 @@
     padding: 0 48px;
 
     &__header {
-      padding: 24px 0 16px 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 56px 0 28px 24px;
       flex-shrink: 0;
     }
 
+    &__title-icon {
+      font-size: 30px;
+      line-height: 1;
+    }
+
     &__title {
-      font-size: 28px;
+      font-size: 30px;
       font-weight: 700;
       color: var(--b3-theme-on-background);
       margin: 0;
@@ -362,6 +404,25 @@
       background: var(--b3-theme-surface);
       border-bottom: 1px solid var(--b3-border-color);
       text-transform: uppercase;
+
+      &--evening {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 32px;
+        padding: 8px 12px;
+        font-size: 18px;
+        font-weight: 700;
+        color: var(--b3-theme-on-background);
+        background: transparent;
+        border-bottom: 1px solid var(--b3-border-color);
+        text-transform: none;
+      }
+    }
+
+    &__group-icon {
+      font-size: 20px;
+      line-height: 1;
     }
 
     &__empty {

@@ -52,7 +52,8 @@
       "Bash(rm -rf \"D:/siyuan/data/history/.cache/\")",
       "Bash(rm -rf \"C:/Users/Administrator/.siyuan/cache/\")",
       "Bash(mkdir -p \"D:/siyuan/data/plugins/siyuan-things/\")",
-      "Bash(git commit -m '更新插件图标为 todo_logo *)"
+      "Bash(git commit -m '更新插件图标为 todo_logo *)",
+      "Bash(cp -rf dist/. /d/siyuan/data/plugins/siyuan-things/)"
     ],
     "additionalDirectories": [
       "C:\\Users\\Administrator\\Downloads\\icon"
