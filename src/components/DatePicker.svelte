@@ -7,12 +7,10 @@
     isCalendarSelected,
     prevMonth,
     nextMonth,
-    calendarToDate,
-    isTodayDate,
-    isTomorrowDate,
-    formatDateFull
+    calendarToDate
   } from "@/utils/calendar";
   import TimePicker from "./TimePicker.svelte";
+  import { Icon, ICON_COLORS } from "@/icons";
 
   export let timestamp: number | undefined = undefined;
   export let showClear: boolean = true;
@@ -30,30 +28,6 @@
 
   // 日历数据
   $: calendarDays = generateCalendar(calendarYear, calendarMonth);
-
-  // 获取按钮显示文本
-  function getButtonText(): { icon: string; text: string } {
-    if (!timestamp) {
-      return { icon: "⭐", text: "今天" };
-    }
-
-    if (isTodayDate(timestamp)) {
-      return { icon: "⭐", text: "今天" };
-    }
-
-    if (isTomorrowDate(timestamp)) {
-      return { icon: "⭐", text: "明天" };
-    }
-
-    const date = new Date(timestamp);
-    if (date.getHours() !== 0 || date.getMinutes() !== 0) {
-      return { icon: "⭐", text: `${formatDateFull(timestamp)} ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}` };
-    }
-
-    return { icon: "⭐", text: formatDateFull(timestamp) };
-  }
-
-  $: buttonText = getButtonText();
 
   function handlePrevMonth() {
     const prev = prevMonth(calendarYear, calendarMonth);
@@ -115,13 +89,13 @@
 <div class="date-picker" on:click|stopPropagation>
   <!-- 今天 -->
   <button class="date-picker__option" on:click={(e) => { e.stopPropagation(); handleQuickOption("today"); }}>
-    <span class="date-picker__icon">⭐</span>
+    <span class="date-picker__icon"><Icon name="iconThingsStarFilled" size={16} color={ICON_COLORS.today} /></span>
     <span class="date-picker__label">今天</span>
   </button>
 
   <!-- 今晚 -->
   <button class="date-picker__option" on:click={(e) => { e.stopPropagation(); handleQuickOption("tonight"); }}>
-    <span class="date-picker__icon">🌙</span>
+    <span class="date-picker__icon"><Icon name="iconThingsMoonFilled" size={16} color={ICON_COLORS.tonight} /></span>
     <span class="date-picker__label">今晚</span>
   </button>
 
@@ -158,7 +132,7 @@
 
   <!-- 某天 -->
   <button class="date-picker__option" on:click={(e) => { e.stopPropagation(); handleQuickOption("someday"); }}>
-    <span class="date-picker__icon">💭</span>
+    <span class="date-picker__icon"><Icon name="iconThingsSomeday" size={16} /></span>
     <span class="date-picker__label">某天</span>
   </button>
 
@@ -166,7 +140,7 @@
 
   <!-- 添加提醒 -->
   <button class="date-picker__option" on:click={(e) => { e.stopPropagation(); showTimePicker = !showTimePicker; }}>
-    <span class="date-picker__icon">🔔</span>
+    <span class="date-picker__icon"><Icon name="iconThingsBell" size={16} /></span>
     <span class="date-picker__label">+添加提醒</span>
   </button>
 
@@ -184,7 +158,7 @@
   {#if showClear && timestamp}
     <div class="date-picker__separator"></div>
     <button class="date-picker__option date-picker__option--clear" on:click={(e) => { e.stopPropagation(); handleQuickOption("clear"); }}>
-      <span class="date-picker__icon">✕</span>
+      <span class="date-picker__icon"><Icon name="iconThingsX" size={16} /></span>
       <span class="date-picker__label">清除</span>
     </button>
   {/if}

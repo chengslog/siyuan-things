@@ -13,6 +13,8 @@ import { TaskStoreDB } from "@/stores/taskStoreDB";
 import type { ViewType, PluginConfig } from "@/types";
 import { DEFAULT_CONFIG } from "@/types";
 import { SettingUtils } from "./libs/setting-utils";
+import { ICON_SPRITE, getViewIconId } from "@/icons";
+import { TAG_PALETTE, nextTagColor } from "@/utils/colors";
 
 const STORAGE_NAME = "things-config";
 const TAB_TYPE = "things_tab";
@@ -30,118 +32,7 @@ export default class ThingsPlugin extends Plugin {
 
     this.store = new StoreManager(this);
 
-    this.addIcons(`
-      <symbol id="iconThings" viewBox="0 0 512 512">
-        <defs>
-          <linearGradient id="todoCheckGradient" x1="120" y1="120" x2="180" y2="380" gradientUnits="userSpaceOnUse">
-            <stop stop-color="#5BEA72"/>
-            <stop offset="1" stop-color="#19B957"/>
-          </linearGradient>
-          <linearGradient id="todoLineGradient" x1="250" y1="120" x2="400" y2="380" gradientUnits="userSpaceOnUse">
-            <stop stop-color="#71849A"/>
-            <stop offset="1" stop-color="#91A5B8"/>
-          </linearGradient>
-        </defs>
-        <rect x="24" y="24" width="464" height="464" rx="96" style="fill:#F7FAFD"/>
-        <path d="M92 157 L139 204 L214 124" style="stroke:url(#todoCheckGradient);fill:none" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
-        <rect x="260" y="143" width="168" height="28" rx="14" style="fill:url(#todoLineGradient)"/>
-        <path d="M92 269 L139 316 L214 236" style="stroke:url(#todoCheckGradient);fill:none" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
-        <rect x="260" y="255" width="168" height="28" rx="14" style="fill:url(#todoLineGradient)"/>
-        <circle cx="153" cy="390" r="34" style="stroke:#8FA3B7;fill:none" stroke-width="14"/>
-        <rect x="260" y="376" width="168" height="28" rx="14" style="fill:#AFC0CF"/>
-      </symbol>
-      <symbol id="iconInbox" viewBox="0 0 1024 1024">
-        <path d="M928 224V128h-32V96h-96v32h-32v9.28a224 224 0 0 0-179.2 22.72H544V96h-96v64h-64v192H192a96 96 0 0 0-96 96v384a96 96 0 0 0 96 96h640a96 96 0 0 0 96-96V448a96 96 0 0 0-7.68-37.76A225.6 225.6 0 0 0 928 352a224 224 0 0 0-32-115.2V224z" style="fill:#FFFFFF"/>
-        <path d="M704 352m-192 0a192 192 0 1 0 384 0 192 192 0 1 0-384 0Z" style="fill:#E9EAEB"/>
-        <path d="M832 384h-224v-64h-192v64H192a64 64 0 0 0-64 64v384a64 64 0 0 0 64 64h640a64 64 0 0 0 64-64V448a64 64 0 0 0-64-64z" style="fill:#FFFFFF"/>
-        <path d="M704 640v128H320v-128H128v192a64 64 0 0 0 64 64h640a64 64 0 0 0 64-64v-192z" style="fill:#A3D4FF"/>
-        <path d="M832 384h-160v32h160a32 32 0 0 1 32 32v192h-160v128H320v-128H160v-192a32 32 0 0 1 32-32h160v-32H192a64 64 0 0 0-64 64v384a64 64 0 0 0 64 64h640a64 64 0 0 0 64-64V448a64 64 0 0 0-64-64z m-96 480H192a32 32 0 0 1-32-32v-160h128v128h448v-128h128v160a32 32 0 0 1-32 32z" style="fill:#2A5082"/>
-        <path d="M512 672l192-192H320l192 192z" style="fill:#A3D4FF"/>
-        <path d="M608 288h-32V256h32zM512 672l192-192h-96v-160h-32v160h-128V256h-32v224h-96z m114.88-160L512 626.88 397.12 512zM448 224h-32V192h32zM512 160h-32V128h32zM608 224h-32V192h32z" style="fill:#2A5082"/>
-        <path d="M512 384h-32V224h32z" style="fill:#2A5082"/>
-        <path d="M800 160h96v32h-96z" style="fill:#BCC0C4"/>
-        <path d="M864 128v96h-32V128zM832 288h-32V256h-32v32h-32v32h32v32h32v-32h32V288z" style="fill:#BCC0C4"/>
-      </symbol>
-      <symbol id="iconToday" viewBox="0 0 1024 1024">
-        <path d="M512 85.9l138.4 280.5 309.6 45-224 218.4 52.9 308.3L512 792.5 235.1 938.1 288 629.8 64 411.4l309.6-45z" style="fill:#FFD400"/>
-      </symbol>
-      <symbol id="iconCalendar" viewBox="0 0 1024 1024">
-        <path d="M912.256 279.808v466.304c0 105.728-85.632 191.488-191.488 191.488H254.464c-105.728 0-191.488-85.76-191.488-191.488V279.808C62.976 174.08 148.736 88.32 254.464 88.32h466.304c105.856 0 191.488 85.76 191.488 191.488z" style="fill:#FFFFFF"/>
-        <path d="M912.384 279.808v25.6H63.104v-25.6C63.104 174.08 148.864 88.32 254.592 88.32h466.304c105.856 0 191.488 85.76 191.488 191.488z" style="fill:#FF4D3C"/>
-        <path d="M388.736 431.616m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M487.68 431.616m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M586.624 431.616m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M685.696 431.616m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M784.64 431.616m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M190.72 543.616m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M289.792 543.616m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M388.736 543.616m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M487.68 543.616m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M586.624 543.616m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M685.696 543.616m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M784.64 543.616m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M190.72 655.616m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M289.792 655.616m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M388.736 655.616m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M487.68 655.616m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M586.624 655.616m-46.848 0a46.848 46.848 0 1 0 93.696 0 46.848 46.848 0 1 0-93.696 0Z" style="fill:#FF4D3C"/>
-        <path d="M685.696 655.616m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M784.64 655.616m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M190.72 767.488m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M289.792 767.488m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M388.736 767.488m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M487.68 767.488m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-        <path d="M586.624 767.488m-21.504 0a21.504 21.504 0 1 0 43.008 0 21.504 21.504 0 1 0-43.008 0Z" style="fill:#100311"/>
-      </symbol>
-      <symbol id="iconAnytime" viewBox="0 0 1024 1024">
-        <path d="M563.8144 559.872m-360.1408 0a360.1408 360.1408 0 1 0 720.2816 0 360.1408 360.1408 0 1 0-720.2816 0Z" style="fill:#9FA7FF"/>
-        <path d="M600.0128 596.0704m-323.9936 0a323.9936 323.9936 0 1 0 647.9872 0 323.9936 323.9936 0 1 0-647.9872 0Z" style="fill:#8891FF"/>
-        <path d="M637.0304 622.4896m-281.6512 0a281.6512 281.6512 0 1 0 563.3024 0 281.6512 281.6512 0 1 0-563.3024 0Z" style="fill:#6E75FF"/>
-        <path d="M514.9696 928.4096a417.9456 417.9456 0 1 1 417.9456-417.9456 418.4064 418.4064 0 0 1-417.9456 417.9456z m0-774.4512a356.5056 356.5056 0 1 0 356.5056 356.5056 356.9152 356.9152 0 0 0-356.5056-356.5056z" style="fill:#2E3138"/>
-        <path d="M676.096 594.3296H477.7984a50.7392 50.7392 0 0 1-50.6368-50.6368V378.1632a30.72 30.72 0 0 1 61.44 0v154.7264h187.4944a30.72 30.72 0 0 1 0 61.44z" style="fill:#2E3138"/>
-      </symbol>
-      <symbol id="iconSomeday" viewBox="0 0 1024 1024">
-        <path d="M133.0176 202.1888m147.0464 0l464.7424 0q147.0464 0 147.0464 147.0464l0 400.5888q0 147.0464-147.0464 147.0464l-464.7424 0q-147.0464 0-147.0464-147.0464l0-400.5888q0-147.0464 147.0464-147.0464Z" style="fill:#FF6464"/>
-        <path d="M744.8064 202.1888h-91.8016a147.0464 147.0464 0 0 1 147.0464 147.0464v400.5888a147.0464 147.0464 0 0 1-147.0464 147.0464h91.8016a147.0464 147.0464 0 0 0 147.0976-147.0464V349.2352a147.0464 147.0464 0 0 0-147.0976-147.0464z" style="fill:#FF4436"/>
-        <path d="M744.8064 912.2304H280.1152A162.6112 162.6112 0 0 1 117.76 749.824V349.2352a162.6112 162.6112 0 0 1 162.3552-162.4064h464.6912a162.6624 162.6624 0 0 1 162.4576 162.4064v400.5888a162.6624 162.6624 0 0 1-162.4576 162.4064zM280.1152 217.5488A131.84 131.84 0 0 0 148.48 349.2352v400.5888a131.84 131.84 0 0 0 131.7376 131.6864h464.6912a131.84 131.84 0 0 0 131.7376-131.6864V349.2352a131.84 131.84 0 0 0-131.7376-131.6864z" style="fill:#333333"/>
-        <path d="M709.5296 412.9792H313.4464a15.36 15.36 0 0 1 0-30.72h396.0832a15.36 15.36 0 0 1 0 30.72z" style="fill:#333333"/>
-        <path d="M323.8912 116.8896m52.2752 0l0.0512 0q52.2752 0 52.2752 52.2752l0 88.2688q0 52.2752-52.2752 52.2752l-0.0512 0q-52.2752 0-52.2752-52.2752l0-88.2688q0-52.2752 52.2752-52.2752Z" style="fill:#F1D000"/>
-        <path d="M376.1664 116.8896a51.968 51.968 0 0 0-21.8624 5.12A52.224 52.224 0 0 1 384.6656 168.96v88.4736a52.224 52.224 0 0 1-30.3616 47.4112 52.1728 52.1728 0 0 0 74.1888-47.4112V168.96a52.3264 52.3264 0 0 0-52.3264-52.0704z" style="fill:#F2B200"/>
-        <path d="M585.3184 116.8896m52.2752 0l0.0512 0q52.2752 0 52.2752 52.2752l0 88.2688q0 52.2752-52.2752 52.2752l-0.0512 0q-52.2752 0-52.2752-52.2752l0-88.2688q0-52.2752 52.2752-52.2752Z" style="fill:#F1D000"/>
-        <path d="M637.7984 116.8896a52.224 52.224 0 0 0-21.9136 5.12 52.2752 52.2752 0 0 1 30.4128 46.9504v88.4736a52.2752 52.2752 0 0 1-30.4128 47.4112 52.1728 52.1728 0 0 0 74.1888-47.4112V168.96a52.2752 52.2752 0 0 0-52.2752-52.0704z" style="fill:#F2B200"/>
-        <path d="M376.1664 325.0688a67.7376 67.7376 0 0 1-67.6352-67.6352V168.96a67.6352 67.6352 0 0 1 135.2704 0v88.4736a67.6864 67.6864 0 0 1-67.6352 67.6352z m0-192.8192A37.0176 37.0176 0 0 0 339.2512 168.96v88.4736a36.9152 36.9152 0 0 0 73.8304 0V168.96a36.9664 36.9664 0 0 0-36.9152-36.7104zM637.6448 325.0688a67.7376 67.7376 0 0 1-67.6864-67.6352V168.96a67.6864 67.6864 0 0 1 135.3216 0v88.4736a67.7376 67.7376 0 0 1-67.6352 67.6352z m0-192.8192a37.0176 37.0176 0 0 0-36.9664 36.7104v88.4736a36.9664 36.9664 0 0 0 73.8816 0V168.96a37.0176 37.0176 0 0 0-36.9152-36.7104z" style="fill:#333333"/>
-        <path d="M420.608 725.4528a15.36 15.36 0 0 1-15.36-15.36V527.36l-49.9712 23.5008a15.36 15.36 0 1 1-13.056-27.8016l71.68-33.792a15.36 15.36 0 0 1 21.8624 13.9264v206.9504a15.36 15.36 0 0 1-15.1552 15.3088zM605.184 719.9232c-28.0576 0-63.7952-10.24-77.9776-58.4192l-0.3584-1.1264a15.36 15.36 0 0 1 29.3888-9.0624l0.4096 1.4848c4.6592 15.6672 14.6944 36.4032 48.5376 36.4032 24.7296-3.072 40.3968-14.0288 46.5408-32.6144 6.8096-20.48 0-45.3632-11.1616-55.552-30.4128-27.136-59.5456 0.768-62.7712 4.0448a15.36 15.36 0 0 1-11.008 4.7104h-20.9408a15.36 15.36 0 0 1-15.36-16.9472l9.7792-94.1568a15.36 15.36 0 0 1 15.36-13.7728H665.6a15.36 15.36 0 0 1 0 30.72h-95.8464l-6.4 61.44c21.0432-16.8448 60.4672-32.3072 98.2016 1.3312 21.2992 20.0192 29.5424 57.6512 19.5584 87.9104-5.7856 17.5104-22.9376 47.7696-72.9088 53.5552h-1.5872z" style="fill:#FFFFFF"/>
-        <path d="M567.3472 820.0704H307.5584a15.36 15.36 0 1 1 0-30.72h259.7888a15.36 15.36 0 1 1 0 30.72zM714.4448 820.0704h-58.8288a15.36 15.36 0 0 1 0-30.72h58.8288a15.36 15.36 0 0 1 0 30.72z" style="fill:#333333"/>
-      </symbol>
-      <symbol id="iconLog" viewBox="0 0 1024 1024">
-        <path d="M857.6 25.6a76.8 76.8 0 0 1 76.8 76.8v819.2a76.8 76.8 0 0 1-76.8 76.8H166.4a76.8 76.8 0 0 1-76.8-76.8V102.4a76.8 76.8 0 0 1 76.8-76.8h691.2zM716.8 704H307.2l-2.2528 0.064a38.4 38.4 0 0 0 0 76.672L307.2 780.8h409.6l2.2528-0.064a38.4 38.4 0 0 0 0-76.672L716.8 704z m0-460.8H307.2l-2.2528 0.064a38.4 38.4 0 0 0 0 76.672L307.2 320h409.6l2.2528-0.064a38.4 38.4 0 0 0 0-76.672L716.8 243.2z" style="fill:#6B57FE"/>
-        <path d="M563.2 473.6a38.4 38.4 0 0 1 2.2528 76.736L563.2 550.4H307.2a38.4 38.4 0 0 1-2.2528-76.736L307.2 473.6h256z" style="fill:#FFBA00"/>
-      </symbol>
-      <symbol id="iconArea" viewBox="0 0 1024 1024">
-        <path d="M0 0m128 0l768 0q128 0 128 128l0 768q0 128-128 128l-768 0q-128 0-128-128l0-768q0-128 128-128Z" style="fill:#EDF3FF"/>
-        <path d="M517.28 483.68c14.08-5.6 35.104-4.704 46.944 1.92L864 654.592l-357.28 141.76c-14.08 5.6-35.104 4.704-46.944-1.92L160 625.408l357.28-141.76z" style="fill:#FFFFFF"/>
-        <path d="M517.28 355.68c14.08-5.6 35.104-4.704 46.944 1.92L864 526.592l-357.28 141.76c-14.08 5.6-35.104 4.704-46.944-1.92L160 497.408l357.28-141.76z" style="fill:#B2CDFF"/>
-        <path d="M517.28 227.68c14.08-5.6 35.104-4.704 46.944 1.92L864 398.592l-357.28 141.76c-14.08 5.6-35.104 4.704-46.944-1.92L160 369.408l357.28-141.76z" style="fill:#4A87FA"/>
-      </symbol>
-      <symbol id="iconProject" viewBox="0 0 1024 1024">
-        <path d="M511.999693 0c282.76719 0 511.999693 229.232502 511.999693 511.999693s-229.232502 511.999693-511.999693 511.999693S0 794.766883 0 511.999693 229.232502 0 511.999693 0z" style="fill:#F95D81"/>
-        <path d="M456.857326 916.37705c227.952503-37.990377 369.223458 0 369.223458 0A509.787854 509.787854 0 0 1 511.999693 1023.999386c-176.609174 0-332.328761-89.415626-424.365826-225.453945 0 0.39936 141.270955 155.821987 369.223459 117.831609z" style="fill:#FFFFFF" fill-opacity=".2" opacity=".6"/>
-        <path d="M511.733453 854.773247c-288.706387-40.785896-342.169395 38.103017-342.169395 38.103017C260.239204 974.396855 380.200732 1023.999386 511.733453 1023.999386c176.609174 0 332.328761-89.415626 424.365825-225.453945 0 0.39936-135.659439 97.003462-424.365825 56.217566z" style="fill:#FFFFFF" fill-opacity=".16" opacity=".6"/>
-        <path d="M501.001939 278.650713c4.874237-2.877438 12.718072-2.908158 17.65375 0l230.655861 136.109998c4.894717 2.867198 4.935677 7.516155 0 10.424314L518.655689 561.284783c-4.884477 2.887678-12.718072 2.918398-17.66399 0L270.335838 425.174785c-4.884477-2.867198-4.935677-7.516155 0-10.424314l230.655861-136.089518z m17.63327 47.267811c-4.863997-2.867198-12.799992-2.846718-17.61279 0l-150.589349 88.852427c-4.863997 2.867198-4.812797 7.557115 0 10.393594l150.589349 88.852427c4.863997 2.867198 12.799992 2.856958 17.61279 0l150.579109-88.852427c4.863997-2.867198 4.812797-7.546875 0-10.383354l-150.579109-88.872907v0.01024z m208.025475 178.278293a20.357108 20.357108 0 1 1 20.479988 35.194859L531.035841 665.169521c-11.202553 6.512636-26.869744 6.533116-38.113257 0L276.787034 539.391676a20.357108 20.357108 0 1 1 20.479988-35.194859l205.885316 119.807929c4.874237 2.836478 12.728312 2.856958 17.63327 0l205.885316-119.818169z m0 91.617226a20.357108 20.357108 0 1 1 20.479988 35.194858L531.035841 756.786746c-11.202553 6.512636-26.869744 6.533116-38.113257 0L276.787034 631.008901a20.357108 20.357108 0 1 1 20.479988-35.194858l205.885316 119.807928c4.874237 2.836478 12.728312 2.867198 17.63327 0l205.885316-119.807928z" style="fill:#FFFFFF"/>
-      </symbol>
-      <symbol id="iconAdd" viewBox="0 0 32 32">
-        <path d="M16 4v12h12v4H16v12h-4V20H0v-4h12V4h4z"/>
-      </symbol>
-      <symbol id="iconSearch" viewBox="0 0 32 32">
-        <path d="M22 20.59l4.59 4.59L24.59 27 20 22.41V22a10 10 0 110-20 10 10 0 110 20v.59zM14 22a8 8 0 100-16 8 8 0 000 16z"/>
-      </symbol>
-      <symbol id="iconCheck" viewBox="0 0 32 32">
-        <path d="M13.667 21.333l-6.667-6.667 1.88-1.88 4.787 4.787 9.56-9.56 1.88 1.88-11.44 11.44z"/>
-      </symbol>
-      <symbol id="iconCircle" viewBox="0 0 32 32">
-        <circle cx="16" cy="16" r="12" fill="none" stroke="currentColor" stroke-width="2"/>
-      </symbol>
-    `);
+    this.addIcons(ICON_SPRITE);
 
     const pluginInstance = this;
 
@@ -222,6 +113,28 @@ export default class ThingsPlugin extends Plugin {
     });
 
     this.eventBus.on("click-blockicon", this.blockIconEvent.bind(this));
+
+    // 面板级导航（如项目删除后跳回收件箱）：组件 dispatch window 事件，外壳执行切换
+    window.addEventListener("things-navigate", ((e: CustomEvent) => {
+      const detail = e.detail || {};
+      if (detail.view) {
+        this.openThingsTab(detail.view, detail.viewId);
+        if (this.dockElement) this.setActive(this.dockElement, detail.view);
+      }
+    }) as EventListener);
+
+    // 项目/区域变更 → 侧边栏实时刷新（改名、删除、完成、暂停都同步）
+    const refreshDock = () => {
+      if (this.dockElement) {
+        this.renderProjects(this.dockElement);
+        this.renderAreas(this.dockElement);
+        this.renderTags(this.dockElement);
+        this.updateCounts(this.dockElement);
+      }
+    };
+    this.store.projects.on(refreshDock);
+    this.store.areas.on(refreshDock);
+    this.store.tags.on(refreshDock);
 
     this.settingUtils = new SettingUtils({
       plugin: this,
@@ -317,13 +230,17 @@ export default class ThingsPlugin extends Plugin {
    * 渲染停靠栏
    */
   private renderDock(element: HTMLElement) {
-    const navItems = [
-      { view: "inbox" as ViewType, icon: "iconInbox", label: "收件箱" },
-      { view: "today" as ViewType, icon: "iconToday", label: "今天" },
-      { view: "upcoming" as ViewType, icon: "iconCalendar", label: "计划" },
-      { view: "anytime" as ViewType, icon: "iconAnytime", label: "随时" },
-      { view: "someday" as ViewType, icon: "iconSomeday", label: "某天" },
-      { view: "log" as ViewType, icon: "iconLog", label: "日志" },
+    // 主导航按语义分组（组间以空行分隔，不用分割线）：
+    // 收件箱 | 今天、计划、随时、某天 | 日志
+    const navGroups: { view: ViewType; icon: string; label: string }[][] = [
+      [{ view: "inbox" as ViewType, icon: "iconThingsInbox", label: "收件箱" }],
+      [
+        { view: "today" as ViewType, icon: "iconThingsToday", label: "今天" },
+        { view: "upcoming" as ViewType, icon: "iconThingsCalendar", label: "计划" },
+        { view: "anytime" as ViewType, icon: "iconThingsAnytime", label: "随时" },
+        { view: "someday" as ViewType, icon: "iconThingsSomeday", label: "某天" },
+      ],
+      [{ view: "log" as ViewType, icon: "iconThingsLog", label: "日志" }],
     ];
 
     let html = `<div class="things-nav">`;
@@ -335,43 +252,63 @@ export default class ThingsPlugin extends Plugin {
       </div>
     `;
 
-    // 主要导航
-    for (const item of navItems) {
-      const iconHtml = `<svg class="things-nav__icon"><use xlink:href="#${item.icon}"></use></svg>`;
-      html += `
-        <div class="things-nav__item" data-view="${item.view}">
-          ${iconHtml}
-          <span class="things-nav__label">${item.label}</span>
-          <span class="things-nav__count" data-count="${item.view}"></span>
-        </div>
-      `;
+    // 主要导航（分组渲染）
+    for (const group of navGroups) {
+      html += `<div class="things-nav__group">`;
+      for (const item of group) {
+        html += `
+          <div class="things-nav__item" data-view="${item.view}">
+            <svg class="things-nav__icon"><use xlink:href="#${item.icon}"></use></svg>
+            <span class="things-nav__label">${item.label}</span>
+            <span class="things-nav__count" data-count="${item.view}"></span>
+          </div>
+        `;
+      }
+      html += `</div>`;
     }
-
-    // 间隔线
-    html += `<div class="things-nav__sep"></div>`;
 
     // 区域
     html += `
       <div class="things-nav__section">
         <div class="things-nav__header">
-          <span>区域</span>
-          <span class="things-nav__add" data-add="area">+</span>
+          <span class="things-nav__header-label">
+            <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsArea"></use></svg>区域
+          </span>
+          <span class="things-nav__add" data-add="area" title="新建区域">
+            <svg><use xlink:href="#iconThingsAdd"></use></svg>
+          </span>
         </div>
         <div id="things-areas"></div>
       </div>
     `;
 
-    // 间隔线
-    html += `<div class="things-nav__sep"></div>`;
-
-    // 项目
+    // 项目（首行为"全部项目"总览入口）
     html += `
       <div class="things-nav__section">
         <div class="things-nav__header">
-          <span>项目</span>
-          <span class="things-nav__add" data-add="project">+</span>
+          <span class="things-nav__header-label">
+            <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsProject"></use></svg>项目
+          </span>
+          <span class="things-nav__add" data-add="project" title="新建项目">
+            <svg><use xlink:href="#iconThingsAdd"></use></svg>
+          </span>
         </div>
         <div id="things-projects"></div>
+      </div>
+    `;
+
+    // 标签
+    html += `
+      <div class="things-nav__section">
+        <div class="things-nav__header">
+          <span class="things-nav__header-label">
+            <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsTag"></use></svg>标签
+          </span>
+          <span class="things-nav__add" data-add="tag" title="新建标签">
+            <svg><use xlink:href="#iconThingsAdd"></use></svg>
+          </span>
+        </div>
+        <div id="things-tags"></div>
       </div>
     `;
 
@@ -381,6 +318,7 @@ export default class ThingsPlugin extends Plugin {
     this.bindEvents(element);
     this.renderProjects(element);
     this.renderAreas(element);
+    this.renderTags(element);
     this.updateCounts(element);
 
     // 默认选中"今天"
@@ -401,7 +339,7 @@ export default class ThingsPlugin extends Plugin {
       });
     });
 
-    // 添加项目/区域
+    // 添加项目/区域/标签
     element.querySelectorAll('.things-nav__add').forEach(el => {
       el.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -410,6 +348,8 @@ export default class ThingsPlugin extends Plugin {
           this.addProject(element);
         } else if (type === 'area') {
           this.addArea(element);
+        } else if (type === 'tag') {
+          this.addTag(element);
         }
       });
     });
@@ -431,18 +371,21 @@ export default class ThingsPlugin extends Plugin {
     if (!container) return;
 
     const projects = this.store.projects.getActiveProjects();
-    let html = '';
+    // 首行："全部项目"总览入口
+    let html = `
+      <div class="things-nav__item things-nav__item--sub things-nav__item--all" data-view="projects">
+        <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsProject"></use></svg>
+        <span class="things-nav__label">全部项目</span>
+      </div>
+    `;
 
     for (const p of projects) {
       html += `
         <div class="things-nav__item things-nav__item--sub" data-view="project" data-id="${p.id}">
+          <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsProject"></use></svg>
           <span class="things-nav__label">${p.name}</span>
         </div>
       `;
-    }
-
-    if (projects.length === 0) {
-      html = '<div class="things-nav__empty">暂无</div>';
     }
 
     container.innerHTML = html;
@@ -455,6 +398,7 @@ export default class ThingsPlugin extends Plugin {
         this.setActive(element, view, id);
       });
     });
+    this.bindSectionDragSort(container, 'project');
   }
 
   /**
@@ -470,6 +414,7 @@ export default class ThingsPlugin extends Plugin {
     for (const a of areas) {
       html += `
         <div class="things-nav__item things-nav__item--sub" data-view="area" data-id="${a.id}">
+          <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsArea"></use></svg>
           <span class="things-nav__label">${a.name}</span>
         </div>
       `;
@@ -489,6 +434,313 @@ export default class ThingsPlugin extends Plugin {
         this.setActive(element, view, id);
       });
     });
+    this.bindSectionDragSort(container, 'area');
+  }
+
+  /**
+   * 渲染标签列表（树形：子标签缩进；点击进入标签视图，右键打开管理菜单）
+   */
+  private renderTags(element: HTMLElement) {
+    const container = element.querySelector('#things-tags');
+    if (!container) return;
+
+    const roots = this.store.tags.getRootTags().sort((a, b) => a.order - b.order);
+    let html = '';
+
+    const renderLevel = (tags: any[], depth: number) => {
+      for (const t of tags) {
+        // 有色标签显示色点，无色标签显示标签图标
+        const marker = t.color
+          ? `<span class="things-nav__tag-dot" style="background: ${t.color}"></span>`
+          : `<svg class="things-nav__icon things-nav__icon--sm" style="fill:currentColor"><use xlink:href="#iconThingsTag"></use></svg>`;
+        html += `
+          <div class="things-nav__item things-nav__item--sub" data-view="tag" data-id="${t.id}"
+               style="padding-left: ${12 + depth * 16}px" title="右键管理">
+            ${marker}
+            <span class="things-nav__label">${t.name}</span>
+          </div>
+        `;
+        const children = this.store.tags.getChildTags(t.id).sort((a, b) => a.order - b.order);
+        if (children.length) renderLevel(children, depth + 1);
+      }
+    };
+    renderLevel(roots, 0);
+
+    if (roots.length === 0) {
+      html = '<div class="things-nav__empty">暂无（右键可管理）</div>';
+    }
+
+    container.innerHTML = html;
+
+    container.querySelectorAll('.things-nav__item').forEach(el => {
+      el.addEventListener('click', () => {
+        const id = (el as HTMLElement).dataset.id;
+        this.openThingsTab('tag' as ViewType, id);
+        this.setActive(element, 'tag' as ViewType, id);
+      });
+      el.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const id = (el as HTMLElement).dataset.id;
+        if (id) this.showTagContextMenu(element, id, e.clientX, e.clientY);
+      });
+    });
+    this.bindSectionDragSort(container, 'tag');
+  }
+
+  /**
+   * 侧边栏分节拖拽排序（仅限同节内：区域/项目/标签各自排序，交换 order 值）
+   */
+  private bindSectionDragSort(container: Element, kind: 'area' | 'project' | 'tag') {
+    container.querySelectorAll('.things-nav__item').forEach(el => {
+      const node = el as HTMLElement;
+      node.draggable = true;
+      node.addEventListener('dragstart', (e) => {
+        e.dataTransfer!.setData('text/things-kind', kind);
+        e.dataTransfer!.setData('text/things-id', node.dataset.id || '');
+        e.dataTransfer!.effectAllowed = 'move';
+        node.classList.add('is-dragging-src');
+      });
+      node.addEventListener('dragend', () => node.classList.remove('is-dragging-src'));
+      node.addEventListener('dragover', (e) => e.preventDefault());
+      node.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const srcKind = e.dataTransfer!.getData('text/things-kind');
+        const srcId = e.dataTransfer!.getData('text/things-id');
+        const targetId = node.dataset.id;
+        if (srcKind === kind && srcId && targetId && srcId !== targetId) {
+          this.swapEntityOrder(kind, srcId, targetId);
+        }
+      });
+    });
+  }
+
+  private async swapEntityOrder(kind: 'area' | 'project' | 'tag', aId: string, bId: string) {
+    if (kind === 'area') {
+      const a = this.store.areas.get(aId);
+      const b = this.store.areas.get(bId);
+      if (!a || !b) return;
+      const [ao, bo] = a.order === b.order ? [a.order, a.order + 1] : [b.order, a.order];
+      await this.store.areas.updateArea(a.id, { order: ao });
+      await this.store.areas.updateArea(b.id, { order: bo });
+    } else if (kind === 'project') {
+      const a = this.store.projects.get(aId);
+      const b = this.store.projects.get(bId);
+      if (!a || !b) return;
+      const [ao, bo] = a.order === b.order ? [a.order, a.order + 1] : [b.order, a.order];
+      await this.store.projects.updateProject(a.id, { order: ao });
+      await this.store.projects.updateProject(b.id, { order: bo });
+    } else {
+      const a = this.store.tags.get(aId);
+      const b = this.store.tags.get(bId);
+      if (!a || !b) return;
+      const [ao, bo] = a.order === b.order ? [a.order, a.order + 1] : [b.order, a.order];
+      await this.store.tags.updateTag(a.id, { order: ao });
+      await this.store.tags.updateTag(b.id, { order: bo });
+    }
+  }
+
+  /**
+   * 添加标签（内联表单，颜色按调色板自动循环）
+   */
+  private addTag(element: HTMLElement) {
+    const container = element.querySelector('#things-tags');
+    if (!container || container.parentElement!.querySelector('.things-nav__form')) return;
+
+    const form = document.createElement('div');
+    form.className = 'things-nav__form';
+    form.innerHTML = `
+      <input type="text" class="things-nav__form-input" placeholder="标签名称" />
+      <div class="things-nav__form-actions">
+        <button class="things-nav__form-ok">创建</button>
+        <button class="things-nav__form-cancel">取消</button>
+      </div>
+    `;
+    container.parentElement!.insertBefore(form, container);
+
+    const input = form.querySelector('input')!;
+    input.focus();
+    const close = () => form.remove();
+    const submit = async () => {
+      const name = input.value.trim();
+      if (!name) { input.focus(); return; }
+      await this.store.tags.createTag({ name, color: nextTagColor(this.store.tags.count) });
+      close();
+      showMessage(`标签已创建: ${name}`);
+    };
+    form.querySelector('.things-nav__form-ok')!.addEventListener('click', submit);
+    form.querySelector('.things-nav__form-cancel')!.addEventListener('click', close);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submit();
+      if (e.key === 'Escape') close();
+    });
+  }
+
+  /**
+   * 标签右键管理菜单：重命名 / 换色 / 上移下移 / 删除
+   */
+  private closeTagContextMenu() {
+    document.getElementById('things-ctx-menu')?.remove();
+  }
+
+  private showTagContextMenu(element: HTMLElement, tagId: string, x: number, y: number) {
+    this.closeTagContextMenu();
+    const menu = document.createElement('div');
+    menu.className = 'things-ctx-menu';
+    menu.id = 'things-ctx-menu';
+    menu.style.left = `${Math.min(x, window.innerWidth - 190)}px`;
+    menu.style.top = `${Math.min(y, window.innerHeight - 230)}px`;
+    // "移动到"候选：除自身与自己的后代外（防环）的全部标签，DFS 顺序带路径名
+    const excluded = this.getDescendantTagIds(tagId);
+    excluded.add(tagId);
+    const candidates: { id: string; label: string }[] = [];
+    const buildCandidates = (parentId: string | undefined, prefix: string) => {
+      const list = (parentId
+        ? this.store.tags.getChildTags(parentId)
+        : this.store.tags.getRootTags()
+      ).sort((a, b) => a.order - b.order);
+      for (const t of list) {
+        if (excluded.has(t.id)) continue;
+        candidates.push({ id: t.id, label: prefix + t.name });
+        buildCandidates(t.id, prefix + t.name + ' / ');
+      }
+    };
+    buildCandidates(undefined, '');
+
+    menu.innerHTML = `
+      <div class="things-ctx-item" data-act="rename">重命名</div>
+      <div class="things-ctx-item things-ctx-item--palette">更换颜色
+        <div class="things-ctx-palette">
+          ${TAG_PALETTE.map(c => `<span class="things-ctx-swatch" data-color="${c}" style="background:${c}"></span>`).join('')}
+        </div>
+      </div>
+      <div class="things-ctx-item things-ctx-item--palette">移动到
+        <div class="things-ctx-sub">
+          <div class="things-ctx-subitem" data-parent="">顶级标签</div>
+          ${candidates.map(c => `<div class="things-ctx-subitem" data-parent="${c.id}">${c.label}</div>`).join('')}
+        </div>
+      </div>
+      <div class="things-ctx-item" data-act="up">上移</div>
+      <div class="things-ctx-item" data-act="down">下移</div>
+      <div class="things-ctx-sep"></div>
+      <div class="things-ctx-item is-danger" data-act="delete">删除标签</div>
+    `;
+    document.body.appendChild(menu);
+
+    menu.addEventListener('click', (e) => {
+      const swatch = (e.target as HTMLElement).closest('.things-ctx-swatch') as HTMLElement | null;
+      if (swatch) {
+        this.store.tags.updateTag(tagId, { color: swatch.dataset.color });
+        this.closeTagContextMenu();
+        return;
+      }
+      const subitem = (e.target as HTMLElement).closest('.things-ctx-subitem') as HTMLElement | null;
+      if (subitem) {
+        const parentId = subitem.dataset.parent || undefined;
+        this.store.tags.updateTag(tagId, { parentId });
+        this.closeTagContextMenu();
+        return;
+      }
+      const item = (e.target as HTMLElement).closest('.things-ctx-item') as HTMLElement | null;
+      if (!item) return;
+      const act = item.dataset.act;
+      if (act === 'rename') {
+        this.closeTagContextMenu();
+        this.renameTagInline(element, tagId);
+      } else if (act === 'up' || act === 'down') {
+        this.moveTag(tagId, act === 'up' ? -1 : 1);
+        this.closeTagContextMenu();
+      } else if (act === 'delete') {
+        if (item.dataset.confirm) {
+          this.deleteTag(tagId);
+          this.closeTagContextMenu();
+        } else {
+          item.dataset.confirm = '1';
+          item.textContent = '确认删除？（任务将取消该标签）';
+        }
+      }
+    });
+
+    const onDocClick = (ev: MouseEvent) => {
+      if (!menu.contains(ev.target as HTMLElement)) {
+        this.closeTagContextMenu();
+        document.removeEventListener('click', onDocClick);
+      }
+    };
+    setTimeout(() => document.addEventListener('click', onDocClick), 0);
+  }
+
+  private getDescendantTagIds(tagId: string): Set<string> {
+    const set = new Set<string>();
+    const walk = (id: string) => {
+      for (const c of this.store.tags.getChildTags(id)) {
+        set.add(c.id);
+        walk(c.id);
+      }
+    };
+    walk(tagId);
+    return set;
+  }
+
+  private renameTagInline(element: HTMLElement, tagId: string) {
+    const tag = this.store.tags.get(tagId);
+    const container = element.querySelector('#things-tags');
+    if (!tag || !container || container.parentElement!.querySelector('.things-nav__form')) return;
+
+    const form = document.createElement('div');
+    form.className = 'things-nav__form';
+    form.innerHTML = `
+      <input type="text" class="things-nav__form-input" />
+      <div class="things-nav__form-actions">
+        <button class="things-nav__form-ok">保存</button>
+        <button class="things-nav__form-cancel">取消</button>
+      </div>
+    `;
+    container.parentElement!.insertBefore(form, container);
+
+    const input = form.querySelector('input')!;
+    input.value = tag.name; // 赋值而非拼进 HTML，避免引号注入
+    input.focus();
+    input.select();
+    const close = () => form.remove();
+    const submit = async () => {
+      const name = input.value.trim();
+      if (name && name !== tag.name) {
+        await this.store.tags.updateTag(tagId, { name });
+      }
+      close();
+    };
+    form.querySelector('.things-nav__form-ok')!.addEventListener('click', submit);
+    form.querySelector('.things-nav__form-cancel')!.addEventListener('click', close);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submit();
+      if (e.key === 'Escape') close();
+    });
+  }
+
+  private async moveTag(tagId: string, dir: -1 | 1) {
+    const tags = this.store.tags.getRootTags().sort((a, b) => a.order - b.order);
+    const idx = tags.findIndex(t => t.id === tagId);
+    const target = idx + dir;
+    if (idx < 0 || target < 0 || target >= tags.length) return;
+    const a = tags[idx];
+    const b = tags[target];
+    await this.store.tags.updateTag(a.id, { order: b.order });
+    await this.store.tags.updateTag(b.id, { order: a.order });
+  }
+
+  private async deleteTag(tagId: string) {
+    // 先把该标签从所有任务上摘掉，再删除
+    for (const t of this.store.tasks.getAll()) {
+      if (t.tags.includes(tagId)) {
+        await this.store.tasks.updateTask(t.id, { tags: t.tags.filter(id => id !== tagId) });
+      }
+    }
+    await this.store.tags.delete(tagId);
+    showMessage('标签已删除');
+    // 若当前停留在该标签视图，导航离开
+    if (this.dockElement) {
+      this.renderTags(this.dockElement);
+    }
   }
 
   /**
@@ -603,20 +855,10 @@ export default class ThingsPlugin extends Plugin {
   }
 
   /**
-   * 获取视图对应的图标名
+   * 获取视图对应的图标名（映射表唯一来源：src/icons/index.ts）
    */
   private getViewIcon(view: ViewType): string {
-    const icons: Record<string, string> = {
-      inbox: "iconInbox",
-      today: "iconToday",
-      upcoming: "iconCalendar",
-      anytime: "iconAnytime",
-      someday: "iconSomeday",
-      log: "iconLog",
-      project: "iconProject",
-      area: "iconArea",
-    };
-    return icons[view] || "iconThings";
+    return getViewIconId(view);
   }
 
   /**
@@ -690,7 +932,7 @@ export default class ThingsPlugin extends Plugin {
     dialog.innerHTML = `
       <div style="padding: 16px;">
         <div style="display: flex; align-items: center; gap: 8px; background: var(--b3-theme-background); border: 1px solid var(--b3-border-color); border-radius: 8px; padding: 10px 14px;">
-          <svg style="width: 18px; height: 18px; color: var(--b3-theme-on-surface-light); flex-shrink: 0;"><use xlink:href="#iconSearch"></use></svg>
+          <svg style="width: 18px; height: 18px; color: var(--b3-theme-on-surface-light); flex-shrink: 0;"><use xlink:href="#iconThingsSearch"></use></svg>
           <input type="text" style="flex: 1; border: none; background: transparent; font-size: 15px; outline: none;" id="things-search-input" placeholder="搜索任务..." />
         </div>
         <div id="things-search-results" style="margin-top: 12px; max-height: 400px; overflow-y: auto;"></div>
@@ -745,7 +987,9 @@ export default class ThingsPlugin extends Plugin {
 
     let html = '';
     for (const task of tasks) {
-      const statusIcon = task.status === 'done' ? '✅' : '☐';
+      const statusIcon = task.status === 'done'
+        ? '<svg style="width: 14px; height: 14px; color: var(--b3-theme-success, #3fb950); flex-shrink: 0;"><use xlink:href="#iconThingsCheck"></use></svg>'
+        : '<svg style="width: 14px; height: 14px; color: var(--b3-theme-on-surface-light); flex-shrink: 0;"><use xlink:href="#iconThingsCircle"></use></svg>';
       html += `
         <div class="things-search-result" data-id="${task.id}" style="display: flex; align-items: center; gap: 8px; padding: 8px; cursor: pointer; border-radius: 4px;">
           <span>${statusIcon}</span>
@@ -769,27 +1013,82 @@ export default class ThingsPlugin extends Plugin {
   }
 
   /**
-   * 添加项目
+   * 添加项目（内联表单：名称 + 所属区域，替代 prompt）
    */
-  private async addProject(element: HTMLElement) {
-    const name = prompt('输入项目名称:');
-    if (name) {
-      await this.store.projects.createProject({ name });
-      this.renderProjects(element);
+  private addProject(element: HTMLElement) {
+    const container = element.querySelector('#things-projects');
+    if (!container || container.parentElement!.querySelector('.things-nav__form')) return;
+
+    const areas = this.store.areas.getAll().sort((a, b) => a.order - b.order);
+    const options = ['<option value="">无区域</option>']
+      .concat(areas.map(a => `<option value="${a.id}">${a.name}</option>`))
+      .join('');
+
+    const form = document.createElement('div');
+    form.className = 'things-nav__form';
+    form.innerHTML = `
+      <input type="text" class="things-nav__form-input" placeholder="项目名称" />
+      <select class="things-nav__form-select">${options}</select>
+      <div class="things-nav__form-actions">
+        <button class="things-nav__form-ok">创建</button>
+        <button class="things-nav__form-cancel">取消</button>
+      </div>
+    `;
+    container.parentElement!.insertBefore(form, container);
+
+    const input = form.querySelector('input')!;
+    const select = form.querySelector('select')!;
+    input.focus();
+    const close = () => form.remove();
+    const submit = async () => {
+      const name = input.value.trim();
+      if (!name) { input.focus(); return; }
+      await this.store.projects.createProject({ name, areaId: select.value || undefined });
+      close();
       showMessage(`项目已创建: ${name}`);
-    }
+    };
+    form.querySelector('.things-nav__form-ok')!.addEventListener('click', submit);
+    form.querySelector('.things-nav__form-cancel')!.addEventListener('click', close);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submit();
+      if (e.key === 'Escape') close();
+    });
   }
 
   /**
-   * 添加区域
+   * 添加区域（内联表单，替代 prompt）
    */
-  private async addArea(element: HTMLElement) {
-    const name = prompt('输入区域名称:');
-    if (name) {
+  private addArea(element: HTMLElement) {
+    const container = element.querySelector('#things-areas');
+    if (!container || container.parentElement!.querySelector('.things-nav__form')) return;
+
+    const form = document.createElement('div');
+    form.className = 'things-nav__form';
+    form.innerHTML = `
+      <input type="text" class="things-nav__form-input" placeholder="区域名称" />
+      <div class="things-nav__form-actions">
+        <button class="things-nav__form-ok">创建</button>
+        <button class="things-nav__form-cancel">取消</button>
+      </div>
+    `;
+    container.parentElement!.insertBefore(form, container);
+
+    const input = form.querySelector('input')!;
+    input.focus();
+    const close = () => form.remove();
+    const submit = async () => {
+      const name = input.value.trim();
+      if (!name) { input.focus(); return; }
       await this.store.areas.createArea({ name });
-      this.renderAreas(element);
+      close();
       showMessage(`区域已创建: ${name}`);
-    }
+    };
+    form.querySelector('.things-nav__form-ok')!.addEventListener('click', submit);
+    form.querySelector('.things-nav__form-cancel')!.addEventListener('click', close);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submit();
+      if (e.key === 'Escape') close();
+    });
   }
 
   /**

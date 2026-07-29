@@ -45,10 +45,17 @@
     };
   }
 
-  // 确保末尾始终有一个空项，方便用户连续输入
+  // 本地行 id 生成（Date.now() 同毫秒可能重复，加序号兜底）
+  let idSeq = 0;
+  function genId(): string {
+    return `ck-${Date.now()}-${idSeq++}`;
+  }
+
+  // 只保证清单至少有一个输入行（新建模式/空清单能输入第一条）；
+  // 新行仅由回车创建（见 handleKeydown），打字过程中不再自动追加。
   $: {
-    if (items.length > 0 && items[items.length - 1].title.trim() !== '') {
-      items = [...items, { id: Date.now().toString(), title: '', completed: false }];
+    if (items.length === 0) {
+      items = [{ id: genId(), title: "", completed: false }];
     }
   }
 
@@ -70,7 +77,7 @@
     items = items.filter(item => item.id !== id);
     // 确保至少有一个空项
     if (items.length === 0) {
-      items = [{ id: Date.now().toString(), title: "", completed: false }];
+      items = [{ id: genId(), title: "", completed: false }];
     }
     dispatch("change", { items });
   }
@@ -100,7 +107,7 @@
 
       if (currentItem && currentItem.title.trim()) {
         // 在当前项后面插入新空项
-        const newId = Date.now().toString();
+        const newId = genId();
         const newItems = [...items];
         newItems.splice(currentIndex + 1, 0, { id: newId, title: "", completed: false });
         items = newItems;
@@ -325,7 +332,7 @@
         on:click={() => toggleItem(item.id)}
       >
         {#if item.completed}
-          <svg><use xlink:href="#iconCheck" /></svg>
+          <svg><use xlink:href="#iconThingsCheck" /></svg>
         {/if}
       </button>
       <input

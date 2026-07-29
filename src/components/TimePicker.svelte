@@ -135,6 +135,7 @@
       font-size: 13px;
       color: var(--b3-theme-on-surface);
       border-radius: 4px;
+      transition: background-color 0.15s ease, opacity 0.15s ease;
 
       &:hover {
         background: var(--b3-theme-surface-light);
@@ -144,7 +145,10 @@
         background: var(--b3-theme-primary);
         color: var(--b3-theme-on-primary);
 
+        // 必须显式重置背景：上面的通用 hover 会把底色改成 surface-light，
+        // 白底+白字会让"确定"按钮整个消失（两条规则特异性相同，靠声明顺序覆盖）
         &:hover {
+          background: var(--b3-theme-primary);
           opacity: 0.9;
         }
       }

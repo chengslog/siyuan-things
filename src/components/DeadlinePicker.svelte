@@ -7,12 +7,10 @@
     isCalendarSelected,
     prevMonth,
     nextMonth,
-    calendarToDate,
-    isTodayDate,
-    isTomorrowDate,
-    formatDateFull
+    calendarToDate
   } from "@/utils/calendar";
   import TimePicker from "./TimePicker.svelte";
+  import { Icon } from "@/icons";
 
   export let timestamp: number | undefined = undefined;
   export let showClear: boolean = true;
@@ -81,19 +79,19 @@
 <div class="deadline-picker" on:click|stopPropagation>
   <!-- 今天 -->
   <button class="deadline-picker__option" on:click={() => handleQuickOption("today")}>
-    <span class="deadline-picker__icon">📅</span>
+    <span class="deadline-picker__icon"><Icon name="iconThingsCalendarLine" size={16} /></span>
     <span class="deadline-picker__label">今天</span>
   </button>
 
   <!-- 明天 -->
   <button class="deadline-picker__option" on:click={() => handleQuickOption("tomorrow")}>
-    <span class="deadline-picker__icon">📆</span>
+    <span class="deadline-picker__icon"><Icon name="iconThingsCalendarLine" size={16} /></span>
     <span class="deadline-picker__label">明天</span>
   </button>
 
   <!-- 下周 -->
   <button class="deadline-picker__option" on:click={() => handleQuickOption("nextWeek")}>
-    <span class="deadline-picker__icon">📋</span>
+    <span class="deadline-picker__icon"><Icon name="iconThingsCalendarLine" size={16} /></span>
     <span class="deadline-picker__label">下周</span>
   </button>
 
@@ -132,7 +130,7 @@
 
   <!-- 添加提醒时间 -->
   <button class="deadline-picker__option" on:click={() => showTimePicker = !showTimePicker}>
-    <span class="deadline-picker__icon">🔔</span>
+    <span class="deadline-picker__icon"><Icon name="iconThingsBell" size={16} /></span>
     <span class="deadline-picker__label">+添加提醒时间</span>
   </button>
 
@@ -150,7 +148,7 @@
   {#if showClear && timestamp}
     <div class="deadline-picker__separator"></div>
     <button class="deadline-picker__option deadline-picker__option--clear" on:click={() => handleQuickOption("clear")}>
-      <span class="deadline-picker__icon">✕</span>
+      <span class="deadline-picker__icon"><Icon name="iconThingsX" size={16} /></span>
       <span class="deadline-picker__label">清除</span>
     </button>
   {/if}

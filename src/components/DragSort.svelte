@@ -3,6 +3,10 @@
 
   export let items: Array<{ id: string; [key: string]: any }> = [];
   export let itemKey: string = "id";
+  // 所属分组标识（跨组拖拽时随 drop 事件上报，供父级判断落点分组）
+  export let groupKey: string = "";
+
+  let containerEl: HTMLElement;
 
   const dispatch = createEventDispatcher();
 
@@ -35,6 +39,33 @@
 
   export function unregisterItem(id: string) {
     itemElements.delete(id);
+  }
+
+  // —— 跨组拖拽支持：供父级查询本组的位置信息 ——
+  // 垂直坐标是否落在本组容器内
+  export function containsPoint(clientY: number): boolean {
+    if (!containerEl) return false;
+    const r = containerEl.getBoundingClientRect();
+    return clientY >= r.top && clientY <= r.bottom;
+  }
+
+  // 按当前 DOM 位置计算 clientY 对应的插入索引（用于跨组落点）
+  export function computeInsertIndex(clientY: number): number {
+    const centers: number[] = [];
+    for (const item of items) {
+      const el = itemElements.get(item[itemKey]);
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      centers.push(r.top + r.height / 2);
+    }
+    let idx = centers.length;
+    for (let i = 0; i < centers.length; i++) {
+      if (clientY < centers[i]) {
+        idx = i;
+        break;
+      }
+    }
+    return idx;
   }
 
   export function handleDragStart(e: MouseEvent | TouchEvent, id: string) {
@@ -94,10 +125,14 @@
     // 计算新的幽灵位置
     let newTop = draggedStartTop + deltaY;
 
-    // 限制在边界内（允许拖到第一个元素上方和最后一个元素下方）
+    // 指针离开本组容器 → 跨组拖拽，幽灵自由跟随；否则限制在组内边界
+    const outsideSelf = containerEl && (() => {
+      const r = containerEl.getBoundingClientRect();
+      return currentY < r.top || currentY > r.bottom;
+    })();
     const firstPos = initialPositions[0];
     const lastPos = initialPositions[initialPositions.length - 1];
-    if (firstPos && lastPos) {
+    if (!outsideSelf && firstPos && lastPos) {
       newTop = Math.max(firstPos.centerY - itemHeight, Math.min(lastPos.centerY, newTop));
     }
 
@@ -129,16 +164,21 @@
   function onEnd(e: MouseEvent | TouchEvent) {
     if (!draggedId) return;
 
+    const clientY = getClientY(e);
     const fromIndex = draggedIndex;
     const toIndex = insertIndex;
+    const id = draggedId;
+    // 松手时指针还在本组内 → 组内排序（reorder）；否则交给父级做跨组判定（drop）
+    const withinSelf = containerEl ? containsPoint(clientY) : true;
 
     cleanup();
 
-    if (fromIndex !== toIndex) {
-      dispatch('reorder', { fromIndex, toIndex, id: draggedId });
+    if (withinSelf && fromIndex !== toIndex) {
+      dispatch('reorder', { fromIndex, toIndex, id });
     }
 
-    dispatch('dragend', { id: draggedId });
+    dispatch('drop', { id, clientY, fromGroup: groupKey, withinSelf });
+    dispatch('dragend', { id });
   }
 
   // 更新所有元素位置
@@ -209,7 +249,11 @@
   }
 
   function getClientY(e: MouseEvent | TouchEvent): number {
-    return 'touches' in e ? e.touches[0].clientY : e.clientY;
+    if ('touches' in e) {
+      const t = e.touches[0] || e.changedTouches[0];
+      return t ? t.clientY : 0;
+    }
+    return e.clientY;
   }
 
   function applyGhostStyles(el: HTMLElement, rect: DOMRect) {
@@ -232,7 +276,7 @@
   }
 </script>
 
-<div class="drag-sort">
+<div class="drag-sort" bind:this={containerEl}>
   <slot
     items={items}
     isDragging={draggedId !== null}

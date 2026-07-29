@@ -64,6 +64,11 @@
       font-size: 12px;
       font-weight: 500;
     }
+
+    // "全部项目"总览入口
+    &--all {
+      font-weight: 600;
+    }
   }
 
   &__icon {
@@ -71,6 +76,12 @@
     height: 16px;
     margin-right: 8px;
     flex-shrink: 0;
+
+    &--sm {
+      width: 14px;
+      height: 14px;
+      margin-right: 6px;
+    }
   }
 
   &__emoji {
@@ -104,14 +115,17 @@
     }
   }
 
-  &__sep {
-    height: 1px;
-    background: var(--b3-border-color);
-    margin: 8px 12px;
+  // 分组之间用空行分隔（不使用分割线）
+  &__group {
+    margin-top: 14px;
+
+    &:first-child {
+      margin-top: 2px;
+    }
   }
 
   &__section {
-    margin-bottom: 4px;
+    margin-top: 18px;
   }
 
   &__header {
@@ -124,16 +138,36 @@
     color: var(--b3-theme-on-surface);
   }
 
+  &__header-label {
+    display: flex;
+    align-items: center;
+
+    .things-nav__icon {
+      margin-right: 6px;
+    }
+  }
+
   &__add {
     width: 18px;
     height: 18px;
-    line-height: 18px;
-    text-align: center;
     cursor: pointer;
     border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--b3-theme-on-surface-light);
+    transition: background 0.15s, color 0.15s;
+
+    svg {
+      width: 12px;
+      height: 12px;
+      fill: currentColor;
+      display: block;
+    }
 
     &:hover {
       background: var(--b3-theme-surface-light);
+      color: var(--b3-theme-on-surface);
     }
   }
 
@@ -141,6 +175,155 @@
     padding: 4px 12px 4px 28px;
     font-size: 11px;
     color: var(--b3-theme-on-surface-light);
+  }
+
+  // 侧边栏内联创建表单（项目/区域，替代 prompt）
+  &__form {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 12px;
+  }
+
+  &__form-input,
+  &__form-select {
+    width: 100%;
+    font-size: 12px;
+    padding: 5px 8px;
+    border: 1px solid var(--b3-border-color);
+    border-radius: 6px;
+    outline: none;
+    background: var(--b3-theme-background);
+    color: var(--b3-theme-on-surface);
+
+    &:focus {
+      border-color: var(--b3-theme-primary);
+    }
+  }
+
+  &__form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+
+  &__form-ok,
+  &__form-cancel {
+    padding: 4px 12px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+
+  &__form-ok {
+    background: var(--b3-theme-primary);
+    color: var(--b3-theme-on-primary);
+
+    &:hover {
+      opacity: 0.9;
+    }
+  }
+
+  &__form-cancel {
+    background: transparent;
+    color: var(--b3-theme-on-surface-light);
+
+    &:hover {
+      background: var(--b3-theme-surface-light);
+    }
+  }
+
+  &__tag-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  // 拖拽排序中的源项
+  &__item.is-dragging-src {
+    opacity: 0.4;
+  }
+}
+
+// 标签右键管理菜单（挂在 body 上，须为顶层选择器）
+.things-ctx-menu {
+  position: fixed;
+  z-index: 9999;
+  min-width: 150px;
+  padding: 6px;
+  background: var(--b3-theme-surface);
+  border: 1px solid var(--b3-border-color);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  font-size: 13px;
+}
+
+.things-ctx-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--b3-theme-on-surface);
+
+  &:hover {
+    background: var(--b3-theme-surface-light);
+  }
+
+  &.is-danger {
+    color: var(--b3-theme-error);
+  }
+}
+
+.things-ctx-sep {
+  height: 1px;
+  background: var(--b3-border-color);
+  margin: 5px 4px;
+}
+
+.things-ctx-palette {
+  display: grid;
+  grid-template-columns: repeat(6, 14px);
+  gap: 6px;
+  margin-top: 6px;
+  width: 100%;
+}
+
+.things-ctx-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 0.1s ease;
+
+  &:hover {
+    transform: scale(1.25);
+  }
+}
+
+// 右键菜单内的子列表（移动到…）
+.things-ctx-sub {
+  width: 100%;
+  max-height: 160px;
+  overflow-y: auto;
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--b3-border-color);
+}
+
+.things-ctx-subitem {
+  padding: 5px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--b3-theme-on-surface);
+
+  &:hover {
+    background: var(--b3-theme-surface-light);
   }
 }
 

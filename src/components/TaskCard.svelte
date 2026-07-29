@@ -8,7 +8,10 @@
   import DatePicker from "./DatePicker.svelte";
   import DeadlinePicker from "./DeadlinePicker.svelte";
   import TagPicker from "./TagPicker.svelte";
+  import ProjectAreaPicker from "./ProjectAreaPicker.svelte";
   import Checklist from "./Checklist.svelte";
+  import Icon from "@/icons/Icon.svelte";
+  import { getStartDateDisplay, getDeadlineDisplay, getReminderDisplay } from "@/utils/display";
 
   // 模式：create 或 edit
   export let mode: 'create' | 'edit' = 'edit';
@@ -16,9 +19,14 @@
   export let task: Task | null = null;
   export let store: StoreManager;
   export let currentView: string = "inbox";
+  // 当前视图上下文 id（项目/区域视图下新建任务时预置归属）
+  export let currentViewId: string | undefined = undefined;
   export let isDragging: boolean = false;
   export let registerItem: (id: string, el: HTMLElement) => void = () => {};
   export let unregisterItem: (id: string) => void = () => {};
+  // 日程行模式（计划视图中带具体时间的任务）：收缩态用时间列替换 checkbox、隐藏副标题/辅助信息；
+  // 展开后恢复正常卡片形态（checkbox 回来，可勾选完成）
+  export let scheduleMode: boolean = false;
 
   const dispatch = createEventDispatcher();
 
@@ -31,6 +39,8 @@
   let deadline: number | undefined = undefined;
   let someday: boolean = false;
   let selectedTags: string[] = [];
+  let projectId: string | undefined = undefined;
+  let areaId: string | undefined = undefined;
   let checklist: Array<{ id: string; title: string; completed: boolean }> = [
     { id: "empty", title: "", completed: false }
   ];
@@ -40,6 +50,7 @@
   let showDatePicker = false;
   let showDeadlinePicker = false;
   let showTagPicker = false;
+  let showProjectAreaPicker = false;
   let showChecklist = true;
   let isInteracting = false;
   let isMovingOut = false;
@@ -79,6 +90,9 @@
       if (currentView === 'today') {
         startDate = getTodayStart();
       }
+      // 项目/区域视图里新建的任务预置归属
+      if (currentView === 'project' && currentViewId) projectId = currentViewId;
+      if (currentView === 'area' && currentViewId) areaId = currentViewId;
       setTimeout(() => titleInput?.focus(), 100);
     }
   });
@@ -136,66 +150,87 @@
     return "";
   }
 
+  // 日程行的时间列：HH:mm
+  function formatTime(ts?: number): string {
+    if (!ts) return "";
+    const d = new Date(ts);
+    return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
+  }
+
   // 日期显示
   // 注意：必须把响应式变量作为参数显式传入。Svelte 的 $: 不会穿透函数调用追踪依赖，
-  // 若写成 getDateDisplay()（无参），只会在组件初始化时计算一次，设置/清除日期后胶囊不会刷新。
-  $: dateDisplay = getDateDisplay(mode, task, startDate, someday);
-  $: deadlineDisplay = getDeadlineDisplay(mode, task, deadline);
-  $: dateReminderDisplay = getDateReminderDisplay(mode, task, startDate);
-  $: deadlineReminderDisplay = getDeadlineReminderDisplay(mode, task, deadline);
+  // 若写成无参调用，只会在组件初始化时计算一次，设置/清除日期后胶囊不会刷新。
+  // 展示逻辑统一在 utils/display.ts：返回 { icon: symbolId, text, color? }，模板用 <Icon> 渲染。
+  $: resolvedStartDate = mode === 'edit' && task ? task.startDate : startDate;
+  $: resolvedSomeday = mode === 'edit' && task ? !!task.someday : someday;
+  $: resolvedDeadline = mode === 'edit' && task ? task.deadline : deadline;
+  $: dateDisplay = getStartDateDisplay(resolvedStartDate, resolvedSomeday, currentView);
+  $: dateReminderDisplay = resolvedSomeday ? null : getReminderDisplay(resolvedStartDate);
+  $: deadlineDisplay = getDeadlineDisplay(resolvedDeadline);
+  $: deadlineReminderDisplay = getReminderDisplay(resolvedDeadline);
 
-  function getDateDisplay(mode: 'create' | 'edit', task: Task | null, startDate: number | undefined, someday: boolean): { icon: string; text: string } | null {
-    const date = mode === 'edit' && task ? task.startDate : startDate;
-    const isSomeday = mode === 'edit' && task ? task.someday : someday;
+  // 项目/区域归属（编辑模式取 task，新建模式取本地状态）
+  $: assignment = getAssignment(mode, task, projectId, areaId);
+  $: assignmentProject = getAssignmentProject(store, assignment.projectId);
+  $: assignmentArea = getAssignmentArea(store, assignment.areaId);
 
-    if (isSomeday) return { icon: "💭", text: "" };
-    if (!date) return null;
-
-    const d = new Date(date);
-    const isTonight = isTodayDate(date) && d.getHours() === 18 && d.getMinutes() === 0;
-
-    if (isTonight) return { icon: "🌙", text: "" };
-    if (isTodayDate(date)) return { icon: "⭐", text: "" };
-    if (isTomorrowDate(date)) return { icon: "🗓", text: "明天" };
-    return { icon: "🗓", text: formatDateFull(date) };
+  function getAssignment(mode: 'create' | 'edit', task: Task | null, pid: string | undefined, aid: string | undefined) {
+    return {
+      projectId: mode === 'edit' && task ? task.projectId : pid,
+      areaId: mode === 'edit' && task ? task.areaId : aid,
+    };
   }
 
-  // 日期提醒（设置了具体时间时单独展示为 🔔 胶囊）
-  function getDateReminderDisplay(mode: 'create' | 'edit', task: Task | null, startDate: number | undefined): { icon: string; text: string } | null {
-    const date = mode === 'edit' && task ? task.startDate : startDate;
-    const isSomeday = mode === 'edit' && task ? task.someday : false;
-    if (isSomeday || !date) return null;
-
-    const d = new Date(date);
-    if (d.getHours() === 0 && d.getMinutes() === 0) return null;
-    return { icon: "🔔", text: `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}` };
+  function getAssignmentProject(store: StoreManager, id: string | undefined) {
+    return id ? store.projects.get(id) : undefined;
   }
 
-  function getDeadlineDisplay(mode: 'create' | 'edit', task: Task | null, deadline: number | undefined): { icon: string; text: string } | null {
-    const date = mode === 'edit' && task ? task.deadline : deadline;
-    if (!date) return null;
-
-    if (isTodayDate(date)) return { icon: "⚑", text: "今天" };
-    if (isTomorrowDate(date)) return { icon: "⚑", text: "明天" };
-    return { icon: "⚑", text: formatDateFull(date) };
+  function getAssignmentArea(store: StoreManager, id: string | undefined) {
+    return id ? store.areas.get(id) : undefined;
   }
 
-  // 截止日期提醒（设置了具体时间时单独展示为 🔔 胶囊）
-  function getDeadlineReminderDisplay(mode: 'create' | 'edit', task: Task | null, deadline: number | undefined): { icon: string; text: string } | null {
-    const date = mode === 'edit' && task ? task.deadline : deadline;
-    if (!date) return null;
+  // 项目/区域变更
+  async function handleProjectAreaChange(e: CustomEvent) {
+    const pid = e.detail.projectId as string | undefined;
+    const aid = e.detail.areaId as string | undefined;
+    if (mode === 'create') {
+      projectId = pid;
+      areaId = aid;
+    } else if (task) {
+      await applyChangeWithAnimation({ projectId: pid, areaId: aid });
+    }
+    showProjectAreaPicker = false;
+  }
 
-    const d = new Date(date);
-    if (d.getHours() === 0 && d.getMinutes() === 0) return null;
-    return { icon: "🔔", text: `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}` };
+  function clearAssignment() {
+    handleProjectAreaChange(new CustomEvent("x", { detail: { projectId: undefined, areaId: undefined } }));
+  }
+
+  function toggleProjectAreaPicker() {
+    showProjectAreaPicker = !showProjectAreaPicker;
+    showDatePicker = false;
+    showDeadlinePicker = false;
+    showTagPicker = false;
   }
 
   // 卡片点击
   function handleCardClick(e?: Event) {
     if (mode === 'create') return; // 新建模式不需要展开/折叠
 
-    if (e) {
-      const target = e.target as HTMLElement;
+    const target = e?.target as HTMLElement | undefined;
+
+    // 弹窗打开时：卡片内任何点击（弹窗自身除外，其内部已 stopPropagation）先关弹窗，
+    // 不触发展开/折叠。修复"打开日期选择器后点卡片空白处弹窗不消失"。
+    const hasOpenDropdown = showDatePicker || showDeadlinePicker || showTagPicker || showProjectAreaPicker;
+    if (hasOpenDropdown && (!target || !target.closest('.task-card__dropdown'))) {
+      showDatePicker = false;
+      showDeadlinePicker = false;
+      showTagPicker = false;
+      showProjectAreaPicker = false;
+      return;
+    }
+
+    if (target) {
       if (target.closest('.task-card__toolbar') ||
           target.closest('.task-card__action-group') ||
           target.closest('.task-card__dropdown') ||
@@ -205,14 +240,6 @@
           target.closest('.checklist')) {
         return;
       }
-    }
-
-    const hasOpenDropdown = showDatePicker || showDeadlinePicker || showTagPicker;
-    if (hasOpenDropdown) {
-      showDatePicker = false;
-      showDeadlinePicker = false;
-      showTagPicker = false;
-      return;
     }
 
     expanded = !expanded;
@@ -477,53 +504,67 @@
   }
 
   // 创建任务
+  // 防重入：回车触发后是一串异步写库，期间失焦/再次回车可能再触发一次，
+  // 重置又发生在首次创建完成之后——两次并发会造出同名重复任务，
+  // 检查项全挂到第一个任务上，用户看到的第二个就是"检查项没了"。
+  let isCreating = false;
   async function handleCreate() {
-    if (!title.trim()) {
-      const firstChecklist = checklist.find(item => item.title.trim());
-      if (firstChecklist) {
-        title = firstChecklist.title;
-        checklist = checklist.filter(item => item.id !== firstChecklist.id);
-      } else {
-        return;
+    if (isCreating) return;
+    isCreating = true;
+    try {
+      if (!title.trim()) {
+        const firstChecklist = checklist.find(item => item.title.trim());
+        if (firstChecklist) {
+          title = firstChecklist.title;
+          checklist = checklist.filter(item => item.id !== firstChecklist.id);
+        } else {
+          return;
+        }
       }
-    }
 
-    const taskData: Partial<Task> & { title: string } = {
-      title: title.trim(),
-      notes: notes.trim(),
-      startDate,
-      deadline,
-      someday,
-      tags: selectedTags,
-    };
+      const taskData: Partial<Task> & { title: string } = {
+        title: title.trim(),
+        notes: notes.trim(),
+        startDate,
+        deadline,
+        someday,
+        tags: selectedTags,
+        projectId,
+        areaId,
+      };
 
-    if (currentView === "today" && !startDate) {
-      taskData.startDate = getTodayStart();
-    }
-
-    const newTask = await store.tasks.createTask(taskData);
-
-    for (const item of checklist) {
-      if (item.title.trim()) {
-        await store.tasks.createTask({
-          title: item.title,
-          parentId: newTask.id,
-          status: item.completed ? "done" : "todo",
-        });
+      if (currentView === "today" && !startDate) {
+        taskData.startDate = getTodayStart();
       }
+
+      const newTask = await store.tasks.createTask(taskData);
+
+      for (const item of checklist) {
+        if (item.title.trim()) {
+          await store.tasks.createTask({
+            title: item.title,
+            parentId: newTask.id,
+            status: item.completed ? "done" : "todo",
+          });
+        }
+      }
+
+      dispatch("created", { task: newTask });
+
+      // 重置
+      title = "";
+      notes = "";
+      startDate = currentView === "today" ? getTodayStart() : undefined;
+      deadline = undefined;
+      someday = false;
+      selectedTags = [];
+      projectId = currentView === "project" ? currentViewId : undefined;
+      areaId = currentView === "area" ? currentViewId : undefined;
+      checklist = [{ id: "empty", title: "", completed: false }];
+      titleInput?.focus();
+    } finally {
+      isCreating = false;
     }
-
-    dispatch("created", { task: newTask });
-
-    // 重置
-    title = "";
-    notes = "";
-    startDate = currentView === "today" ? getTodayStart() : undefined;
-    deadline = undefined;
-    someday = false;
-    selectedTags = [];
-    checklist = [{ id: Date.now().toString(), title: "", completed: false }];
-    titleInput?.focus();
   }
 
   // 键盘事件
@@ -573,17 +614,21 @@
 >
   <!-- 标题区域 -->
   <div class="task-card__header">
-    <!-- 复选框 -->
+    <!-- 复选框（日程行收缩态显示时间列，展开后换回复选框以便勾选） -->
     {#if mode === 'edit'}
-      <button
-        class="task-card__check"
-        class:is-checked={task?.status === "done" || pendingDone}
-        on:click={handleToggle}
-      >
-        {#if task?.status === "done" || pendingDone}
-          <svg><use xlink:href="#iconCheck" /></svg>
-        {/if}
-      </button>
+      {#if scheduleMode && !expanded}
+        <span class="task-card__schedule-time">{formatTime(task?.startDate)}</span>
+      {:else}
+        <button
+          class="task-card__check"
+          class:is-checked={task?.status === "done" || pendingDone}
+          on:click={handleToggle}
+        >
+          {#if task?.status === "done" || pendingDone}
+            <svg><use xlink:href="#iconThingsCheck" /></svg>
+          {/if}
+        </button>
+      {/if}
     {:else}
       <span class="task-card__check-placeholder"></span>
     {/if}
@@ -605,29 +650,36 @@
         <div class="task-card__title" class:is-done={task?.status === "done" || pendingDone}>
           {task?.title}
         </div>
-        {#if subtitle}
+        {#if subtitle && !scheduleMode}
           <div class="task-card__subtitle">{subtitle}</div>
         {/if}
       </div>
 
-      <!-- 右侧辅助信息（收缩态，弱化显示） -->
-      <div class="task-card__aux">
-        {#if task?.deadline}
-          <span class="task-card__aux-item task-card__aux-deadline" class:is-overdue={isDeadlineOverdue}>
-            <span class="task-card__flag">⚑</span>
-            <span>{formatRelativeDate(task.deadline)}</span>
-          </span>
-        {/if}
-        {#if checklistCount > 0}
-          <span class="task-card__aux-item" title="检查清单">☑ {checklistCount}</span>
-        {/if}
-        {#if task?.notes}
-          <span class="task-card__aux-item" title="备注">📄</span>
-        {/if}
-        {#if task?.tags && task.tags.length > 0}
-          <span class="task-card__aux-item" title="标签">🏷</span>
-        {/if}
-      </div>
+      <!-- 右侧辅助信息（收缩态，弱化显示；日程行只保留时间+标题，不显示） -->
+      {#if !scheduleMode}
+        <div class="task-card__aux">
+          {#if task?.deadline}
+            <span class="task-card__aux-item task-card__aux-deadline" class:is-overdue={isDeadlineOverdue}>
+              <Icon name="iconThingsFlag" size={12} />
+              <span>{formatRelativeDate(task.deadline)}</span>
+            </span>
+          {/if}
+          {#if checklistCount > 0}
+            <span class="task-card__aux-item" title="检查清单"><Icon name="iconThingsChecklist" size={12} />{checklistCount}</span>
+          {/if}
+          {#if task?.notes}
+            <span class="task-card__aux-item" title="备注"><Icon name="iconThingsNote" size={12} /></span>
+          {/if}
+          {#if task?.tags && task.tags.length > 0}
+            <span class="task-card__aux-item" title="标签">
+              <Icon name="iconThingsTag" size={12} />
+              {#if tags.length > 0}
+                <span class="task-card__tag-pill">{tags[0].name}{tags.length > 1 ? ` +${tags.length - 1}` : ""}</span>
+              {/if}
+            </span>
+          {/if}
+        </div>
+      {/if}
     {/if}
   </div>
 
@@ -670,9 +722,9 @@
             <div class="task-card__tag-item">
               <button
                 class="task-card__tag-btn"
-                on:click|stopPropagation={() => { showDatePicker = !showDatePicker; showDeadlinePicker = false; showTagPicker = false; }}
+                on:click|stopPropagation={() => { showDatePicker = !showDatePicker; showDeadlinePicker = false; showTagPicker = false; showProjectAreaPicker = false; }}
               >
-                <span>{dateDisplay.icon}</span>
+                <Icon name={dateDisplay.icon} size={12} color={dateDisplay.color || ""} />
                 {#if dateDisplay.text}
                   <span>{dateDisplay.text}</span>
                 {/if}
@@ -694,7 +746,7 @@
           <!-- 日期提醒 -->
           {#if dateReminderDisplay}
             <div class="task-card__tag-item task-card__tag-item--reminder">
-              <span>{dateReminderDisplay.icon}</span>
+              <Icon name={dateReminderDisplay.icon} size={12} />
               <span>{dateReminderDisplay.text}</span>
             </div>
           {/if}
@@ -704,9 +756,9 @@
             <div class="task-card__tag-item">
               <button
                 class="task-card__tag-btn"
-                on:click|stopPropagation={() => { showTagPicker = !showTagPicker; showDatePicker = false; showDeadlinePicker = false; }}
+                on:click|stopPropagation={() => { showTagPicker = !showTagPicker; showDatePicker = false; showDeadlinePicker = false; showProjectAreaPicker = false; }}
               >
-                <span>🏷</span>
+                <Icon name="iconThingsTag" size={12} />
                 <span>{tags.map(t => t.name).join(', ')}</span>
               </button>
               <button class="task-card__tag-remove" on:click|stopPropagation={clearTags}>×</button>
@@ -728,9 +780,9 @@
             <div class="task-card__tag-item" class:is-overdue={isDeadlineOverdue}>
               <button
                 class="task-card__tag-btn"
-                on:click|stopPropagation={() => { showDeadlinePicker = !showDeadlinePicker; showDatePicker = false; showTagPicker = false; }}
+                on:click|stopPropagation={() => { showDeadlinePicker = !showDeadlinePicker; showDatePicker = false; showTagPicker = false; showProjectAreaPicker = false; }}
               >
-                <span class="task-card__flag">{deadlineDisplay.icon}</span>
+                <Icon name={deadlineDisplay.icon} size={12} color="#dc2626" />
                 <span>{deadlineDisplay.text}</span>
               </button>
               <button class="task-card__tag-remove" on:click|stopPropagation={clearDeadline}>×</button>
@@ -750,8 +802,34 @@
           <!-- 截止日期提醒 -->
           {#if deadlineReminderDisplay}
             <div class="task-card__tag-item task-card__tag-item--reminder">
-              <span>{deadlineReminderDisplay.icon}</span>
+              <Icon name={deadlineReminderDisplay.icon} size={12} />
               <span>{deadlineReminderDisplay.text}</span>
+            </div>
+          {/if}
+
+          <!-- 项目/区域 -->
+          {#if assignmentProject || assignmentArea}
+            <div class="task-card__tag-item">
+              <button
+                class="task-card__tag-btn"
+                on:click|stopPropagation={toggleProjectAreaPicker}
+              >
+                <Icon name={assignmentProject ? "iconThingsProject" : "iconThingsArea"} size={12} />
+                <span>{assignmentProject ? assignmentProject.name : assignmentArea ? assignmentArea.name : ""}</span>
+              </button>
+              <button class="task-card__tag-remove" on:click|stopPropagation={clearAssignment}>×</button>
+
+              {#if showProjectAreaPicker}
+                <div class="task-card__dropdown">
+                  <ProjectAreaPicker
+                    store={store}
+                    selectedProjectId={assignment.projectId}
+                    selectedAreaId={assignment.areaId}
+                    on:change={handleProjectAreaChange}
+                    on:close={() => showProjectAreaPicker = false}
+                  />
+                </div>
+              {/if}
             </div>
           {/if}
         </div>
@@ -764,9 +842,9 @@
               <button
                 class="task-card__tool-btn"
                 title="设置日期"
-                on:click|stopPropagation={() => { showDatePicker = !showDatePicker; showDeadlinePicker = false; showTagPicker = false; }}
+                on:click|stopPropagation={() => { showDatePicker = !showDatePicker; showDeadlinePicker = false; showTagPicker = false; showProjectAreaPicker = false; }}
               >
-                <span>⭐</span>
+                <Icon name="iconThingsStar" size={16} />
               </button>
 
               {#if showDatePicker}
@@ -787,9 +865,9 @@
               <button
                 class="task-card__tool-btn"
                 title="设置截止日期"
-                on:click|stopPropagation={() => { showDeadlinePicker = !showDeadlinePicker; showDatePicker = false; showTagPicker = false; }}
+                on:click|stopPropagation={() => { showDeadlinePicker = !showDeadlinePicker; showDatePicker = false; showTagPicker = false; showProjectAreaPicker = false; }}
               >
-                <span>⚑</span>
+                <Icon name="iconThingsFlag" size={16} />
               </button>
 
               {#if showDeadlinePicker}
@@ -811,11 +889,11 @@
               class:is-active={showChecklist}
               on:click={() => showChecklist = !showChecklist}
             >
-              <span>☷</span>
+              <Icon name="iconThingsSubtask" size={16} />
             </button>
           {:else}
             <button class="task-card__tool-btn" title="添加子任务" on:click|stopPropagation={addSubTask}>
-              <span>☷</span>
+              <Icon name="iconThingsSubtask" size={16} />
             </button>
           {/if}
 
@@ -825,9 +903,9 @@
               <button
                 class="task-card__tool-btn"
                 title="标签"
-                on:click|stopPropagation={() => { showTagPicker = !showTagPicker; showDatePicker = false; showDeadlinePicker = false; }}
+                on:click|stopPropagation={() => { showTagPicker = !showTagPicker; showDatePicker = false; showDeadlinePicker = false; showProjectAreaPicker = false; }}
               >
-                <span>🏷</span>
+                <Icon name="iconThingsTag" size={16} />
               </button>
 
               {#if showTagPicker}
@@ -846,9 +924,9 @@
                 class="task-card__tool-btn"
                 class:is-active={selectedTags.length > 0}
                 title="标签"
-                on:click|stopPropagation={() => { showTagPicker = !showTagPicker; showDatePicker = false; showDeadlinePicker = false; }}
+                on:click|stopPropagation={() => { showTagPicker = !showTagPicker; showDatePicker = false; showDeadlinePicker = false; showProjectAreaPicker = false; }}
               >
-                <span>🏷</span>
+                <Icon name="iconThingsTag" size={16} />
               </button>
 
               {#if showTagPicker}
@@ -863,10 +941,35 @@
             </div>
           {/if}
 
+          <!-- 项目/区域（未设置时） -->
+          {#if !assignmentProject && !assignmentArea}
+            <div class="task-card__action-group">
+              <button
+                class="task-card__tool-btn"
+                title="项目与区域"
+                on:click|stopPropagation={toggleProjectAreaPicker}
+              >
+                <Icon name="iconThingsProject" size={16} />
+              </button>
+
+              {#if showProjectAreaPicker}
+                <div class="task-card__dropdown task-card__dropdown--right">
+                  <ProjectAreaPicker
+                    store={store}
+                    selectedProjectId={assignment.projectId}
+                    selectedAreaId={assignment.areaId}
+                    on:change={handleProjectAreaChange}
+                    on:close={() => showProjectAreaPicker = false}
+                  />
+                </div>
+              {/if}
+            </div>
+          {/if}
+
           <!-- 删除（编辑模式） -->
           {#if mode === 'edit'}
             <button class="task-card__tool-btn task-card__tool-btn--delete" title="删除" on:click|stopPropagation={handleDelete}>
-              <span>×</span>
+              <Icon name="iconThingsX" size={14} />
             </button>
           {/if}
         </div>
@@ -973,12 +1076,32 @@
       white-space: nowrap;
     }
 
+    // 辅助区标签名胶囊：浅灰边 + 圆角，弱化显示
+    &__tag-pill {
+      padding: 1px 8px;
+      border: 1px solid var(--b3-border-color);
+      border-radius: 999px;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
     &__aux-deadline {
       color: #dc2626;
 
       &.is-overdue {
         font-weight: 600;
       }
+    }
+
+    // 日程行左侧时间列（计划视图带时间的任务，收缩态替代 checkbox）
+    &__schedule-time {
+      flex-shrink: 0;
+      width: 46px;
+      margin-top: 1px;
+      font-size: 15px;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+      color: #3b82f6;
     }
 
     &__check {

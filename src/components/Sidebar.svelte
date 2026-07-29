@@ -36,11 +36,11 @@
 
   // 侧边栏项目
   $: mainItems = [
-    { view: "inbox" as ViewType, icon: "iconInbox", label: "收件箱", count: counts.inbox },
-    { view: "today" as ViewType, icon: "iconToday", label: "今天", count: counts.today },
-    { view: "upcoming" as ViewType, icon: "iconCalendar", label: "计划", count: counts.upcoming },
-    { view: "anytime" as ViewType, icon: "iconAnytime", label: "任何时候", count: counts.anytime },
-    { view: "someday" as ViewType, icon: "iconSomeday", label: "某天", count: 0 },
+    { view: "inbox" as ViewType, icon: "iconThingsInbox", label: "收件箱", count: counts.inbox },
+    { view: "today" as ViewType, icon: "iconThingsToday", label: "今天", count: counts.today },
+    { view: "upcoming" as ViewType, icon: "iconThingsCalendar", label: "计划", count: counts.upcoming },
+    { view: "anytime" as ViewType, icon: "iconThingsAnytime", label: "任何时候", count: counts.anytime },
+    { view: "someday" as ViewType, icon: "iconThingsSomeday", label: "某天", count: 0 },
   ];
 
   // 获取区域和项目
@@ -126,7 +126,7 @@
       <div class="sidebar__section-header">
         <span class="sidebar__section-title">区域</span>
         <button class="sidebar__add-btn" on:click={handleAddArea} title="添加区域">
-          <svg><use xlink:href="#iconAdd" /></svg>
+          <svg><use xlink:href="#iconThingsAdd" /></svg>
         </button>
       </div>
 
@@ -137,7 +137,7 @@
             class:is-active={isActive("area", area.id)}
             on:click={() => handleNavClick("area", area.id)}
           >
-            <svg class="sidebar__icon"><use xlink:href="#iconArea" /></svg>
+            <svg class="sidebar__icon"><use xlink:href="#iconThingsArea" /></svg>
             <span class="sidebar__label">{area.name}</span>
           </button>
 
@@ -147,7 +147,7 @@
               class:is-active={isActive("project", project.id)}
               on:click={() => handleNavClick("project", project.id)}
             >
-              <svg class="sidebar__icon"><use xlink:href="#iconProject" /></svg>
+              <svg class="sidebar__icon"><use xlink:href="#iconThingsProject" /></svg>
               <span class="sidebar__label">{project.name}</span>
             </button>
           {/each}
@@ -157,7 +157,7 @@
             on:click={() => handleAddProject(area.id)}
             title="在此区域添加项目"
           >
-            <svg><use xlink:href="#iconAdd" /></svg>
+            <svg><use xlink:href="#iconThingsAdd" /></svg>
             <span>添加项目</span>
           </button>
         </div>
@@ -172,7 +172,7 @@
               class:is-active={isActive("project", project.id)}
               on:click={() => handleNavClick("project", project.id)}
             >
-              <svg class="sidebar__icon"><use xlink:href="#iconProject" /></svg>
+              <svg class="sidebar__icon"><use xlink:href="#iconThingsProject" /></svg>
               <span class="sidebar__label">{project.name}</span>
             </button>
           {/each}

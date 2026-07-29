@@ -35,7 +35,7 @@ export interface Task {
 }
 
 // ===== 项目 =====
-export type ProjectStatus = 'active' | 'completed' | 'canceled';
+export type ProjectStatus = 'active' | 'onhold' | 'completed' | 'canceled';
 
 export interface ProjectHeading {
   id: string;
@@ -82,6 +82,8 @@ export type ViewType =
   | 'upcoming'
   | 'anytime'
   | 'someday'
+  | 'log'
+  | 'projects'
   | 'project'
   | 'area'
   | 'tag'
