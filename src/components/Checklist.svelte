@@ -45,6 +45,13 @@
     };
   }
 
+  // 确保末尾始终有一个空项，方便用户连续输入
+  $: {
+    if (items.length > 0 && items[items.length - 1].title.trim() !== '') {
+      items = [...items, { id: Date.now().toString(), title: '', completed: false }];
+    }
+  }
+
   function toggleItem(id: string) {
     items = items.map(item =>
       item.id === id ? { ...item, completed: !item.completed } : item
@@ -68,39 +75,47 @@
     dispatch("change", { items });
   }
 
+  // 记录需要聚焦的新项 ID
+  let pendingFocusId: string | null = null;
+
+  // 当新空项被添加后（包括父组件重渲染恢复的情况），聚焦它
+  $: if (pendingFocusId) {
+    const targetId = pendingFocusId;
+    pendingFocusId = null;
+    tick().then(() => {
+      const el = itemElements.get(targetId);
+      if (el) {
+        const input = el.querySelector('.checklist__input');
+        if (input) (input as HTMLInputElement).focus();
+      }
+    });
+  }
+
   function handleKeydown(e: KeyboardEvent, id: string) {
     if (e.key === 'Enter') {
       e.preventDefault();
 
-      // 找到当前项的索引
       const currentIndex = items.findIndex(item => item.id === id);
       const currentItem = items[currentIndex];
 
-      // 如果当前项有内容，添加新项
       if (currentItem && currentItem.title.trim()) {
-        // 如果当前项是最后一项，添加新空项
-        if (currentIndex === items.length - 1) {
-          const newId = Date.now().toString();
-          items = [...items, { id: newId, title: "", completed: false }];
-          dispatch("change", { items });
+        // 在当前项后面插入新空项
+        const newId = Date.now().toString();
+        const newItems = [...items];
+        newItems.splice(currentIndex + 1, 0, { id: newId, title: "", completed: false });
+        items = newItems;
+        dispatch("change", { items });
 
-          // 等待DOM更新后聚焦新项
-          tick().then(() => {
-            const newItemEl = itemElements.get(newId);
-            if (newItemEl) {
-              const input = newItemEl.querySelector('.checklist__input');
-              if (input) (input as HTMLInputElement).focus();
-            }
-          });
-        } else {
-          // 如果不是最后一项，聚焦下一项
-          const nextItem = items[currentIndex + 1];
-          if (nextItem) {
-            const nextEl = itemElements.get(nextItem.id);
-            if (nextEl) {
-              const input = nextEl.querySelector('.checklist__input');
-              if (input) (input as HTMLInputElement).focus();
-            }
+        // 聚焦新项
+        pendingFocusId = newId;
+      } else if (!currentItem?.title.trim()) {
+        // 当前空项按 Enter，聚焦下一项（如果有的话）
+        const nextItem = items[currentIndex + 1];
+        if (nextItem) {
+          const nextEl = itemElements.get(nextItem.id);
+          if (nextEl) {
+            const input = nextEl.querySelector('.checklist__input');
+            if (input) (input as HTMLInputElement).focus();
           }
         }
       }

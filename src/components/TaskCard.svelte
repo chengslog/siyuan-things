@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
+  import { fade } from "svelte/transition";
   import type { Task } from "@/types";
   import type { StoreManager } from "@/stores";
   import { formatDateShort, isOverdue } from "@/utils/date";
@@ -50,6 +51,8 @@
 
   // 初始化
   onMount(() => {
+    // 监听其他卡片的展开事件，实现卡片互斥（展开一个时其他自动收起）
+    window.addEventListener('card-expanded', handleCardExpanded as EventListener);
     if (mode === 'edit' && task) {
       title = task.title;
       notes = task.notes || "";
@@ -57,14 +60,16 @@
       deadline = task.deadline;
       someday = task.someday || false;
       selectedTags = [...(task.tags || [])];
-      // 加载子任务
+      // 加载子任务到本地状态
       const subTasks = store.tasks.getSubTasks(task.id);
       if (subTasks.length > 0) {
-        checklist = subTasks.map(t => ({
+        localChecklist = subTasks.map(t => ({
           id: t.id,
           title: t.title,
           completed: t.status === 'done'
         }));
+      } else {
+        localChecklist = [{ id: "empty", title: "", completed: false }];
       }
       // 注册元素
       if (cardEl) {
@@ -79,11 +84,24 @@
   });
 
   onDestroy(() => {
+    window.removeEventListener('card-expanded', handleCardExpanded as EventListener);
     if (mode === 'edit' && task) {
       unregisterItem(task.id);
     }
     if (moveTimeout) clearTimeout(moveTimeout);
+    // 若组件在完成延迟结束前被销毁（如切换视图），立即完成任务，避免丢失用户的勾选操作
+    if (pendingDone && !completionApplied && task) {
+      store.tasks.toggleTask(task.id);
+    }
   });
+
+  // 卡片互斥：其他卡片展开时，收起当前卡片
+  function handleCardExpanded(e: CustomEvent) {
+    const { cardId } = e.detail;
+    if (mode === 'edit' && task && cardId !== task.id && expanded) {
+      saveAndCollapse();
+    }
+  }
 
   // 辅助函数
   function getTodayStart(): number {
@@ -93,9 +111,12 @@
   }
 
   // 响应式数据
-  $: subTasks = mode === 'edit' && task ? store.tasks.getSubTasks(task.id) : [];
   $: tags = mode === 'edit' && task ? task.tags.map((id) => store.tags.get(id)).filter(Boolean) : [];
   $: isDeadlineOverdue = mode === 'edit' && task?.deadline && isOverdue(task.deadline);
+
+  // 编辑模式：本地维护检查清单状态，避免 store 更新导致重置
+  let localChecklist: Array<{ id: string; title: string; completed: boolean }> = [];
+  $: checklistItems = mode === 'edit' ? localChecklist : checklist;
 
   // 日期显示
   $: dateDisplay = getDateDisplay();
@@ -199,17 +220,7 @@
     if (mode === 'edit' && task) {
       await saveTitle();
       await saveNotes();
-      // 检查是否需要移动
-      const shouldMove = shouldTaskMoveToDifferentView();
-      if (shouldMove) {
-        isMovingOut = true;
-        await new Promise(resolve => setTimeout(resolve, 300));
-        expanded = false;
-        await new Promise(resolve => setTimeout(resolve, 300));
-        isMovingOut = false;
-      } else {
-        expanded = false;
-      }
+      expanded = false;
     }
     document.removeEventListener('click', handleOutsideClick);
   }
@@ -231,19 +242,26 @@
   // 切换完成状态
   let moveTimeout: any = null;
   let isMoving = false;
+  let pendingDone = false;        // 本地预显示“已完成”状态（勾选框打勾）
+  let completionApplied = false;  // 完成操作是否已写入 store
 
   async function handleToggle(e: Event) {
     e.stopPropagation();
     if (!task) return;
 
     if (task.status === "done") {
+      // 取消完成
       await store.tasks.toggleTask(task.id);
       await store.tasks.updateTask(task.id, { completedDate: undefined });
     } else {
-      await store.tasks.toggleTask(task.id);
+      // 完成：先本地显示打勾 + 置灰，3 秒后才真正写入 store（移入日志）
+      pendingDone = true;
+      completionApplied = false;
       isMoving = true;
       moveTimeout = setTimeout(async () => {
-        await store.tasks.updateTask(task.id, { startDate: undefined });
+        completionApplied = true;
+        await store.tasks.toggleTask(task.id);
+        pendingDone = false;
         isMoving = false;
       }, 3000);
     }
@@ -259,11 +277,13 @@
 
   // 添加子任务
   async function addSubTask() {
-    if (task) {
-      await store.tasks.createTask({
-        title: "",
-        parentId: task.id,
-      });
+    if (mode === 'create') {
+      // 新建模式：显示检查清单并追加空项
+      showChecklist = true;
+      checklist = [...checklist, { id: Date.now().toString(), title: "", completed: false }];
+    } else if (task) {
+      // 编辑模式：追加到本地检查清单（编辑/失焦时同步到 store），确保新项立即可见
+      localChecklist = [...localChecklist, { id: Date.now().toString(), title: "", completed: false }];
     }
   }
 
@@ -273,8 +293,7 @@
       startDate = e.detail.timestamp;
       someday = e.detail.someday || false;
     } else if (task) {
-      await store.tasks.updateTask(task.id, { startDate: e.detail.timestamp, someday: e.detail.someday || false });
-      await checkAndMoveAfterChange();
+      await applyChangeWithAnimation({ startDate: e.detail.timestamp, someday: e.detail.someday || false });
     }
     showDatePicker = false;
   }
@@ -284,8 +303,7 @@
     if (mode === 'create') {
       deadline = e.detail.timestamp;
     } else if (task) {
-      await store.tasks.updateTask(task.id, { deadline: e.detail.timestamp });
-      await checkAndMoveAfterChange();
+      await applyChangeWithAnimation({ deadline: e.detail.timestamp });
     }
     showDeadlinePicker = false;
   }
@@ -295,8 +313,7 @@
     if (mode === 'create') {
       selectedTags = e.detail.tags;
     } else if (task) {
-      await store.tasks.updateTask(task.id, { tags: e.detail.tags });
-      await checkAndMoveAfterChange();
+      await applyChangeWithAnimation({ tags: e.detail.tags });
     }
     showTagPicker = false;
   }
@@ -309,6 +326,10 @@
     if (mode === 'create') {
       checklist = newItems;
     } else if (task) {
+      // 更新本地状态（保留空项）
+      localChecklist = [...newItems];
+
+      // 同步到 store
       const currentSubTasks = store.tasks.getSubTasks(task.id);
       for (const newItem of newItems) {
         const oldItem = currentSubTasks.find(t => t.id === newItem.id);
@@ -343,8 +364,7 @@
       startDate = undefined;
       someday = false;
     } else if (task) {
-      await store.tasks.updateTask(task.id, { startDate: undefined, someday: false });
-      await checkAndMoveAfterChange();
+      await applyChangeWithAnimation({ startDate: undefined, someday: false });
     }
   }
 
@@ -353,8 +373,7 @@
     if (mode === 'create') {
       selectedTags = [];
     } else if (task) {
-      await store.tasks.updateTask(task.id, { tags: [] });
-      await checkAndMoveAfterChange();
+      await applyChangeWithAnimation({ tags: [] });
     }
   }
 
@@ -363,44 +382,44 @@
     if (mode === 'create') {
       deadline = undefined;
     } else if (task) {
-      await store.tasks.updateTask(task.id, { deadline: undefined });
-      await checkAndMoveAfterChange();
+      await applyChangeWithAnimation({ deadline: undefined });
     }
   }
 
-  // 检查是否需要移动到其他列表
-  function shouldTaskMoveToDifferentView(): boolean {
+  // 判断给定变更是否会使任务移出当前视图（基于当前任务与变更的合并结果）
+  function willChangeCauseMove(changes: Partial<Task>): boolean {
     if (!task) return false;
+
+    const merged = { ...task, ...changes };
 
     const todayEnd = new Date();
     todayEnd.setHours(23, 59, 59, 999);
     const todayEndTs = todayEnd.getTime();
 
     let targetView = 'inbox';
-    if (task.someday) {
+    if (merged.someday) {
       targetView = 'someday';
-    } else if (task.startDate) {
-      if (task.startDate <= todayEndTs) {
-        targetView = 'today';
-      } else {
-        targetView = 'upcoming';
-      }
-    } else if (task.projectId || task.areaId || (task.tags && task.tags.length > 0)) {
+    } else if (merged.startDate) {
+      targetView = merged.startDate <= todayEndTs ? 'today' : 'upcoming';
+    } else if (merged.projectId || merged.areaId || (merged.tags && merged.tags.length > 0)) {
       targetView = 'anytime';
     }
 
     return targetView !== currentView;
   }
 
-  // 检查并移动
-  async function checkAndMoveAfterChange() {
-    const shouldMove = shouldTaskMoveToDifferentView();
-    if (shouldMove) {
-      isMovingOut = true;
-      await new Promise(resolve => setTimeout(resolve, 300));
-      expanded = false;
-      await new Promise(resolve => setTimeout(resolve, 300));
+  // 应用变更：若会导致视图迁移，先播放置灰动画再写入 store（列表移除的滑出动画由 TaskList 的 outro 负责）
+  async function applyChangeWithAnimation(changes: Partial<Task>) {
+    if (!task) return;
+
+    if (willChangeCauseMove(changes)) {
+      isMovingOut = true;   // 置灰
+      expanded = false;     // 收起卡片
+      await new Promise(resolve => setTimeout(resolve, 300)); // 等待置灰动画
+      await store.tasks.updateTask(task.id, changes); // 写入 store → 任务移出当前视图 → outro 滑出
       isMovingOut = false;
+    } else {
+      await store.tasks.updateTask(task.id, changes);
     }
   }
 
@@ -533,10 +552,10 @@
     {#if mode === 'edit'}
       <button
         class="task-card__check"
-        class:is-checked={task?.status === "done"}
+        class:is-checked={task?.status === "done" || pendingDone}
         on:click={handleToggle}
       >
-        {#if task?.status === "done"}
+        {#if task?.status === "done" || pendingDone}
           <svg><use xlink:href="#iconCheck" /></svg>
         {/if}
       </button>
@@ -557,7 +576,7 @@
         on:click|stopPropagation
       />
     {:else}
-      <div class="task-card__title" class:is-done={task?.status === "done"}>
+      <div class="task-card__title" class:is-done={task?.status === "done" || pendingDone}>
         {task?.title}
       </div>
     {/if}
@@ -588,7 +607,7 @@
 
   <!-- 展开详情 -->
   {#if expanded}
-    <div class="task-card__details" on:click|stopPropagation>
+    <div class="task-card__details" on:click|stopPropagation transition:fade={{ duration: 150 }}>
       <!-- 备注 -->
       <textarea
         class="task-card__notes"
@@ -610,7 +629,7 @@
       <!-- 检查清单 -->
       <div class="task-card__subtasks">
         <Checklist
-          items={mode === 'edit' ? subTasks.map(t => ({ id: t.id, title: t.title, completed: t.status === 'done' })) : checklist}
+          items={checklistItems}
           showDragHandle={mode === 'edit'}
           on:change={handleChecklistChange}
         />
@@ -764,21 +783,6 @@
             </div>
           {/if}
 
-          <!-- 检查清单（新建模式） -->
-          {#if mode === 'create'}
-            <button
-              class="task-card__tool-btn"
-              class:is-active={showChecklist}
-              on:click={() => showChecklist = !showChecklist}
-            >
-              <span>☷</span>
-            </button>
-          {:else}
-            <button class="task-card__tool-btn" title="添加子任务" on:click|stopPropagation={addSubTask}>
-              <span>☷</span>
-            </button>
-          {/if}
-
           <!-- 截止日期（未设置时） -->
           {#if !deadlineDisplay}
             <div class="task-card__action-group">
@@ -800,6 +804,21 @@
                 </div>
               {/if}
             </div>
+          {/if}
+
+          <!-- 检查清单（新建模式） -->
+          {#if mode === 'create'}
+            <button
+              class="task-card__tool-btn"
+              class:is-active={showChecklist}
+              on:click={() => showChecklist = !showChecklist}
+            >
+              <span>☷</span>
+            </button>
+          {:else}
+            <button class="task-card__tool-btn" title="添加子任务" on:click|stopPropagation={addSubTask}>
+              <span>☷</span>
+            </button>
           {/if}
 
           <!-- 删除（编辑模式） -->
@@ -858,8 +877,7 @@
     &.is-moving-out {
       opacity: 0.5;
       background: #f3f4f6;
-      transform: translateX(-100%);
-      transition: opacity 0.3s ease, transform 0.3s ease;
+      transition: opacity 0.3s ease, background 0.3s ease;
       pointer-events: none;
     }
 

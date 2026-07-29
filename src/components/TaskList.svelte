@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { cubicOut } from "svelte/easing";
   import TaskCard from "./TaskCard.svelte";
   import DragSort from "./DragSort.svelte";
   import type { ViewType, Task } from "@/types";
@@ -15,6 +16,15 @@
   let showFabMenu = false;
   let refreshKey = 0;
   let dragSortRef: DragSort;
+
+  // 任务移出列表的滑出动画（完成移入日志 / 视图迁移时播放）
+  function slideOut(node: HTMLElement, { duration = 300 }: { duration?: number } = {}) {
+    return {
+      duration,
+      easing: cubicOut,
+      css: (t: number, u: number) => `opacity: ${t}; transform: translateX(${u * -100}%);`,
+    };
+  }
 
   // 监听 store 变化
   onMount(() => {
@@ -266,6 +276,7 @@
             <div
               class="task-list__item-wrapper"
               class:is-dragging={draggedId === task.id}
+              out:slideOut
             >
               <TaskCard
                 mode="edit"

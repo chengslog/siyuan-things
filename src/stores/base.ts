@@ -29,7 +29,7 @@ export abstract class BaseStore<T extends { id: string }> {
           this.items.set(item.id, item);
         }
         // 触发变化事件，通知组件数据已加载
-        this.emit('change', []);
+        this.emit({ type: 'change', ids: [] });
       }
     } catch (e) {
       console.error(`[Things] Failed to load ${this.fileName}:`, e);
