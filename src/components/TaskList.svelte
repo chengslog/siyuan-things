@@ -87,7 +87,10 @@
       store.areas.on(bump),
       store.tags.on(bump),
     ];
-    return () => unsubs.forEach((u) => u());
+    return () => {
+      unsubs.forEach((u) => u());
+      document.removeEventListener("mousedown", onHeadingInputOutside);
+    };
   });
 
   // 根据视图获取任务列表 - 使用响应式声明确保视图切换时刷新
@@ -188,14 +191,14 @@
       return new Map<string, Task[]>([["今天", day], ["今晚", evening]]);
     }
 
-    // 项目视图：按标题分组（headings）展示；没有标题时单组。
-    // 组 key = headingId，未分组任务归入 "none"（空则不显示该组）
+    // 项目视图：按标题分组（headings）展示，组 key = headingId，无标题的任务归入 "none"。
+    // "未分组" 始终显示（与今天/今晚常驻一致）——否则没有标题时任务平铺、
+    // 加第一个标题后所有任务突然挪进"未分组"，观感像"添加了东西任务才出现"
     if (view === "project" && viewId) {
       const project = store.projects.get(viewId);
       const headings = project?.headings?.length
         ? [...project.headings].sort((a, b) => a.order - b.order)
         : [];
-      if (headings.length === 0) return new Map([["all", tasks]]);
       const groups = new Map<string, Task[]>();
       for (const h of headings) groups.set(h.id, []);
       const ungrouped: Task[] = [];
@@ -203,7 +206,7 @@
         if (t.headingId && groups.has(t.headingId)) groups.get(t.headingId)!.push(t);
         else ungrouped.push(t);
       }
-      if (ungrouped.length) groups.set("none", ungrouped);
+      groups.set("none", ungrouped);
       for (const arr of groups.values()) {
         arr.sort((a, b) => (a.order !== b.order ? a.order - b.order : b.created - a.created));
       }
@@ -282,14 +285,36 @@
     if (!heading) return;
     editingHeadingId = heading.id;
     headingDraft = heading.title;
+    // 点输入框以外即提交收起——不能只靠 blur：任务卡片 mousedown preventDefault 会吞掉失焦
+    setTimeout(() => document.addEventListener("mousedown", onHeadingInputOutside), 0);
+  }
+
+  function startAddHeading() {
+    addingHeading = true;
+    headingDraft = "";
+    setTimeout(() => document.addEventListener("mousedown", onHeadingInputOutside), 0);
+  }
+
+  function onHeadingInputOutside(e: MouseEvent) {
+    const target = e.target as HTMLElement;
+    if (target.closest(".task-list__heading-input")) return; // 点输入框自身：保持编辑
+    document.removeEventListener("mousedown", onHeadingInputOutside);
+    if (editingHeadingId && projectObj) {
+      commitHeadingRename(projectObj.id, editingHeadingId);
+    } else if (addingHeading) {
+      addingHeading = false;
+      headingDraft = "";
+    }
   }
 
   async function commitHeadingRename(projectId: string, headingId: string) {
     const title = headingDraft.trim();
+    // 先清空状态再写库：输入框卸载触发的 blur 会再调一次，状态已空即为空操作，不会重复改名
+    headingDraft = "";
+    editingHeadingId = null;
     if (title) {
       await store.projects.updateHeading(projectId, headingId, title);
     }
-    editingHeadingId = null;
   }
 
   async function removeHeading(projectId: string, headingId: string) {
@@ -304,11 +329,12 @@
 
   async function commitAddHeading() {
     const title = headingDraft.trim();
+    // 先清空状态再写库：blur 重复触发即为空操作，不会重复建分组
+    addingHeading = false;
+    headingDraft = "";
     if (title && view === "project" && viewId) {
       await store.projects.addHeading(viewId, title);
     }
-    addingHeading = false;
-    headingDraft = "";
   }
 
   function handleCancelCreate() {
@@ -316,9 +342,16 @@
     createTarget = null;
   }
 
+  // 创建卡片的目标视图上下文（显式携带，不从渲染状态推断——
+  // 拖 + 切视图与卡片挂载存在时序差，靠 currentView 推断会让任务落错视图）
+  let createDestView: ViewType | undefined = undefined;
+  let createDestViewId: string | undefined = undefined;
+
   // 打开创建卡片：target=null → 顶部；否则插入到指定分组/索引处
-  function openCreate(target: { group: string; index: number } | null) {
+  function openCreate(target: { group: string; index: number } | null, dest?: { view: ViewType; viewId?: string }) {
     createTarget = target;
+    createDestView = dest?.view;
+    createDestViewId = dest?.viewId;
     showCreateForm = true;
   }
 
@@ -409,6 +442,7 @@
   function handleGroupDragStart(group: string) {
     dragFromGroup = group;
     document.addEventListener("mousemove", trackDragOver);
+    document.addEventListener("mousemove", trackNavHover);
   }
 
   function handleGroupDragEnd() {
@@ -419,18 +453,103 @@
     dragFromGroup = null;
     dragOverGroup = null;
     document.removeEventListener("mousemove", trackDragOver);
+    clearNavHover();
   }
 
   // 落点不在源分组内 → 把任务日期改到落点分组
   function handleDrop(e: CustomEvent) {
-    const { id, clientY, fromGroup, withinSelf } = e.detail;
+    const { id, clientX, clientY, fromGroup, withinSelf } = e.detail;
     if (withinSelf) return;
+
+    // 优先判定侧边栏落点：拖任务到「某天/收件箱/今天/随时/日志/项目/区域」直接转换归属
+    const nav = acceptableNavAt(clientX, clientY);
+    if (nav) {
+      moveTaskToView(id, nav.dataset.view as ViewType, nav.dataset.id);
+      return;
+    }
+
+    // 其余：列表内跨组落点
     for (const key of Object.keys(dragSortRefs)) {
       if (key === fromGroup || !blockContains(key, clientY)) continue;
       const toIndex = dragSortRefs[key] ? dragSortRefs[key].computeInsertIndex(clientY) : 0;
       moveTaskToGroup(id, key, toIndex);
       return;
     }
+  }
+
+  // 侧边栏上可接收任务拖入的视图（计划需要具体日期不接收、标签/总览页不接收）
+  function acceptableNavAt(x: number, y: number): HTMLElement | null {
+    const el = document.elementFromPoint(x, y) as HTMLElement | null;
+    const nav = el?.closest(".things-nav__item[data-view]") as HTMLElement | null;
+    if (!nav) return null;
+    const nv = nav.dataset.view;
+    if (nv === "someday" || nv === "inbox" || nv === "today" || nv === "anytime" || nv === "log") return nav;
+    if ((nv === "project" || nv === "area") && nav.dataset.id) return nav;
+    return null;
+  }
+
+  // 任务拖拽中：悬停可接收的侧边栏视图时高亮（与 FAB 拖拽同款 is-drop-hover）
+  function trackNavHover(e: MouseEvent) {
+    document.querySelectorAll(".things-nav__item.is-drop-hover").forEach((n) => n.classList.remove("is-drop-hover"));
+    const nav = acceptableNavAt(e.clientX, e.clientY);
+    if (nav) nav.classList.add("is-drop-hover");
+  }
+
+  function clearNavHover() {
+    document.querySelectorAll(".things-nav__item.is-drop-hover").forEach((n) => n.classList.remove("is-drop-hover"));
+    document.removeEventListener("mousemove", trackNavHover);
+  }
+
+  // 拖任务到侧边栏视图：按目标视图语义转换任务（移动后给出 toast，避免"任务消失了"的错觉）
+  async function moveTaskToView(taskId: string, targetView: ViewType, targetId?: string) {
+    const task = sortedTasks.find((t) => t.id === taskId);
+    if (!task) return;
+
+    let changes: Partial<Task> | null = null;
+    let toast = "";
+    switch (targetView) {
+      case "someday":
+        changes = { someday: true, startDate: undefined };
+        toast = "已移到某天";
+        break;
+      case "today": {
+        const d = new Date();
+        d.setHours(0, 0, 0, 0);
+        changes = { someday: false, startDate: d.getTime() };
+        toast = "已移到今天";
+        break;
+      }
+      case "inbox":
+        changes = { someday: false, startDate: undefined, projectId: undefined, areaId: undefined };
+        toast = "已移到收件箱";
+        break;
+      case "anytime":
+        changes = { someday: false, startDate: undefined };
+        toast = "已移到随时";
+        break;
+      case "log":
+        changes = { status: "done", completedDate: Date.now() };
+        toast = "已完成，移入日志";
+        break;
+      case "project":
+        if (targetId) {
+          changes = { projectId: targetId, someday: false };
+          toast = "已移到项目";
+        }
+        break;
+      case "area":
+        if (targetId) {
+          changes = { areaId: targetId, someday: false };
+          toast = "已移到区域";
+        }
+        break;
+      default:
+        return; // 计划/标签/总览页不接收拖入（计划需要具体日期，在视图内按日期组拖）
+    }
+    if (!changes) return;
+
+    await store.tasks.updateTask(taskId, changes);
+    if (toast) showMessage(toast);
   }
 
   // 跨组移动：由落点分组推算新日期，再原位写回全局 order（与 handleReorder 同机制）
@@ -509,6 +628,7 @@
     const home = fab.getBoundingClientRect(); // 按钮原位（用于回弹）
     let dragging = false;
     let hoverNav: HTMLElement | null = null;
+    let lastNav: HTMLElement | null = null; // 拖拽中最后悬停过的侧边栏视图（离开后保留，落点兜底用）
     let overList = false;
     let openTimer: any = null;        // 侧边栏悬停→延迟切换视图（避免扫过快速切换）
     let indicator: HTMLElement | null = null; // 列表插入位置指示线
@@ -616,6 +736,7 @@
       if (nav && isCreatableNav(nav)) {
         nav.classList.add("is-drop-hover");
         hoverNav = nav;
+        lastNav = nav;
         // 悬停 120ms 打开对应页（已是当前视图则不重复切换）
         const nv = nav.dataset.view as ViewType;
         const nid = nav.dataset.id;
@@ -636,7 +757,7 @@
       document.removeEventListener("mouseup", onUp);
       cancelOpen();
       if (!dragging) {
-        openCreate(null); // 直接点击 → 当前视图顶部新建
+        openCreate(null, { view, viewId }); // 直接点击 → 当前视图顶部新建
         return;
       }
       const nav = hoverNav;
@@ -655,11 +776,23 @@
       }, 420);
 
       if (nav) {
-        // 在侧边栏视图上松手 → 打开该视图并在顶部弹出新建卡片
-        window.dispatchEvent(new CustomEvent("things-navigate", { detail: { view: nav.dataset.view, viewId: nav.dataset.id } }));
-        openCreate(null);
+        // 在侧边栏视图上松手 → 打开该视图并在顶部弹出新建卡片（创建卡显式携带目标视图）
+        const nv = nav.dataset.view as ViewType;
+        const nid = nav.dataset.id;
+        window.dispatchEvent(new CustomEvent("things-navigate", { detail: { view: nv, viewId: nid } }));
+        openCreate(null, { view: nv, viewId: nid });
       } else if (list) {
-        openCreate(insertTarget); // 在任务列表上松手 → 在插入位置弹出新建卡片
+        // 在任务列表上松手 → 在插入位置弹出新建卡片。
+        // 兜底：拖拽途中扫过侧边栏视图但 120ms 悬停切换没触发时，以扫过的视图为准——
+        // 先切过去再在顶部新建，且创建卡显式携带目标视图（不靠渲染状态推断，杜绝落错视图）
+        const lv = lastNav?.dataset.view as ViewType | undefined;
+        const lid = lastNav?.dataset.id;
+        if (lastNav && isCreatableNav(lastNav) && (lv !== view || (lid || undefined) !== viewId)) {
+          window.dispatchEvent(new CustomEvent("things-navigate", { detail: { view: lv, viewId: lid } }));
+          openCreate(null, { view: lv!, viewId: lid });
+        } else {
+          openCreate(insertTarget, { view, viewId });
+        }
       }
       // 两者都不是：仅回弹，不做任何操作
     };
@@ -764,6 +897,8 @@
       {store}
       currentView={view}
       currentViewId={viewId}
+      presetView={createDestView}
+      presetViewId={createDestViewId}
       on:created={handleTaskCreated}
       on:cancel={handleCancelCreate}
     />
@@ -772,7 +907,7 @@
   <!-- 任务列表 -->
   <div class="task-list__items" bind:this={itemsEl}>
     {#if view === "project" && projectObj}
-      <ProjectPanel store={store} project={projectObj} tasks={projectTasks} />
+      <ProjectPanel store={store} project={projectObj} tasks={projectTasks} on:addheading={startAddHeading} />
     {/if}
     {#if view === "area" && areaObj}
       <AreaPanel store={store} area={areaObj} projects={areaProjects} />
@@ -786,7 +921,7 @@
     {#if view === "tags"}
       <TagOverview store={store} version={refreshKey} />
     {/if}
-    {#if sortedTasks.length === 0 && view !== "today" && view !== "upcoming" && view !== "projects" && view !== "areas" && view !== "tags"}
+    {#if sortedTasks.length === 0 && view !== "today" && view !== "upcoming" && view !== "projects" && view !== "areas" && view !== "tags" && view !== "project"}
       <div class="task-list__empty">
         <Icon name={emptyState.icon} size={48} klass="task-list__empty-icon" />
         <p>{emptyState.text}</p>
@@ -844,6 +979,8 @@
                     bind:value={headingDraft}
                     on:blur={() => commitHeadingRename(projectObj.id, group)}
                     on:keydown={(e) => {
+                      // 中文输入法组词中的回车是确认候选词，不提交
+                      if (e.isComposing || e.keyCode === 229) return;
                       if (e.key === "Enter") commitHeadingRename(projectObj.id, group);
                       if (e.key === "Escape") editingHeadingId = null;
                     }}
@@ -890,6 +1027,9 @@
                   currentView={view}
                   currentViewId={viewId}
                   presetStartDate={createPreset.startDate}
+                  presetHeadingId={view === "project" && group !== "none" && group !== "all" ? group : undefined}
+                  presetView={createDestView}
+                  presetViewId={createDestViewId}
                   on:created={handleTaskCreated}
                   on:cancel={handleCancelCreate}
                 />
@@ -920,6 +1060,9 @@
                 currentView={view}
                 currentViewId={viewId}
                 presetStartDate={createPreset.startDate}
+                presetHeadingId={view === "project" && group !== "none" && group !== "all" ? group : undefined}
+                presetView={createDestView}
+                presetViewId={createDestViewId}
                 on:created={handleTaskCreated}
                 on:cancel={handleCancelCreate}
               />
@@ -928,26 +1071,22 @@
         </div>
       {/each}
 
-      {#if view === "project" && projectObj}
-        {#if addingHeading}
-          <div class="task-list__heading-add">
-            <input
-              class="task-list__heading-input"
-              type="text"
-              placeholder="标题分组名称"
-              bind:value={headingDraft}
-              on:blur={commitAddHeading}
-              on:keydown={(e) => {
-                if (e.key === "Enter") commitAddHeading();
-                if (e.key === "Escape") { addingHeading = false; headingDraft = ""; }
-              }}
-            />
-          </div>
-        {:else}
-          <button class="task-list__heading-addbtn" on:click={() => { addingHeading = true; headingDraft = ""; }}>
-            ＋ 添加标题分组
-          </button>
-        {/if}
+      {#if view === "project" && projectObj && addingHeading}
+        <div class="task-list__heading-add">
+          <input
+            class="task-list__heading-input"
+            type="text"
+            placeholder="标题分组名称"
+            bind:value={headingDraft}
+            on:blur={commitAddHeading}
+            on:keydown={(e) => {
+              // 中文输入法组词中的回车是确认候选词，不提交
+              if (e.isComposing || e.keyCode === 229) return;
+              if (e.key === "Enter") commitAddHeading();
+              if (e.key === "Escape") { addingHeading = false; headingDraft = ""; }
+            }}
+          />
+        </div>
       {/if}
     {/if}
   </div>
@@ -1073,6 +1212,7 @@
 
     // 项目标题分组（headings）头
     &__heading {
+      position: relative; // × 删除按钮绝对定位浮于线尾，不占布局
       display: flex;
       align-items: center;
       gap: 8px;
@@ -1115,12 +1255,19 @@
       color: var(--b3-theme-on-surface);
     }
 
+    // × 删除：退出布局流（否则分割线被它截短，各标题线长随名称+按钮变得参差不齐），
+    // 悬停标题行时浮现在行尾，底色盖住下方分割线
     &__heading-del {
+      position: absolute;
+      right: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      visibility: hidden;
       width: 22px;
       height: 22px;
       border: none;
       border-radius: 4px;
-      background: transparent;
+      background: var(--b3-theme-background);
       cursor: pointer;
       font-size: 14px;
       color: var(--b3-theme-on-surface-light);
@@ -1132,6 +1279,10 @@
         background: var(--b3-theme-error-light);
         color: var(--b3-theme-error);
       }
+    }
+
+    &__heading:hover &__heading-del {
+      visibility: visible;
     }
 
     &__heading-addbtn {

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
   import { fade } from "svelte/transition";
+  import { showMessage } from "siyuan";
   import type { Task } from "@/types";
   import type { StoreManager } from "@/stores";
   import { formatRelativeDate, isOverdue } from "@/utils/date";
@@ -31,6 +32,11 @@
   export let inlineDate: boolean = false;
   // 新建模式继承拖拽落点的日期（今晚→18:00、日期组→当天、月度组→月初）
   export let presetStartDate: number | undefined = undefined;
+  // 项目视图插入式新建：继承落点标题分组（"none" 组传 undefined）
+  export let presetHeadingId: string | undefined = undefined;
+  // 创建卡显式携带的目标视图上下文（拖 + 切视图与挂载有时序差，优先于 currentView）
+  export let presetView: string | undefined = undefined;
+  export let presetViewId: string | undefined = undefined;
 
   const dispatch = createEventDispatcher();
 
@@ -45,6 +51,7 @@
   let selectedTags: string[] = [];
   let projectId: string | undefined = undefined;
   let areaId: string | undefined = undefined;
+  let headingId: string | undefined = undefined;
   let checklist: Array<{ id: string; title: string; completed: boolean }> = [
     { id: "empty", title: "", completed: false }
   ];
@@ -99,9 +106,14 @@
         startDate = getTodayStart();
       }
       // 项目/区域视图里新建的任务预置归属；某天视图置为 someday
-      if (currentView === 'project' && currentViewId) projectId = currentViewId;
-      if (currentView === 'area' && currentViewId) areaId = currentViewId;
-      if (currentView === 'someday') someday = true;
+      // 目标视图以显式 preset 为准（拖 + 切视图时 currentView 可能还是旧视图）
+      const destView = presetView || currentView;
+      const destViewId = presetViewId ?? currentViewId;
+      if (destView === 'project' && destViewId) projectId = destViewId;
+      if (destView === 'area' && destViewId) areaId = destViewId;
+      // 项目视图：继承插入落点的标题分组（此前缺这步，分组下新建的任务全掉进未分组）
+      if (destView === 'project' && presetHeadingId) headingId = presetHeadingId;
+      if (destView === 'someday') someday = true;
       setTimeout(() => titleInput?.focus(), 100);
     }
   });
@@ -571,13 +583,38 @@
         tags: selectedTags,
         projectId,
         areaId,
+        headingId,
       };
 
-      if (currentView === "today" && !startDate) {
+      // 目标视图以显式 preset 为准（拖 + 切视图时 currentView 可能还是旧视图），
+      // 杜绝"拖到某天却建进收件箱"一类的落错视图事故
+      const destView = presetView || currentView;
+
+      if (destView === "today" && !startDate) {
         taskData.startDate = getTodayStart();
+      }
+      // 某天视图里新建的任务必须是 someday——兜底防挂载时序偏差导致状态丢失
+      if (destView === "someday" && !startDate) {
+        taskData.someday = true;
+      }
+      // 计划视图没设具体日期 → 默认明天（否则裸任务不满足计划条件会掉进收件箱）
+      if (destView === "upcoming" && !startDate) {
+        const d = new Date();
+        d.setHours(0, 0, 0, 0);
+        d.setDate(d.getDate() + 1);
+        taskData.startDate = d.getTime();
       }
 
       const newTask = await store.tasks.createTask(taskData);
+
+      // 随时视图要求任务带项目/区域/标签，都不带时任务实际归收件箱，明确告知用户
+      if (
+        destView === "anytime" &&
+        !taskData.projectId && !taskData.areaId &&
+        (!taskData.tags || taskData.tags.length === 0)
+      ) {
+        showMessage("任务未设置项目/区域/标签，已归入收件箱（随时视图只显示带项目/区域/标签的任务）", 7000);
+      }
 
       for (const item of checklist) {
         if (item.title.trim()) {
@@ -600,6 +637,7 @@
       selectedTags = [];
       projectId = currentView === "project" ? currentViewId : undefined;
       areaId = currentView === "area" ? currentViewId : undefined;
+      headingId = currentView === "project" ? presetHeadingId : undefined;
       checklist = [{ id: "empty", title: "", completed: false }];
       titleInput?.focus();
     } finally {
@@ -707,15 +745,15 @@
       {#if !scheduleMode}
         <div class="task-card__aux">
           {#if showTimeBadge}
-            <span class="task-card__aux-item task-card__aux-time" title="提醒">
+            <span class="task-card__aux-item task-card__aux-time" title="开始提醒（到点通知）">
               <Icon name="iconThingsBell" size={12} />
               <span>{formatTime(resolvedStartDate)}</span>
             </span>
           {/if}
           {#if task?.deadline}
-            <span class="task-card__aux-item task-card__aux-deadline" class:is-overdue={isDeadlineOverdue}>
+            <span class="task-card__aux-item task-card__aux-deadline" class:is-overdue={isDeadlineOverdue} title={hasTimeOfDay(task.deadline) ? `截止提醒 ${formatTime(task.deadline)}（到点通知）` : "截止日期"}>
               <Icon name="iconThingsFlag" size={12} />
-              <span>{formatRelativeDate(task.deadline)}</span>
+              <span>{formatRelativeDate(task.deadline)}{hasTimeOfDay(task.deadline) ? ` ${formatTime(task.deadline)}` : ""}</span>
             </span>
           {/if}
           {#if checklistCount > 0}
@@ -787,7 +825,7 @@
 
           <!-- 日期提醒 -->
           {#if dateReminderDisplay}
-            <div class="task-card__tag-item task-card__tag-item--reminder">
+            <div class="task-card__tag-item task-card__tag-item--reminder" title="开始提醒">
               <Icon name={dateReminderDisplay.icon} size={12} />
               <span>{dateReminderDisplay.text}</span>
             </div>
@@ -843,7 +881,7 @@
 
           <!-- 截止日期提醒 -->
           {#if deadlineReminderDisplay}
-            <div class="task-card__tag-item task-card__tag-item--reminder">
+            <div class="task-card__tag-item task-card__tag-item--reminder-deadline" title="截止提醒">
               <Icon name={deadlineReminderDisplay.icon} size={12} />
               <span>{deadlineReminderDisplay.text}</span>
             </div>
@@ -1015,6 +1053,11 @@
             </button>
           {/if}
         </div>
+
+        <!-- 随时视图新建提示：不带分类的任务不属于随时 -->
+        {#if mode === 'create' && (presetView || currentView) === "anytime" && !projectId && !areaId && selectedTags.length === 0}
+          <div class="task-card__anytime-hint">「随时」只显示带项目/区域/标签的任务；都不设置时任务将归入收件箱</div>
+        {/if}
       </div>
     </div>
   {/if}
@@ -1139,8 +1182,9 @@
     }
 
     // 提醒徽章（具体时刻）：与日程行时间列同蓝色，醒目但不抢眼
+    // 收缩态开始时间徽章：琥珀色 = 开始提醒（与展开态开始提醒胶囊、选择器铃铛同义）
     &__aux-time {
-      color: #3b82f6;
+      color: #b45309;
       font-weight: 600;
       font-variant-numeric: tabular-nums;
     }
@@ -1362,6 +1406,15 @@
         font-variant-numeric: tabular-nums;
       }
 
+      // 截止提醒：红色系，与开始提醒（琥珀色）区分
+      &--reminder-deadline {
+        gap: 4px;
+        padding: 2px 8px;
+        background: #fee2e2;
+        color: #dc2626;
+        font-variant-numeric: tabular-nums;
+      }
+
       &.is-overdue {
         background: #fee2e2;
 
@@ -1369,6 +1422,16 @@
           color: #dc2626;
         }
       }
+    }
+
+    // 随时视图新建提示
+    &__anytime-hint {
+      margin-top: 10px;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: var(--b3-theme-on-surface-light);
+      background: var(--b3-theme-surface-light);
+      border-radius: 6px;
     }
 
     &__flag {

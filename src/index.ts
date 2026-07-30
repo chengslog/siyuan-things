@@ -14,6 +14,7 @@ import type { ViewType, PluginConfig } from "@/types";
 import { DEFAULT_CONFIG } from "@/types";
 import { SettingUtils } from "./libs/setting-utils";
 import { ICON_SPRITE, getViewIconId } from "@/icons";
+import { ReminderService } from "@/reminder";
 import { TAG_PALETTE, nextTagColor } from "@/utils/colors";
 
 const STORAGE_NAME = "things-config";
@@ -21,6 +22,7 @@ const TAB_TYPE = "things_tab";
 
 export default class ThingsPlugin extends Plugin {
   private store: StoreManager;
+  private reminderService: ReminderService;
   private settingUtils: SettingUtils;
   private dockElement: HTMLElement | null = null;
   private unsubTaskChange: (() => void) | null = null;
@@ -31,6 +33,10 @@ export default class ThingsPlugin extends Plugin {
     console.log("[Things] Loading plugin...");
 
     this.store = new StoreManager(this);
+
+    // 提醒通知服务：开始/截止时刻到点后消息+系统通知（每 30s 轮询，已提醒不重复）
+    this.reminderService = new ReminderService(this, this.store);
+    this.reminderService.start();
 
     this.addIcons(ICON_SPRITE);
 
@@ -210,6 +216,9 @@ export default class ThingsPlugin extends Plugin {
   async onunload() {
     console.log("[Things] Plugin unloaded");
 
+    // 停止提醒服务
+    this.reminderService?.stop();
+
     // 取消 store 监听
     if (this.unsubTaskChange) {
       this.unsubTaskChange();
@@ -382,9 +391,10 @@ export default class ThingsPlugin extends Plugin {
 
     for (const p of projects) {
       html += `
-        <div class="things-nav__item things-nav__item--sub things-nav-row" data-view="project" data-id="${p.id}" title="双击重命名 · 按住拖动排序">
+        <div class="things-nav__item things-nav__item--sub things-nav-row" data-view="project" data-id="${p.id}" title="单击打开 · 悬停 ✎ 改名 · 按住拖动排序">
           <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsFolder"></use></svg>
           <span class="things-nav__label things-nav-row__name">${p.name}</span>
+          <span class="things-nav-row__edit" title="重命名项目"><svg><use xlink:href="#iconThingsPencil"></use></svg></span>
           <span class="things-nav-row__del" title="删除项目">×</span>
         </div>
       `;
@@ -399,25 +409,19 @@ export default class ThingsPlugin extends Plugin {
     container.querySelectorAll('.things-nav-row').forEach(el => {
       const node = el as HTMLElement;
       const id = node.dataset.id!;
-      let clickTimer: any = null;
 
-      // 单击 → 打开项目页（延迟 250ms，给双击改名让路）
+      // 单击 → 打开项目页（零延迟；改名走悬停 ✎ 按钮，不再用双击）
       node.addEventListener('click', (e) => {
         if (node.dataset.justDragged) { delete node.dataset.justDragged; return; }
         const target = e.target as HTMLElement;
-        if (target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
-        if (clickTimer) clearTimeout(clickTimer);
-        clickTimer = setTimeout(() => {
-          this.openThingsTab('project' as ViewType, id);
-          this.setActive(element, 'project' as ViewType, id);
-        }, 250);
+        if (target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
+        this.openThingsTab('project' as ViewType, id);
+        this.setActive(element, 'project' as ViewType, id);
       });
 
-      // 双击名称 → 内联改名
-      node.addEventListener('dblclick', (e) => {
-        const target = e.target as HTMLElement;
-        if (target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
-        if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+      // ✎ 按钮 → 内联改名
+      node.querySelector('.things-nav-row__edit')?.addEventListener('click', (e) => {
+        e.stopPropagation();
         this.startRowRename(element, node, id, 'project');
       });
 
@@ -438,9 +442,10 @@ export default class ThingsPlugin extends Plugin {
 
     for (const a of areas) {
       html += `
-        <div class="things-nav__item things-nav__item--sub things-nav-row" data-view="area" data-id="${a.id}" title="双击重命名 · 按住拖动排序">
+        <div class="things-nav__item things-nav__item--sub things-nav-row" data-view="area" data-id="${a.id}" title="单击打开 · 悬停 ✎ 改名 · 按住拖动排序">
           <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsLayers"></use></svg>
           <span class="things-nav__label things-nav-row__name">${a.name}</span>
+          <span class="things-nav-row__edit" title="重命名区域"><svg><use xlink:href="#iconThingsPencil"></use></svg></span>
           <span class="things-nav-row__del" title="删除区域">×</span>
         </div>
       `;
@@ -455,25 +460,19 @@ export default class ThingsPlugin extends Plugin {
     container.querySelectorAll('.things-nav-row').forEach(el => {
       const node = el as HTMLElement;
       const id = node.dataset.id!;
-      let clickTimer: any = null;
 
-      // 单击 → 打开区域页（延迟 250ms，给双击改名让路）
+      // 单击 → 打开区域页（零延迟；改名走悬停 ✎ 按钮，不再用双击）
       node.addEventListener('click', (e) => {
         if (node.dataset.justDragged) { delete node.dataset.justDragged; return; }
         const target = e.target as HTMLElement;
-        if (target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
-        if (clickTimer) clearTimeout(clickTimer);
-        clickTimer = setTimeout(() => {
-          this.openThingsTab('area' as ViewType, id);
-          this.setActive(element, 'area' as ViewType, id);
-        }, 250);
+        if (target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
+        this.openThingsTab('area' as ViewType, id);
+        this.setActive(element, 'area' as ViewType, id);
       });
 
-      // 双击名称 → 内联改名
-      node.addEventListener('dblclick', (e) => {
-        const target = e.target as HTMLElement;
-        if (target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
-        if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+      // ✎ 按钮 → 内联改名
+      node.querySelector('.things-nav-row__edit')?.addEventListener('click', (e) => {
+        e.stopPropagation();
         this.startRowRename(element, node, id, 'area');
       });
 
@@ -500,9 +499,10 @@ export default class ThingsPlugin extends Plugin {
           : `<span class="things-tag-row__dot things-tag-row__dot--empty" title="设置颜色"><span></span></span>`;
         html += `
           <div class="things-nav__item things-nav__item--sub things-tag-row things-nav-row${depth === 0 ? ' things-tag-row--root' : ''}" data-view="tag" data-id="${t.id}"
-               style="padding-left: ${12 + depth * 16}px" title="双击重命名 · 按住拖动排序">
+               style="padding-left: ${12 + depth * 16}px" title="单击打开 · 悬停 ✎ 改名 · 按住拖动排序">
             ${dot}
             <span class="things-nav__label things-nav-row__name">${t.name}</span>
+            <span class="things-nav-row__edit" title="重命名标签"><svg><use xlink:href="#iconThingsPencil"></use></svg></span>
             <span class="things-nav-row__del" title="删除标签">×</span>
           </div>
         `;
@@ -521,25 +521,19 @@ export default class ThingsPlugin extends Plugin {
     container.querySelectorAll('.things-tag-row').forEach(el => {
       const row = el as HTMLElement;
       const id = row.dataset.id!;
-      let clickTimer: any = null;
 
-      // 单击 → 打开标签视图（延迟 250ms，给双击改名让路）
+      // 单击 → 打开标签视图（零延迟；改名走悬停 ✎ 按钮，不再用双击）
       row.addEventListener('click', (e) => {
         if (row.dataset.justDragged) { delete row.dataset.justDragged; return; }
         const target = e.target as HTMLElement;
-        if (target.closest('.things-tag-row__dot') || target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
-        if (clickTimer) clearTimeout(clickTimer);
-        clickTimer = setTimeout(() => {
-          this.openThingsTab('tag' as ViewType, id);
-          this.setActive(element, 'tag' as ViewType, id);
-        }, 250);
+        if (target.closest('.things-tag-row__dot') || target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
+        this.openThingsTab('tag' as ViewType, id);
+        this.setActive(element, 'tag' as ViewType, id);
       });
 
-      // 双击名称 → 内联改名
-      row.addEventListener('dblclick', (e) => {
-        const target = e.target as HTMLElement;
-        if (target.closest('.things-tag-row__dot') || target.closest('.things-nav-row__del')) return;
-        if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+      // ✎ 按钮 → 内联改名
+      row.querySelector('.things-nav-row__edit')?.addEventListener('click', (e) => {
+        e.stopPropagation();
         this.startRowRename(element, row, id, 'tag');
       });
 
@@ -567,9 +561,10 @@ export default class ThingsPlugin extends Plugin {
         const ev = e as MouseEvent;
         if (ev.button !== 0) return;
         const target = ev.target as HTMLElement;
-        // 交互元素上不启动拖拽（加号、标签色点、删除按钮、改名输入框）
+        // 交互元素上不启动拖拽（加号、标签色点、改名/删除按钮、改名输入框）
         if (target.closest('.things-nav__add') || target.closest('.things-tag-row__dot') ||
-            target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
+            target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') ||
+            target.closest('.things-nav-row__input')) return;
         ev.preventDefault(); // 阻止文本选中
         this.startSectionDrag(ev, node, container as HTMLElement, kind, rowSel);
       });

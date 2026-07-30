@@ -19,6 +19,15 @@
   function startEditNotes() {
     notesDraft = area.notes || "";
     editingNotes = true;
+    // 点输入框以外即提交收起——不能只靠 blur：任务卡片 mousedown preventDefault 会吞掉失焦
+    setTimeout(() => document.addEventListener("mousedown", onNotesOutside), 0);
+  }
+
+  function onNotesOutside(e: MouseEvent) {
+    const target = e.target as HTMLElement;
+    if (target.closest(".area-panel__notes-input")) return; // 点输入框自身：保持编辑
+    document.removeEventListener("mousedown", onNotesOutside);
+    commitNotes();
   }
 
   async function commitNotes() {
@@ -26,6 +35,7 @@
       await store.areas.updateArea(area.id, { notes: notesDraft });
     }
     editingNotes = false;
+    document.removeEventListener("mousedown", onNotesOutside);
   }
 
   function openProject(id: string) {
@@ -39,6 +49,23 @@
 </script>
 
 <div class="area-panel" on:click|stopPropagation>
+  <!-- 区域备注：置于项目列表上方（Things 3 的备注在标题下方，不压在子项后面） -->
+  <div class="area-panel__notes-row">
+    {#if editingNotes}
+      <textarea
+        class="area-panel__notes-input"
+        bind:value={notesDraft}
+        on:blur={commitNotes}
+        placeholder="区域备注…"
+        rows="2"
+      ></textarea>
+    {:else if area.notes}
+      <button class="area-panel__notes" on:click={startEditNotes} title="点击编辑备注">{area.notes}</button>
+    {:else}
+      <button class="area-panel__notes is-empty" on:click={startEditNotes}>添加备注…</button>
+    {/if}
+  </div>
+
   <div class="area-panel__header">
     <span class="area-panel__section-title">项目</span>
   </div>
@@ -58,22 +85,6 @@
   {:else}
     <div class="area-panel__empty">此区域暂无项目</div>
   {/each}
-
-  <div class="area-panel__notes-row">
-    {#if editingNotes}
-      <textarea
-        class="area-panel__notes-input"
-        bind:value={notesDraft}
-        on:blur={commitNotes}
-        placeholder="区域备注…"
-        rows="2"
-      ></textarea>
-    {:else if area.notes}
-      <button class="area-panel__notes" on:click={startEditNotes} title="点击编辑备注">{area.notes}</button>
-    {:else}
-      <button class="area-panel__notes is-empty" on:click={startEditNotes}>添加备注…</button>
-    {/if}
-  </div>
 </div>
 
 <style lang="scss">

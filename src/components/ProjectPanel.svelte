@@ -27,6 +27,7 @@
 
   onDestroy(() => {
     document.removeEventListener("click", closeOnOutside);
+    document.removeEventListener("mousedown", onNotesOutside);
   });
 
   $: total = tasks.filter((t) => !t.parentId).length;
@@ -84,6 +85,15 @@
   function startEditNotes() {
     notesDraft = project.notes || "";
     editingNotes = true;
+    // 点输入框以外即提交收起——不能只靠 blur：任务卡片 mousedown preventDefault 会吞掉失焦
+    setTimeout(() => document.addEventListener("mousedown", onNotesOutside), 0);
+  }
+
+  function onNotesOutside(e: MouseEvent) {
+    const target = e.target as HTMLElement;
+    if (target.closest(".project-panel__notes-input")) return; // 点输入框自身：保持编辑
+    document.removeEventListener("mousedown", onNotesOutside);
+    commitNotes();
   }
 
   async function commitNotes() {
@@ -91,6 +101,7 @@
       await store.projects.updateProject(project.id, { notes: notesDraft });
     }
     editingNotes = false;
+    document.removeEventListener("mousedown", onNotesOutside);
   }
 
   async function setStatus(status: ProjectStatus) {
@@ -131,6 +142,7 @@
             设定截止日期{project.deadline ? "（已有）" : ""}
           </button>
           <button class="project-panel__menu-item" on:click={menuAction(() => openPanel("area"))}>移动到区域 ▸</button>
+          <button class="project-panel__menu-item" on:click={menuAction(() => { showMenu = false; dispatch("addheading"); })}>添加标题分组</button>
 
           <div class="project-panel__menu-sep"></div>
 

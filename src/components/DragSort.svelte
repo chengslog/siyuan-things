@@ -262,6 +262,7 @@
     if (!draggedId) return;
 
     const clientY = getClientY(e);
+    const clientX = getClientX(e);
     const fromIndex = draggedIndex;
     const toIndex = insertIndex;
     const id = draggedId;
@@ -274,7 +275,7 @@
       dispatch('reorder', { fromIndex, toIndex, id });
     }
 
-    dispatch('drop', { id, clientY, fromGroup: groupKey, withinSelf });
+    dispatch('drop', { id, clientX, clientY, fromGroup: groupKey, withinSelf });
     dispatch('dragend', { id });
   }
 
@@ -357,6 +358,14 @@
       return t ? t.clientY : 0;
     }
     return e.clientY;
+  }
+
+  function getClientX(e: MouseEvent | TouchEvent): number {
+    if ('touches' in e) {
+      const t = e.touches[0] || e.changedTouches[0];
+      return t ? t.clientX : 0;
+    }
+    return e.clientX;
   }
 
   function applyGhostStyles(el: HTMLElement, rect: DOMRect) {

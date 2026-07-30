@@ -134,8 +134,8 @@
 
   <!-- 添加提醒时间 -->
   <button class="deadline-picker__option" on:click={() => showTimePicker = !showTimePicker}>
-    <span class="deadline-picker__icon"><Icon name="iconThingsBell" size={16} /></span>
-    <span class="deadline-picker__label">+添加提醒时间</span>
+    <span class="deadline-picker__icon deadline-picker__icon--deadline"><Icon name="iconThingsBell" size={16} /></span>
+    <span class="deadline-picker__label">+添加截止提醒</span>
   </button>
 
   <!-- 时间选择器 -->
@@ -193,6 +193,11 @@
     &__icon {
       width: 20px;
       text-align: center;
+
+      // 截止提醒铃铛：红色（与任务卡截止提醒胶囊同义）
+      &--deadline {
+        color: #dc2626;
+      }
     }
 
     &__label {

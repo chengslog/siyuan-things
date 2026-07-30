@@ -290,7 +290,34 @@
     }
   }
 
-  &:hover .things-nav-row__del {
+  // ✎ 改名按钮：与 × 同样 visibility 占位（悬停才出现，不引起布局抖动）
+  &__edit {
+    visibility: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 3px;
+    border-radius: 4px;
+    color: var(--b3-theme-on-surface-light);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.15s, color 0.15s;
+
+    svg {
+      width: 11px;
+      height: 11px;
+    }
+
+    &:hover {
+      background: var(--b3-theme-primary-light);
+      color: var(--b3-theme-primary);
+    }
+  }
+
+  &:hover .things-nav-row__del,
+  &:hover .things-nav-row__edit {
     visibility: visible;
   }
 }

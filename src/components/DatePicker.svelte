@@ -144,8 +144,8 @@
 
   <!-- 添加提醒 -->
   <button class="date-picker__option" on:click={(e) => { e.stopPropagation(); showTimePicker = !showTimePicker; }}>
-    <span class="date-picker__icon"><Icon name="iconThingsBell" size={16} /></span>
-    <span class="date-picker__label">+添加提醒</span>
+    <span class="date-picker__icon date-picker__icon--start"><Icon name="iconThingsBell" size={16} /></span>
+    <span class="date-picker__label">+添加开始提醒</span>
   </button>
 
   <!-- 时间选择器 -->
@@ -203,6 +203,11 @@
     &__icon {
       width: 20px;
       text-align: center;
+
+      // 开始提醒铃铛：琥珀色（与任务卡开始提醒胶囊同义）
+      &--start {
+        color: #b45309;
+      }
     }
 
     &__label {
