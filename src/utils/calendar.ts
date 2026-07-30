@@ -139,3 +139,62 @@ export function formatDateFull(timestamp: number): string {
   const date = new Date(timestamp);
   return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
 }
+
+// ===== 滚动日历（从某天起往后推，而非按"月份 1 号"起整月）=====
+
+export interface RollingDay {
+  day: number;
+  month: number;
+  year: number;
+  ts: number;       // 当天 0 点时间戳（占位格为 0）
+  empty: boolean;   // 起始日之前、仅用于对齐周列的占位格
+}
+
+/**
+ * 生成从 startTs 当天起、按周（周一开头）对齐、共 weeks 周的滚动日历。
+ * 首行起始日之前的格子为占位（empty=true），不显示日期、不可选。
+ * 默认 6 周（42 格），覆盖起始日起 36~42 天（超过一个月），与原整月日历同高。
+ */
+export function generateRollingCalendar(startTs: number, weeks = 6): RollingDay[] {
+  const start = new Date(startTs);
+  start.setHours(0, 0, 0, 0);
+  let lead = start.getDay();          // 0=周日 ... 6=周六
+  lead = lead === 0 ? 6 : lead - 1;   // 转为 周一=0 ... 周日=6
+
+  const days: RollingDay[] = [];
+  for (let i = 0; i < lead; i++) {
+    days.push({ day: 0, month: 0, year: 0, ts: 0, empty: true });
+  }
+  const total = weeks * 7;
+  for (let i = 0; i < total - lead; i++) {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    days.push({
+      day: d.getDate(),
+      month: d.getMonth(),
+      year: d.getFullYear(),
+      ts: d.getTime(),
+      empty: false,
+    });
+  }
+  return days;
+}
+
+/**
+ * 时间戳归零到当天 0 点
+ */
+export function dayStart(ts: number): number {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/**
+ * 滚动日历的区间标题：起始日 – 起始日+30 天（如 7月30日 – 8月29日）
+ */
+export function formatRollingPeriod(startTs: number): string {
+  const s = new Date(startTs);
+  const e = new Date(startTs);
+  e.setDate(e.getDate() + 30);
+  return `${s.getMonth() + 1}月${s.getDate()}日 – ${e.getMonth() + 1}月${e.getDate()}日`;
+}

@@ -20,8 +20,36 @@
   export let store: StoreManager;
 
   let showCreateForm = false;
-  let showFabMenu = false;
   let showEntityForm: "project" | "area" | null = null;
+  // 创建卡片在列表中的插入位置（null = 顶部）；仅当对应分组存在时生效
+  let createTarget: { group: string; index: number } | null = null;
+  $: activeCreateSlot = showCreateForm && createTarget && groupedTasks.has(createTarget.group) ? createTarget : null;
+  // 创建卡片继承落点分组的日期：今晚→18:00、日期组→当天、月度组→月初（或窗口后一天）
+  $: createPreset = computeCreatePreset(activeCreateSlot, view);
+
+  function computeCreatePreset(slot: { group: string; index: number } | null, v: string): { startDate: number | undefined } {
+    if (!slot) return { startDate: undefined };
+    const g = slot.group;
+    if (v === "today") {
+      const d = new Date();
+      d.setHours(g === "今晚" ? 18 : 0, 0, 0, 0);
+      return { startDate: d.getTime() };
+    }
+    if (v === "upcoming") {
+      if (g.startsWith("m-")) {
+        const parts = g.slice(2).split("-").map(Number);
+        const monthStart = new Date(parts[0], parts[1], 1);
+        const afterWindow = new Date();
+        afterWindow.setHours(0, 0, 0, 0);
+        afterWindow.setDate(afterWindow.getDate() + 8); // 月度组从近 7 天窗口后一天接棒
+        const d = monthStart.getTime() < afterWindow.getTime() ? afterWindow : monthStart;
+        return { startDate: d.getTime() };
+      }
+      const ts = Number(g); // 日期组的 key 即当天 0 点时间戳
+      if (!isNaN(ts)) return { startDate: ts };
+    }
+    return { startDate: undefined };
+  }
   let refreshKey = 0;
   let itemsEl: HTMLElement;
 
@@ -62,19 +90,10 @@
     return () => unsubs.forEach((u) => u());
   });
 
-  // 计划视图标签筛选：null = 全部
-  let upcomingTagFilter: string | null = null;
-  let showTagMore = false;
-
-  $: rootTags = store.tags.getRootTags().sort((a: any, b: any) => a.order - b.order);
-  // 筛选行直接展示前 5 个标签，其余收进 "···" 下拉
-  $: visibleTags = rootTags.slice(0, 5);
-  $: moreTags = rootTags.slice(5);
-
   // 根据视图获取任务列表 - 使用响应式声明确保视图切换时刷新
-  $: tasks = getTasks(view, viewId, searchQuery, refreshKey, store.tasks.count, upcomingTagFilter);
+  $: tasks = getTasks(view, viewId, searchQuery, refreshKey, store.tasks.count);
 
-  function getTasks(view: ViewType, viewId?: string, query?: string, _key?: number, _count?: number, tagFilter?: string | null): Task[] {
+  function getTasks(view: ViewType, viewId?: string, query?: string, _key?: number, _count?: number): Task[] {
     if (query) {
       return store.tasks.search(query);
     }
@@ -84,11 +103,8 @@
         return store.tasks.getInboxTasks();
       case "today":
         return store.tasks.getTodayTasks();
-      case "upcoming": {
-        let list = store.tasks.getUpcomingTasks().sort((a, b) => (a.startDate || 0) - (b.startDate || 0));
-        if (tagFilter) list = list.filter((t) => t.tags.includes(tagFilter));
-        return list;
-      }
+      case "upcoming":
+        return store.tasks.getUpcomingTasks().sort((a, b) => (a.startDate || 0) - (b.startDate || 0));
       case "anytime":
         return store.tasks.getAnytimeTasks();
       case "someday":
@@ -200,7 +216,9 @@
 
     // 计划视图：固定骨架 = 明天起 7 个日期分组 + 其后 5 个月度分组，有无任务都显示。
     // 日期组 key = 当天 0 点时间戳字符串；月度组 key = "m-YYYY-M"。
-    // 月度起点取"第 7 天所在月"，保证 7 天窗口之后无缝衔接、不漏天也不重叠。
+    // 月度起点取"近 7 天窗口后一天（第 8 天）所在月"：窗口跨月或正好到月底时，
+    // 月度组都从窗口结束后的下一天所在月开始，避免与窗口重叠或出现空白月份组；
+    // 若窗口已含某月 1 号，那几天已在日期组里，月份组只承接其后的任务。
     const groups = new Map<string, Task[]>();
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -210,7 +228,7 @@
       groups.set(String(d.getTime()), []);
     }
     const dayEnd = new Date(today);
-    dayEnd.setDate(dayEnd.getDate() + 7);
+    dayEnd.setDate(dayEnd.getDate() + 8);
     for (let i = 0; i < 5; i++) {
       const md = new Date(dayEnd.getFullYear(), dayEnd.getMonth() + i, 1);
       groups.set(`m-${md.getFullYear()}-${md.getMonth()}`, []);
@@ -247,7 +265,8 @@
     const now = new Date();
     now.setHours(0, 0, 0, 0);
     const diff = Math.round((d.getTime() - now.getTime()) / 86400000);
-    const label = diff === 0 ? "今天" : diff === 1 ? "明天" : diff < 7 ? `${diff}天后` : WEEKDAYS[d.getDay()];
+    // 近 7 天日期组：第一项显示"明天"，其余 6 项显示星期几
+    const label = diff === 0 ? "今天" : diff === 1 ? "明天" : WEEKDAYS[d.getDay()];
     return { num: String(d.getDate()), label };
   }
 
@@ -292,8 +311,47 @@
     headingDraft = "";
   }
 
-  function handleTaskCreated() {
+  function handleCancelCreate() {
     showCreateForm = false;
+    createTarget = null;
+  }
+
+  // 打开创建卡片：target=null → 顶部；否则插入到指定分组/索引处
+  function openCreate(target: { group: string; index: number } | null) {
+    createTarget = target;
+    showCreateForm = true;
+  }
+
+  // 创建完成后：把新任务挪到插入位置（在当前视图内重写 order）
+  async function handleTaskCreated(e: CustomEvent) {
+    const created = e?.detail?.task;
+    const target = createTarget;
+    showCreateForm = false;
+    createTarget = null;
+    if (!created || !target) return;
+    await tick(); // 等待列表把新任务纳入
+    const list = sortedTasks;
+    const curIdx = list.findIndex((t) => t.id === created.id);
+    if (curIdx < 0) return; // 新任务不属于当前视图（如计划视图里建了无日期任务），不处理
+    let flatIdx = 0;
+    let found = false;
+    for (const [gk, items] of groupedTasks) {
+      if (gk === target.group) {
+        flatIdx += Math.min(target.index, items.length);
+        found = true;
+        break;
+      }
+      flatIdx += items.length;
+    }
+    if (!found || flatIdx === curIdx) return;
+    const reordered = [...list];
+    const [moved] = reordered.splice(curIdx, 1);
+    reordered.splice(flatIdx, 0, moved);
+    for (let i = 0; i < reordered.length; i++) {
+      if (reordered[i].order !== i) {
+        await store.tasks.updateTask(reordered[i].id, { order: i });
+      }
+    }
   }
 
   // 处理拖拽排序
@@ -382,12 +440,18 @@
 
     let changes: Partial<Task> | null = null;
     if (view === "upcoming") {
-      // 日期组 key = 当天 0 点时间戳；月度组 key = "m-YYYY-M"（落到该月 1 日）。
-      // 保留任务原有的时/分（日程行拖到新日期仍是同一时刻）
+      // 日期组 key = 当天 0 点时间戳；月度组 key = "m-YYYY-M"。
+      // 保留任务原有的时/分（日程行拖到新日期仍是同一时刻）。
+      // 注意：拖到月度组时目标日期取「月初」与「近 7 天窗口后一天」的较晚者——
+      // 若月初（如 8/1）还在日期窗口内，直接落 1 号会让任务掉回日期组而"消失"。
       const nd = toGroup.startsWith("m-")
         ? (() => {
             const [y, m] = toGroup.slice(2).split("-").map(Number);
-            return new Date(y, m, 1);
+            const monthStart = new Date(y, m, 1);
+            const afterWindow = new Date();
+            afterWindow.setHours(0, 0, 0, 0);
+            afterWindow.setDate(afterWindow.getDate() + 8); // 近 7 天窗口（明天起 7 天）的后一天
+            return monthStart.getTime() < afterWindow.getTime() ? afterWindow : monthStart;
           })()
         : new Date(Number(toGroup));
       if (isNaN(nd.getTime())) return;
@@ -423,32 +487,185 @@
     }
   }
 
-  // 悬浮按钮菜单
-  function handleFabAction(action: string) {
-    showFabMenu = false;
+  // —— 悬浮 + 按钮：点击=当前视图新建；按住可拖到侧边栏视图 / 任务列表，松手即在对应视图新建 ——
+  let fabBtnEl: HTMLButtonElement;
 
-    switch (action) {
-      case "task":
-        showCreateForm = true;
-        break;
-      case "project":
-        showEntityForm = "project";
-        break;
-      case "area":
-        showEntityForm = "area";
-        break;
-    }
+  // 允许新建任务的侧边栏落点（排除日志/总览页；项目/区域/标签须有具体 id）
+  function isCreatableNav(nav: HTMLElement): boolean {
+    const view = nav.dataset.view;
+    if (!view) return false;
+    // 日志、各类总览页、标签视图都不作为拖拽新建落点（标签不承载新建任务）
+    if (view === "log" || view === "projects" || view === "areas" || view === "tags" || view === "tag") return false;
+    if (view === "project" || view === "area") return !!nav.dataset.id;
+    return true; // inbox/today/upcoming/anytime/someday
   }
 
-  // 点击外部关闭菜单
-  function handleClickOutside(e: MouseEvent) {
-    const target = e.target as HTMLElement;
-    if (!target.closest('.things-fab')) {
-      showFabMenu = false;
-    }
-    if (!target.closest('.task-list__filter-more')) {
-      showTagMore = false;
-    }
+  function handleFabMouseDown(e: MouseEvent) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const fab = fabBtnEl;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const home = fab.getBoundingClientRect(); // 按钮原位（用于回弹）
+    let dragging = false;
+    let hoverNav: HTMLElement | null = null;
+    let overList = false;
+    let openTimer: any = null;        // 侧边栏悬停→延迟切换视图（避免扫过快速切换）
+    let indicator: HTMLElement | null = null; // 列表插入位置指示线
+    let insertTarget: { group: string; index: number } | null = null; // 插入目标（分组 + 组内索引）
+
+    // 计算插入目标：光标落在哪个分组 + 分组内的索引
+    const computeInsertTarget = (cursorY: number): { group: string; index: number } | null => {
+      const entries = Object.entries(groupBlockRefs).filter(([, el]) => el) as [string, HTMLElement][];
+      if (entries.length === 0) return null;
+      for (const [gk, el] of entries) {
+        const r = el.getBoundingClientRect();
+        if (cursorY >= r.top && cursorY <= r.bottom) {
+          const rows = Array.from(el.querySelectorAll(".task-list__item-wrapper"));
+          let idx = rows.length;
+          for (let i = 0; i < rows.length; i++) {
+            const rc = rows[i].getBoundingClientRect();
+            if (cursorY < rc.top + rc.height / 2) { idx = i; break; }
+          }
+          return { group: gk, index: idx };
+        }
+      }
+      // 兜底：在所有分组之上 → 第一分组最前；在所有分组之下 → 最后分组末尾
+      if (cursorY < entries[0][1].getBoundingClientRect().top) return { group: entries[0][0], index: 0 };
+      const last = entries[entries.length - 1];
+      return { group: last[0], index: last[1].querySelectorAll(".task-list__item-wrapper").length };
+    };
+
+    const clearNav = () => {
+      document.querySelectorAll(".things-nav__item.is-drop-hover").forEach((el) => el.classList.remove("is-drop-hover"));
+      hoverNav = null;
+    };
+    const cancelOpen = () => {
+      if (openTimer) { clearTimeout(openTimer); openTimer = null; }
+    };
+    const clearIndicator = () => {
+      if (indicator) { indicator.remove(); indicator = null; }
+      if (itemsEl) itemsEl.classList.remove("is-drop-hover");
+      overList = false;
+    };
+
+    // 插入指示线：靠近任务行间隙时吸附到插入边界；空分组（无任务行）内则跟随光标，
+    // 保证计划视图里每个日期/月份组（含空组）都有提示。移动带过渡动画。
+    const moveIndicator = (cursorY: number) => {
+      if (!itemsEl) return;
+      const rows = Array.from(itemsEl.querySelectorAll(".task-list__item-wrapper")) as HTMLElement[];
+      const box = itemsEl.getBoundingClientRect();
+      const left = box.left + 72;       // items 有 72px 内边距
+      const width = box.width - 144;
+      const minTop = box.top + 16;
+      const maxBottom = box.bottom - 16;
+
+      let y = cursorY; // 默认跟随光标（空分组里也始终有提示）
+      if (rows.length > 0) {
+        // 光标所在的行间隙（插入边界）
+        let idx = rows.length;
+        for (let i = 0; i < rows.length; i++) {
+          const rc = rows[i].getBoundingClientRect();
+          if (cursorY < rc.top + rc.height / 2) { idx = i; break; }
+        }
+        let boundary: number;
+        if (idx === 0) boundary = rows[0].getBoundingClientRect().top - 5;
+        else if (idx >= rows.length) boundary = rows[rows.length - 1].getBoundingClientRect().bottom + 5;
+        else boundary = (rows[idx - 1].getBoundingClientRect().bottom + rows[idx].getBoundingClientRect().top) / 2;
+        // 光标靠近行间隙就吸附到边界；离得远（落在空分组）则跟随光标
+        if (Math.abs(cursorY - boundary) <= 30) y = boundary;
+      }
+      y = Math.max(minTop, Math.min(maxBottom, y));
+      insertTarget = computeInsertTarget(cursorY);
+
+      if (!indicator) {
+        indicator = document.createElement("div");
+        indicator.style.cssText = "position:fixed;height:3px;border-radius:2px;background:var(--b3-theme-primary);box-shadow:0 0 10px var(--b3-theme-primary);z-index:10000;pointer-events:none;transition:top 0.15s ease,left 0.15s ease,width 0.15s ease;";
+        document.body.appendChild(indicator);
+      }
+      indicator.style.left = `${left}px`;
+      indicator.style.width = `${width}px`;
+      indicator.style.top = `${y - 1.5}px`;
+      itemsEl.classList.add("is-drop-hover");
+      overList = true;
+    };
+
+    const onMove = (ev: MouseEvent) => {
+      if (!dragging) {
+        if (Math.abs(ev.clientX - startX) < 5 && Math.abs(ev.clientY - startY) < 5) return; // 阈值：区分点击与拖动
+        // 进入拖拽：按钮本体脱离原布局跟随光标（不做幽灵）
+        dragging = true;
+        fab.classList.add("is-dragging");
+        fab.style.position = "fixed";
+        fab.style.left = `${home.left}px`;
+        fab.style.top = `${home.top}px`;
+        fab.style.zIndex = "10000";
+        fab.style.pointerEvents = "none"; // 让命中检测"透过"按钮看到下方内容
+      }
+      // 按钮跟随光标（保持抓取时偏移，不跳变）
+      fab.style.left = `${home.left + (ev.clientX - startX)}px`;
+      fab.style.top = `${home.top + (ev.clientY - startY)}px`;
+
+      // 命中检测：侧边栏导航项 / 任务列表
+      clearNav();
+      cancelOpen();
+      clearIndicator();
+      const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+      if (!el) return;
+      const nav = el.closest(".things-nav__item[data-view]") as HTMLElement | null;
+      if (nav && isCreatableNav(nav)) {
+        nav.classList.add("is-drop-hover");
+        hoverNav = nav;
+        // 悬停 120ms 打开对应页（已是当前视图则不重复切换）
+        const nv = nav.dataset.view as ViewType;
+        const nid = nav.dataset.id;
+        if (nv !== view || (nid || undefined) !== viewId) {
+          openTimer = setTimeout(() => {
+            window.dispatchEvent(new CustomEvent("things-navigate", { detail: { view: nv, viewId: nid } }));
+          }, 120);
+        }
+        return;
+      }
+      if (itemsEl && itemsEl.contains(el)) {
+        moveIndicator(ev.clientY);
+      }
+    };
+
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      cancelOpen();
+      if (!dragging) {
+        openCreate(null); // 直接点击 → 当前视图顶部新建
+        return;
+      }
+      const nav = hoverNav;
+      const list = overList;
+      clearNav();
+      clearIndicator();
+
+      // 回弹原位：弹性动画归位后恢复原有布局样式
+      fab.style.transition = "left 0.4s cubic-bezier(0.34,1.56,0.64,1), top 0.4s cubic-bezier(0.34,1.56,0.64,1), transform 0.4s cubic-bezier(0.34,1.56,0.64,1)";
+      fab.style.left = `${home.left}px`;
+      fab.style.top = `${home.top}px`;
+      fab.style.transform = "scale(1)";
+      setTimeout(() => {
+        fab.style.cssText = ""; // 清空内联样式，交还 CSS（absolute 右下角）
+        fab.classList.remove("is-dragging");
+      }, 420);
+
+      if (nav) {
+        // 在侧边栏视图上松手 → 打开该视图并在顶部弹出新建卡片
+        window.dispatchEvent(new CustomEvent("things-navigate", { detail: { view: nav.dataset.view, viewId: nav.dataset.id } }));
+        openCreate(null);
+      } else if (list) {
+        openCreate(insertTarget); // 在任务列表上松手 → 在插入位置弹出新建卡片
+      }
+      // 两者都不是：仅回弹，不做任何操作
+    };
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
   }
 
   // 视图标题（依赖 refreshKey：项目改名后标题同步刷新）
@@ -523,56 +740,12 @@
   }
 </script>
 
-<svelte:window on:click={handleClickOutside} />
-
 <div class="task-list">
   <!-- 大标题 -->
-  <div class="task-list__header" class:has-border={view !== "upcoming"}>
-    <Icon name={viewIcon} size={28} klass="task-list__title-icon" />
+  <div class="task-list__header has-border">
+    <Icon name={viewIcon} size={22} klass="task-list__title-icon" />
     <h1 class="task-list__title">{viewTitle}</h1>
   </div>
-
-  <!-- 计划视图：筛选标签行（与标题一起固定，不随列表滚动） -->
-  {#if view === "upcoming"}
-    <div class="task-list__filters">
-      <button
-        class="task-list__filter-chip"
-        class:is-active={upcomingTagFilter === null}
-        on:click={() => { upcomingTagFilter = null; showTagMore = false; }}
-      >全部</button>
-      {#each visibleTags as tag (tag.id)}
-        <button
-          class="task-list__filter-chip"
-          class:is-active={upcomingTagFilter === tag.id}
-          on:click={() => { upcomingTagFilter = tag.id; showTagMore = false; }}
-        >{tag.name}</button>
-      {/each}
-      {#if moreTags.length > 0}
-        <div class="task-list__filter-more">
-          <button
-            class="task-list__filter-chip"
-            class:is-active={moreTags.some((t) => t.id === upcomingTagFilter)}
-            on:click|stopPropagation={() => showTagMore = !showTagMore}
-            title="更多标签"
-          >···</button>
-          {#if showTagMore}
-            <div class="task-list__filter-dropdown">
-              {#each moreTags as tag (tag.id)}
-                <button
-                  class="task-list__filter-option"
-                  class:is-active={upcomingTagFilter === tag.id}
-                  on:click={() => { upcomingTagFilter = tag.id; showTagMore = false; }}
-                >
-                  {#if tag.color}<span class="task-list__filter-dot" style="background: {tag.color}"></span>{/if}
-                  {tag.name}
-                </button>
-              {/each}
-            </div>
-          {/if}
-        </div>
-      {/if}
-    </div>
-  {/if}
 
   <!-- 创建项目/区域表单 -->
   {#if showEntityForm}
@@ -584,15 +757,15 @@
     />
   {/if}
 
-  <!-- 创建任务表单 -->
-  {#if showCreateForm}
+  <!-- 创建任务表单（顶部）：点击新建、拖到侧边栏切视图后新建等场景；拖到列表的插入式新建在下方对应分组内渲染 -->
+  {#if showCreateForm && !activeCreateSlot}
     <TaskCard
       mode="create"
       {store}
       currentView={view}
       currentViewId={viewId}
       on:created={handleTaskCreated}
-      on:cancel={() => showCreateForm = false}
+      on:cancel={handleCancelCreate}
     />
   {/if}
 
@@ -630,12 +803,22 @@
           bind:this={groupBlockRefs[group]}
         >
           {#if view === "upcoming" && hd}
-            <div class="task-list__day" class:is-first={gi === 0}>
-              <span class="task-list__day-num">{hd.num}</span>
-              <span class="task-list__day-label">{hd.label}</span>
-              <div class="task-list__day-line"></div>
-            </div>
-          {:else if view === "today"}
+            {#if group.startsWith("m-")}
+              <!-- 月度组头：不显示大数字，“M月” + 细线整体左对齐 -->
+              <div class="task-list__month" class:is-first={gi === 0}>
+                <span class="task-list__month-label">{hd.label}</span>
+                <div class="task-list__day-line"></div>
+              </div>
+            {:else}
+              <div class="task-list__day" class:is-first={gi === 0}>
+                <span class="task-list__day-num">{hd.num}</span>
+                <div class="task-list__day-meta">
+                  <span class="task-list__day-label">{hd.label}</span>
+                  <div class="task-list__day-line"></div>
+                </div>
+              </div>
+            {/if}
+          {:else if view === "today" && group === "今晚"}
             <div class="task-list__group task-list__group--fixed" class:is-tonight={group === "今晚"}>
               <Icon
                 name={group === "今晚" ? "iconThingsMoonFilled" : "iconThingsToday"}
@@ -699,7 +882,18 @@
             let:unregisterItem
             let:handleDragStart
           >
-            {#each displayItems as task (task.id)}
+            {#each displayItems as task, ti (task.id)}
+              {#if activeCreateSlot && activeCreateSlot.group === group && activeCreateSlot.index === ti}
+                <TaskCard
+                  mode="create"
+                  {store}
+                  currentView={view}
+                  currentViewId={viewId}
+                  presetStartDate={createPreset.startDate}
+                  on:created={handleTaskCreated}
+                  on:cancel={handleCancelCreate}
+                />
+              {/if}
               <div
                 class="task-list__item-wrapper"
                 class:is-dragging={draggedId === task.id}
@@ -710,6 +904,7 @@
                   {task}
                   {store}
                   scheduleMode={view === "upcoming" && hasTimeOfDay(task.startDate)}
+                  inlineDate={view === "upcoming" && group.startsWith("m-")}
                   isDragging={draggedId === task.id}
                   currentView={view}
                   {registerItem}
@@ -718,6 +913,17 @@
                 />
               </div>
             {/each}
+            {#if activeCreateSlot && activeCreateSlot.group === group && activeCreateSlot.index >= displayItems.length}
+              <TaskCard
+                mode="create"
+                {store}
+                currentView={view}
+                currentViewId={viewId}
+                presetStartDate={createPreset.startDate}
+                on:created={handleTaskCreated}
+                on:cancel={handleCancelCreate}
+              />
+            {/if}
           </DragSort>
         </div>
       {/each}
@@ -746,25 +952,14 @@
     {/if}
   </div>
 
-  <!-- 悬浮按钮 -->
+  <!-- 悬浮 + 按钮：点击=当前视图新建；按住可拖到侧边栏视图或任务列表新建 -->
   <div class="things-fab">
-    {#if showFabMenu}
-      <div class="things-fab__menu">
-        <button class="things-fab__menu-item" on:click={() => handleFabAction("task")}>
-          <svg><use xlink:href="#iconThingsAdd" /></svg>
-          <span>新建待办事项</span>
-        </button>
-        <button class="things-fab__menu-item" on:click={() => handleFabAction("project")}>
-          <svg><use xlink:href="#iconThingsProject" /></svg>
-          <span>新建项目</span>
-        </button>
-        <button class="things-fab__menu-item" on:click={() => handleFabAction("area")}>
-          <svg><use xlink:href="#iconThingsArea" /></svg>
-          <span>新建区域</span>
-        </button>
-      </div>
-    {/if}
-    <button class="things-fab__btn" on:click|stopPropagation={() => showFabMenu = !showFabMenu}>
+    <button
+      class="things-fab__btn"
+      bind:this={fabBtnEl}
+      title="新建任务（可拖到侧边栏或列表）"
+      on:mousedown={handleFabMouseDown}
+    >
       <svg><use xlink:href="#iconThingsAdd" /></svg>
     </button>
   </div>
@@ -787,93 +982,11 @@
       padding: 80px 0 14px;
       flex-shrink: 0;
 
-      // 计划视图的分隔线挪到筛选行下方，其余视图仍在标题下方
+      // 标题下方分隔线
       &.has-border {
         border-bottom: 1px solid var(--b3-border-color);
         padding-bottom: 20px;
       }
-    }
-
-    // 计划视图筛选标签行
-    &__filters {
-      display: flex;
-      align-items: center;
-      gap: 20px;
-      flex-shrink: 0;
-      padding: 10px 0 14px;
-      border-bottom: 1px solid var(--b3-border-color);
-    }
-
-    &__filter-chip {
-      height: 30px;
-      padding: 0 14px;
-      border: none;
-      border-radius: 999px;
-      background: transparent;
-      cursor: pointer;
-      font-size: 14px;
-      color: var(--b3-theme-on-surface-light);
-      transition: background-color 0.15s ease, color 0.15s ease;
-
-      &:hover {
-        background: var(--b3-theme-surface-light);
-      }
-
-      &.is-active {
-        background: var(--b3-theme-surface-light);
-        color: var(--b3-theme-on-surface);
-        font-weight: 600;
-      }
-    }
-
-    &__filter-more {
-      position: relative;
-    }
-
-    &__filter-dropdown {
-      position: absolute;
-      top: calc(100% + 6px);
-      left: 0;
-      z-index: 50;
-      min-width: 160px;
-      max-height: 240px;
-      overflow-y: auto;
-      padding: 6px;
-      background: var(--b3-theme-surface);
-      border: 1px solid var(--b3-border-color);
-      border-radius: 8px;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-    }
-
-    &__filter-option {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      width: 100%;
-      padding: 7px 10px;
-      border: none;
-      border-radius: 6px;
-      background: transparent;
-      cursor: pointer;
-      font-size: 13px;
-      text-align: left;
-      color: var(--b3-theme-on-surface);
-
-      &:hover {
-        background: var(--b3-theme-surface-light);
-      }
-
-      &.is-active {
-        color: var(--b3-theme-primary);
-        font-weight: 600;
-      }
-    }
-
-    &__filter-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      flex-shrink: 0;
     }
 
     // 分组块：跨组拖拽时作为落点区域，命中高亮
@@ -886,11 +999,11 @@
       }
     }
 
-    // 计划视图日期分组头：大数字 + 描述 + 右侧延伸细线
+    // 计划视图日期分组头：左侧大数字 + 右侧（描述 + 其下延伸细线，二者左对齐）
     &__day {
       display: flex;
       align-items: baseline;
-      gap: 8px;
+      gap: 10px;
       margin-top: 48px;
 
       &.is-first {
@@ -905,18 +1018,57 @@
       color: var(--b3-theme-on-background);
     }
 
+    // 描述与细线纵向排列：细线左边与描述文字左边对齐
+    &__day-meta {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+
+      .task-list__day-line {
+        flex: none;
+        align-self: stretch;
+        margin-top: 0;
+      }
+    }
+
     &__day-label {
-      font-size: 18px;
-      font-weight: 700;
-      color: var(--b3-theme-on-background);
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--b3-theme-on-surface-light); // 灰色，与分割线同属弱化层级
     }
 
     &__day-line {
       flex: 1;
-      align-self: flex-start; // 对齐日期数字的上沿
+      align-self: flex-start; // 行内用法（今天视图组头/标题分组）对齐上沿
       margin-top: 4px;
       height: 1px;
       background: var(--b3-border-color);
+    }
+
+    // 月度分组头：去掉大数字，“M月” + 细线整体靠左（与日期数字列同一左边界）
+    &__month {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 48px;
+
+      &.is-first {
+        margin-top: 12px;
+      }
+
+      .task-list__day-line {
+        align-self: center;
+        margin-top: 0;
+      }
+    }
+
+    &__month-label {
+      flex-shrink: 0;
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--b3-theme-on-background);
     }
 
     // 项目标题分组（headings）头
@@ -1013,7 +1165,7 @@
     }
 
     &__title {
-      font-size: 30px;
+      font-size: 24px;
       font-weight: 700;
       color: var(--b3-theme-on-background);
       margin: 0;
@@ -1023,7 +1175,15 @@
     &__items {
       flex: 1;
       overflow-y: auto;
-      padding-top: 12px;
+      // 滚动容器撑满页宽（负外边距抵消外层 72px 内边距），滚动条落在页面右沿；
+      // 内容再用内边距拉回，保持原有 72px 左右留白
+      margin: 0 -72px;
+      padding: 12px 72px 32px;
+
+      // + 按钮拖拽落点：浅色底示意可放置区域
+      &.is-drop-hover {
+        background: var(--b3-theme-primary-light);
+      }
     }
 
     &__item-wrapper {
@@ -1119,39 +1279,11 @@
       }
     }
 
-    &__menu {
-      position: absolute;
-      bottom: 64px;
-      right: 0;
-      background: var(--b3-theme-surface);
-      border: 1px solid var(--b3-border-color);
-      border-radius: 8px;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-      padding: 8px;
-      min-width: 180px;
-    }
-
-    &__menu-item {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      width: 100%;
-      padding: 8px 12px;
-      border: none;
-      background: transparent;
-      cursor: pointer;
-      font-size: 13px;
-      color: var(--b3-theme-on-surface);
-      border-radius: 4px;
-
-      &:hover {
-        background: var(--b3-theme-surface-light);
-      }
-
-      svg {
-        width: 16px;
-        height: 16px;
-      }
+    // 拖拽状态：本体跟随光标，抬起放大（位置由内联样式驱动，见 handleFabMouseDown）
+    &__btn.is-dragging {
+      transform: scale(1.08);
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.35);
+      cursor: grabbing;
     }
   }
 </style>

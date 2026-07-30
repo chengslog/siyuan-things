@@ -27,6 +27,10 @@
   // 日程行模式（计划视图中带具体时间的任务）：收缩态用时间列替换 checkbox、隐藏副标题/辅助信息；
   // 展开后恢复正常卡片形态（checkbox 回来，可勾选完成）
   export let scheduleMode: boolean = false;
+  // 月度分组内联日期（计划视图月度组）：收缩态勾选框后显示任务的 M/D 日期
+  export let inlineDate: boolean = false;
+  // 新建模式继承拖拽落点的日期（今晚→18:00、日期组→当天、月度组→月初）
+  export let presetStartDate: number | undefined = undefined;
 
   const dispatch = createEventDispatcher();
 
@@ -59,6 +63,7 @@
   // 拖拽状态
   let dragTimer: any = null;
   let isClick = true;
+  let pointerDownHere = false; // 本次按下是否发生在卡片自身（区分外部拖拽，如 + 按钮拖到卡片上松手）
 
   // 初始化
   onMount(() => {
@@ -87,12 +92,16 @@
         registerItem(task.id, cardEl);
       }
     } else if (mode === 'create') {
-      if (currentView === 'today') {
+      // 日期继承拖拽落点（今晚/日期/月度分组）；无落点时回退到视图默认
+      if (presetStartDate != null) {
+        startDate = presetStartDate;
+      } else if (currentView === 'today') {
         startDate = getTodayStart();
       }
-      // 项目/区域视图里新建的任务预置归属
+      // 项目/区域视图里新建的任务预置归属；某天视图置为 someday
       if (currentView === 'project' && currentViewId) projectId = currentViewId;
       if (currentView === 'area' && currentViewId) areaId = currentViewId;
+      if (currentView === 'someday') someday = true;
       setTimeout(() => titleInput?.focus(), 100);
     }
   });
@@ -124,6 +133,13 @@
     return today.getTime();
   }
 
+  // 日期格式化为 M/D（如 8/7），用于月度分组的内联日期
+  function formatMonthDay(ts?: number): string {
+    if (!ts) return "";
+    const d = new Date(ts);
+    return `${d.getMonth() + 1}/${d.getDate()}`;
+  }
+
   // 响应式数据
   $: tags = mode === 'edit' && task ? task.tags.map((id) => store.tags.get(id)).filter(Boolean) : [];
   $: isDeadlineOverdue = mode === 'edit' && task?.deadline && isOverdue(task.deadline);
@@ -132,22 +148,22 @@
   let localChecklist: Array<{ id: string; title: string; completed: boolean }> = [];
   $: checklistItems = mode === 'edit' ? localChecklist : checklist;
 
-  // 收缩态：标题下方的所属项目/区域名
-  $: subtitle = getSubtitle(mode, task);
+  // 收缩态：标题后的所属项目/区域（图标+名称，项目=文件夹、区域=图层，单色随文字灰）
+  $: subtitleDisplay = getSubtitleDisplay(mode, task);
   // 收缩态：检查清单条数（用于右侧辅助图标）
   $: checklistCount = (mode === 'edit' ? localChecklist : checklist).filter(i => i.title && i.title.trim()).length;
 
-  function getSubtitle(mode: 'create' | 'edit', task: Task | null): string {
-    if (mode !== 'edit' || !task) return "";
+  function getSubtitleDisplay(mode: 'create' | 'edit', task: Task | null): { icon: string; name: string } | null {
+    if (mode !== 'edit' || !task) return null;
     if (task.projectId) {
       const p = store.projects.get(task.projectId);
-      if (p) return p.name;
+      if (p) return { icon: "iconThingsFolder", name: p.name };
     }
     if (task.areaId) {
       const a = store.areas.get(task.areaId);
-      if (a) return a.name;
+      if (a) return { icon: "iconThingsLayers", name: a.name };
     }
-    return "";
+    return null;
   }
 
   // 日程行的时间列：HH:mm
@@ -155,6 +171,20 @@
     if (!ts) return "";
     const d = new Date(ts);
     return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
+  }
+
+  // 是否带具体时刻（时/分非零）
+  function hasTimeOfDay(ts?: number): boolean {
+    if (!ts) return false;
+    const d = new Date(ts);
+    return d.getHours() !== 0 || d.getMinutes() !== 0;
+  }
+
+  // 是否为“今晚”默认时刻 18:00（今天视图“今晚”组头已传达，无需重复提醒徽章）
+  function isEveningTime(ts?: number): boolean {
+    if (!ts) return false;
+    const d = new Date(ts);
+    return d.getHours() === 18 && d.getMinutes() === 0;
   }
 
   // 日期显示
@@ -168,6 +198,11 @@
   $: dateReminderDisplay = resolvedSomeday ? null : getReminderDisplay(resolvedStartDate);
   $: deadlineDisplay = getDeadlineDisplay(resolvedDeadline);
   $: deadlineReminderDisplay = getReminderDisplay(resolvedDeadline);
+
+  // 收缩态提醒徽章：带具体时刻、且未被日程行时间列 / 今晚组头传达时显示
+  $: showTimeBadge = !scheduleMode && hasTimeOfDay(resolvedStartDate) && !(currentView === 'today' && isEveningTime(resolvedStartDate));
+  // 收缩态内联日期：月度分组（inlineDate），或所在视图不传达日期（项目/区域/标签/搜索等）时显示
+  $: showCollapsedDate = mode === 'edit' && !!task?.startDate && (inlineDate || (currentView !== 'today' && currentView !== 'upcoming'));
 
   // 项目/区域归属（编辑模式取 task，新建模式取本地状态）
   $: assignment = getAssignment(mode, task, projectId, areaId);
@@ -482,6 +517,7 @@
     const target = e.target as HTMLElement;
     if (target.closest('button') || target.closest('input') || target.closest('textarea')) return;
 
+    pointerDownHere = true;
     isClick = true;
     dragTimer = setTimeout(() => {
       if (isClick) {
@@ -497,6 +533,10 @@
       clearTimeout(dragTimer);
       dragTimer = null;
     }
+    // 按下不在本卡片上（如 + 按钮拖到此处松手）→ 不视为点击，避免误展开成“第二个卡片”
+    const wasDown = pointerDownHere;
+    pointerDownHere = false;
+    if (!wasDown) return;
     if (isClick) {
       handleCardClick(e);
     }
@@ -633,6 +673,11 @@
       <span class="task-card__check-placeholder"></span>
     {/if}
 
+    <!-- 收缩态内联日期（月度分组，或项目/区域/标签等不传达日期的视图） -->
+    {#if showCollapsedDate && !expanded}
+      <span class="task-card__inline-date">{formatMonthDay(task?.startDate)}</span>
+    {/if}
+
     <!-- 标题 -->
     {#if mode === 'create' || expanded}
       <input
@@ -650,14 +695,23 @@
         <div class="task-card__title" class:is-done={task?.status === "done" || pendingDone}>
           {task?.title}
         </div>
-        {#if subtitle && !scheduleMode}
-          <div class="task-card__subtitle">{subtitle}</div>
+        {#if subtitleDisplay && !scheduleMode}
+          <span class="task-card__subtitle">
+            <Icon name={subtitleDisplay.icon} size={13} />
+            <span class="task-card__subtitle-name">{subtitleDisplay.name}</span>
+          </span>
         {/if}
       </div>
 
       <!-- 右侧辅助信息（收缩态，弱化显示；日程行只保留时间+标题，不显示） -->
       {#if !scheduleMode}
         <div class="task-card__aux">
+          {#if showTimeBadge}
+            <span class="task-card__aux-item task-card__aux-time" title="提醒">
+              <Icon name="iconThingsBell" size={12} />
+              <span>{formatTime(resolvedStartDate)}</span>
+            </span>
+          {/if}
           {#if task?.deadline}
             <span class="task-card__aux-item task-card__aux-deadline" class:is-overdue={isDeadlineOverdue}>
               <Icon name="iconThingsFlag" size={12} />
@@ -671,11 +725,8 @@
             <span class="task-card__aux-item" title="备注"><Icon name="iconThingsNote" size={12} /></span>
           {/if}
           {#if task?.tags && task.tags.length > 0}
-            <span class="task-card__aux-item" title="标签">
+            <span class="task-card__aux-item" title={tags.length ? `标签：${tags.map((t) => t.name).join('、')}` : '标签'}>
               <Icon name="iconThingsTag" size={12} />
-              {#if tags.length > 0}
-                <span class="task-card__tag-pill">{tags[0].name}{tags.length > 1 ? ` +${tags.length - 1}` : ""}</span>
-              {/if}
             </span>
           {/if}
         </div>
@@ -694,15 +745,6 @@
         placeholder="添加备注..."
         rows="2"
       ></textarea>
-
-      <!-- 标签 -->
-      {#if mode === 'edit' && tags.length > 0}
-        <div class="task-card__tags">
-          {#each tags as tag}
-            <span class="task-card__tag">{tag.name}</span>
-          {/each}
-        </div>
-      {/if}
 
       <!-- 检查清单 -->
       <div class="task-card__subtasks">
@@ -1042,21 +1084,33 @@
       gap: 12px;
     }
 
+    // 标题与所属项目/区域同行展示（项目名灰色小字跟在标题后），保持单行紧凑
     &__info {
       flex: 1;
       min-width: 0;
       display: flex;
-      flex-direction: column;
-      gap: 2px;
+      align-items: baseline;
+      gap: 8px;
     }
 
     &__subtitle {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex: 0 1 auto;
+      max-width: 50%;
+      min-width: 0;
       font-size: 13px;
       font-weight: 400;
       color: #9ca3af;
       white-space: nowrap;
+    }
+
+    &__subtitle-name {
+      min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     &__aux {
@@ -1076,21 +1130,19 @@
       white-space: nowrap;
     }
 
-    // 辅助区标签名胶囊：浅灰边 + 圆角，弱化显示
-    &__tag-pill {
-      padding: 1px 8px;
-      border: 1px solid var(--b3-border-color);
-      border-radius: 999px;
-      font-size: 12px;
-      line-height: 1.5;
-    }
-
     &__aux-deadline {
       color: #dc2626;
 
       &.is-overdue {
         font-weight: 600;
       }
+    }
+
+    // 提醒徽章（具体时刻）：与日程行时间列同蓝色，醒目但不抢眼
+    &__aux-time {
+      color: #3b82f6;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
     }
 
     // 日程行左侧时间列（计划视图带时间的任务，收缩态替代 checkbox）
@@ -1102,6 +1154,17 @@
       font-weight: 500;
       font-variant-numeric: tabular-nums;
       color: #3b82f6;
+    }
+
+    // 月度分组内联日期（勾选框与标题之间的 M/D，弱化但可扫读，等宽对齐）
+    &__inline-date {
+      flex-shrink: 0;
+      min-width: 38px;
+      margin-top: 2px;
+      font-size: 13px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      color: var(--b3-theme-on-surface-light);
     }
 
     &__check {

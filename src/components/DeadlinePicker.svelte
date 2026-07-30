@@ -2,12 +2,9 @@
   import { createEventDispatcher } from "svelte";
   import { getTodayStart, getDaysFromNow } from "@/utils/date";
   import {
-    generateCalendar,
-    isCalendarToday,
-    isCalendarSelected,
-    prevMonth,
-    nextMonth,
-    calendarToDate
+    generateRollingCalendar,
+    dayStart,
+    formatRollingPeriod
   } from "@/utils/calendar";
   import TimePicker from "./TimePicker.svelte";
   import { Icon } from "@/icons";
@@ -17,32 +14,36 @@
 
   const dispatch = createEventDispatcher();
 
-  // 日历状态
-  let calendarMonth = new Date().getMonth();
-  let calendarYear = new Date().getFullYear();
+  // 日历状态：从今天起往后推一个月的滚动窗口（不再按“月份 1 号”起整月展示）
+  let windowStart = getTodayStart();
   let showTimePicker = false;
 
   // 时间状态（若已有截止时间则回显其时分，否则默认 18:00 即“今晚”）
   let selectedHour = timestamp ? new Date(timestamp).getHours() : 18;
   let selectedMinute = timestamp ? new Date(timestamp).getMinutes() : 0;
 
-  // 日历数据
-  $: calendarDays = generateCalendar(calendarYear, calendarMonth);
+  // 滚动日历数据 + 派生展示
+  $: rollingDays = generateRollingCalendar(windowStart, 6);
+  $: periodLabel = formatRollingPeriod(windowStart);
+  $: todayTs = getTodayStart();
+  $: selectedTs = timestamp ? dayStart(timestamp) : -1;
+  $: atStart = windowStart <= getTodayStart();
 
-  function handlePrevMonth() {
-    const prev = prevMonth(calendarYear, calendarMonth);
-    calendarYear = prev.year;
-    calendarMonth = prev.month;
+  function handlePrev() {
+    const d = new Date(windowStart);
+    d.setDate(d.getDate() - 30);
+    windowStart = Math.max(d.getTime(), getTodayStart()); // 最早只能回到今天
   }
 
-  function handleNextMonth() {
-    const nxt = nextMonth(calendarYear, calendarMonth);
-    calendarYear = nxt.year;
-    calendarMonth = nxt.month;
+  function handleNext() {
+    const d = new Date(windowStart);
+    d.setDate(d.getDate() + 30);
+    windowStart = d.getTime();
   }
 
-  function selectCalendarDay(day: any) {
-    timestamp = calendarToDate(day);
+  function selectDay(day: any) {
+    if (day.empty) return;
+    timestamp = day.ts;
     dispatch("change", { timestamp });
   }
 
@@ -95,12 +96,12 @@
     <span class="deadline-picker__label">下周</span>
   </button>
 
-  <!-- 日历 -->
+  <!-- 日历（从今天起往后推一个月的滚动窗口） -->
   <div class="deadline-picker__calendar">
     <div class="deadline-picker__calendar-header">
-      <button class="deadline-picker__calendar-nav" on:click={handlePrevMonth}>‹</button>
-      <span class="deadline-picker__calendar-title">{calendarYear}年{calendarMonth + 1}月</span>
-      <button class="deadline-picker__calendar-nav" on:click={handleNextMonth}>›</button>
+      <button class="deadline-picker__calendar-nav" disabled={atStart} on:click={handlePrev}>‹</button>
+      <span class="deadline-picker__calendar-title">{periodLabel}</span>
+      <button class="deadline-picker__calendar-nav" on:click={handleNext}>›</button>
     </div>
     <div class="deadline-picker__calendar-weekdays">
       <span>一</span>
@@ -112,16 +113,19 @@
       <span>日</span>
     </div>
     <div class="deadline-picker__calendar-days">
-      {#each calendarDays as day}
-        <button
-          class="deadline-picker__calendar-day"
-          class:is-other-month={!day.isCurrentMonth}
-          class:is-today={isCalendarToday(day)}
-          class:is-selected={isCalendarSelected(day, timestamp)}
-          on:click={() => selectCalendarDay(day)}
-        >
-          {day.day}
-        </button>
+      {#each rollingDays as day}
+        {#if day.empty}
+          <span class="deadline-picker__calendar-day deadline-picker__calendar-day--empty"></span>
+        {:else}
+          <button
+            class="deadline-picker__calendar-day"
+            class:is-today={day.ts === todayTs}
+            class:is-selected={day.ts === selectedTs}
+            on:click={() => selectDay(day)}
+          >
+            {day.day}
+          </button>
+        {/if}
       {/each}
     </div>
   </div>
@@ -234,6 +238,15 @@
       &:hover {
         background: var(--b3-theme-surface-light);
       }
+
+      &:disabled {
+        opacity: 0.3;
+        cursor: default;
+
+        &:hover {
+          background: transparent;
+        }
+      }
     }
 
     &__calendar-weekdays {
@@ -287,6 +300,11 @@
       &.is-selected {
         background: var(--b3-theme-primary);
         color: var(--b3-theme-on-primary);
+      }
+
+      &--empty {
+        visibility: hidden;
+        pointer-events: none;
       }
     }
   }

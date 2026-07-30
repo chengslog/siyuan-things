@@ -60,6 +60,14 @@
       color: var(--b3-theme-primary);
     }
 
+    // + 按钮拖拽落点：高亮虚线框示意可松手新建
+    &.is-drop-hover {
+      background: var(--b3-theme-primary-light);
+      color: var(--b3-theme-primary);
+      outline: 2px dashed var(--b3-theme-primary);
+      outline-offset: -2px;
+    }
+
     // 与主导航同列对齐：margin 8 + padding 12，图标从 20px 起、文字从 44px 起
     &--sub {
       padding-left: 12px;
