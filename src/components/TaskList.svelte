@@ -67,14 +67,16 @@
   // 手动切换视图时置 true，抑制旧视图任务的退场动画（见下方视图切换块）
   let suppressOutro = false;
 
-  // 任务移出列表的滑出动画（完成移入日志 / 视图迁移时播放）
+  // 任务移出列表的退场动画（完成移入日志 / 视图迁移时播放）：
+  // 收缩+淡出（高度塌缩、列表自动收拢），替代原来的快速左滑
   function slideOut(node: HTMLElement, { duration = 300 }: { duration?: number } = {}) {
+    const h = node.offsetHeight;
     return {
       // 切换视图时持续 0（立即移除）：否则旧任务 300ms 退场期间仍占布局高度，
       // 列表高度先胀后缩、滚动位置被钳制，视觉上整个列表"往上弹一下"
       duration: suppressOutro ? 0 : duration,
       easing: cubicOut,
-      css: (t: number, u: number) => `opacity: ${t}; transform: translateX(${u * -100}%);`,
+      css: (t: number) => `opacity: ${t}; height: ${Math.max(0, t * h)}px; overflow: hidden; margin: 0;`,
     };
   }
 
@@ -213,6 +215,37 @@
       return groups;
     }
 
+    // 日志视图：按完成时间分组——最上面"今天"，其后按月份倒序（同计划视图月度组头样式）
+    if (view === "log") {
+      const groups = new Map<string, Task[]>();
+      const today: Task[] = [];
+      const byMonth = new Map<string, Task[]>();
+      const now = new Date();
+      const tsOf = (t: Task) => t.completedDate || t.updated;
+      for (const t of tasks) {
+        const d = new Date(tsOf(t));
+        if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate()) {
+          today.push(t);
+        } else {
+          const mk = `${d.getFullYear()}-${d.getMonth()}`;
+          if (!byMonth.has(mk)) byMonth.set(mk, []);
+          byMonth.get(mk)!.push(t);
+        }
+      }
+      const descByDone = (a: Task, b: Task) => tsOf(b) - tsOf(a);
+      if (today.length) groups.set("log-today", today.sort(descByDone));
+      const monthKeys = [...byMonth.keys()].sort((a, b) => {
+        const [ay, am] = a.split("-").map(Number);
+        const [by, bm] = b.split("-").map(Number);
+        return by * 12 + bm - (ay * 12 + am); // 月份倒序
+      });
+      for (const mk of monthKeys) {
+        const [y, m] = mk.split("-").map(Number);
+        groups.set(`m-${y}-${m}`, byMonth.get(mk)!.sort(descByDone));
+      }
+      return groups;
+    }
+
     if (view !== "upcoming") {
       return new Map([["all", tasks]]);
     }
@@ -257,6 +290,8 @@
 
   // 分组头：日期组 → 大数字 + 描述（今天/明天/N天后/周几）；月度组（"m-YYYY-M"）→ M/1 + 月份名
   function groupHeader(key: string): { num: string; label: string } {
+    // 日志视图"今天"组（今天完成的任务置顶）
+    if (key === "log-today") return { num: "", label: "今天" };
     if (key.startsWith("m-")) {
       const [y, m] = key.slice(2).split("-").map(Number);
       return {
@@ -628,7 +663,6 @@
     const home = fab.getBoundingClientRect(); // 按钮原位（用于回弹）
     let dragging = false;
     let hoverNav: HTMLElement | null = null;
-    let lastNav: HTMLElement | null = null; // 拖拽中最后悬停过的侧边栏视图（离开后保留，落点兜底用）
     let overList = false;
     let openTimer: any = null;        // 侧边栏悬停→延迟切换视图（避免扫过快速切换）
     let indicator: HTMLElement | null = null; // 列表插入位置指示线
@@ -736,7 +770,6 @@
       if (nav && isCreatableNav(nav)) {
         nav.classList.add("is-drop-hover");
         hoverNav = nav;
-        lastNav = nav;
         // 悬停 120ms 打开对应页（已是当前视图则不重复切换）
         const nv = nav.dataset.view as ViewType;
         const nid = nav.dataset.id;
@@ -782,17 +815,10 @@
         window.dispatchEvent(new CustomEvent("things-navigate", { detail: { view: nv, viewId: nid } }));
         openCreate(null, { view: nv, viewId: nid });
       } else if (list) {
-        // 在任务列表上松手 → 在插入位置弹出新建卡片。
-        // 兜底：拖拽途中扫过侧边栏视图但 120ms 悬停切换没触发时，以扫过的视图为准——
-        // 先切过去再在顶部新建，且创建卡显式携带目标视图（不靠渲染状态推断，杜绝落错视图）
-        const lv = lastNav?.dataset.view as ViewType | undefined;
-        const lid = lastNav?.dataset.id;
-        if (lastNav && isCreatableNav(lastNav) && (lv !== view || (lid || undefined) !== viewId)) {
-          window.dispatchEvent(new CustomEvent("things-navigate", { detail: { view: lv, viewId: lid } }));
-          openCreate(null, { view: lv!, viewId: lid });
-        } else {
-          openCreate(insertTarget, { view, viewId });
-        }
+        // 在任务列表上松手 → 在插入位置弹出新建卡片（创建卡显式携带当前视图上下文）。
+        // 注意：不再根据"拖拽途中扫过的侧边栏视图"改道——那会把用户往分组里拖的创建
+        // 误导成顶部新建（任务落进未分组）；要切视图请先在侧边栏悬停切换或直接松手在侧边栏
+        openCreate(insertTarget, { view, viewId });
       }
       // 两者都不是：仅回弹，不做任何操作
     };
@@ -928,7 +954,7 @@
       </div>
     {:else}
       {#each [...groupedTasks.entries()] as [group, groupItems], gi (group)}
-        {@const hd = view === "upcoming" ? groupHeader(group) : null}
+        {@const hd = view === "upcoming" || view === "log" ? groupHeader(group) : null}
         {@const orderedItems = view === "upcoming"
           ? [...groupItems.filter((t) => hasTimeOfDay(t.startDate)), ...groupItems.filter((t) => !hasTimeOfDay(t.startDate))]
           : groupItems}
@@ -937,9 +963,9 @@
           class:is-drop-target={dragOverGroup === group && dragOverGroup !== dragFromGroup}
           bind:this={groupBlockRefs[group]}
         >
-          {#if view === "upcoming" && hd}
-            {#if group.startsWith("m-")}
-              <!-- 月度组头：不显示大数字，“M月” + 细线整体左对齐 -->
+          {#if (view === "upcoming" || view === "log") && hd}
+            {#if group.startsWith("m-") || view === "log"}
+              <!-- 月度组头（计划）/ 日志分组头：不显示大数字，“M月”/“今天” + 细线整体左对齐 -->
               <div class="task-list__month" class:is-first={gi === 0}>
                 <span class="task-list__month-label">{hd.label}</span>
                 <div class="task-list__day-line"></div>

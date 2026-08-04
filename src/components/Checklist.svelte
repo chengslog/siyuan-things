@@ -98,6 +98,24 @@
     });
   }
 
+  // 检查项输入框自动增高：长文本换行显示（回车仍是新建项，不产生换行符）
+  function autoGrow(node: HTMLTextAreaElement) {
+    const resize = () => {
+      node.style.height = 'auto';
+      node.style.height = node.scrollHeight + 'px';
+    };
+    resize();
+    const t = setTimeout(resize, 50); // 字体/布局稳定后再测一次
+    node.addEventListener('input', resize);
+    return {
+      update: resize, // 组件重渲染（store 载入等外部赋值）后重测
+      destroy() {
+        node.removeEventListener('input', resize);
+        clearTimeout(t);
+      },
+    };
+  }
+
   function handleKeydown(e: KeyboardEvent, id: string) {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -335,15 +353,16 @@
           <svg><use xlink:href="#iconThingsCheck" /></svg>
         {/if}
       </button>
-      <input
-        type="text"
+      <textarea
         class="checklist__input"
         class:is-done={item.completed}
         placeholder="检查项"
+        rows="1"
         bind:value={item.title}
+        use:autoGrow
         on:blur={() => dispatch("change", { items })}
         on:keydown={(e) => handleKeydown(e, item.id)}
-      />
+      ></textarea>
       <div class="checklist__actions">
         <button
           class="checklist__delete"
@@ -427,10 +446,16 @@
       border: none;
       outline: none;
       font-size: 13px;
+      line-height: 1.4;
+      font-family: inherit;
       color: var(--b3-theme-on-surface);
       background: transparent;
       padding: 2px 0;
       min-width: 0;
+      resize: none; // 靠 autoGrow 自动增高，不给手动拖拽手柄
+      overflow: hidden;
+      word-break: break-word;
+      white-space: pre-wrap;
 
       &.is-done {
         text-decoration: line-through;

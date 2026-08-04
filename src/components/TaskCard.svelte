@@ -65,7 +65,25 @@
   let showChecklist = true;
   let isInteracting = false;
   let isMovingOut = false;
-  let titleInput: HTMLInputElement;
+  let titleInput: HTMLTextAreaElement;
+
+  // 标题输入框自动增高：编辑态长文本换行可见（收缩态仍是单行+省略号）
+  function autoGrow(node: HTMLTextAreaElement) {
+    const resize = () => {
+      node.style.height = 'auto';
+      node.style.height = node.scrollHeight + 'px';
+    };
+    resize();
+    const t = setTimeout(resize, 50); // 字体/布局稳定后再测一次
+    node.addEventListener('input', resize);
+    return {
+      update: resize,
+      destroy() {
+        node.removeEventListener('input', resize);
+        clearTimeout(t);
+      },
+    };
+  }
 
   // 拖拽状态
   let dragTimer: any = null;
@@ -185,6 +203,17 @@
     return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
   }
 
+  // 日志视图的完成日期列：今天完成显示"今天"，其余"M月D日"
+  function formatLogDate(ts?: number): string {
+    if (!ts) return "";
+    const d = new Date(ts);
+    const now = new Date();
+    if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate()) {
+      return "今天";
+    }
+    return `${d.getMonth() + 1}月${d.getDate()}日`;
+  }
+
   // 是否带具体时刻（时/分非零）
   function hasTimeOfDay(ts?: number): boolean {
     if (!ts) return false;
@@ -214,7 +243,8 @@
   // 收缩态提醒徽章：带具体时刻、且未被日程行时间列 / 今晚组头传达时显示
   $: showTimeBadge = !scheduleMode && hasTimeOfDay(resolvedStartDate) && !(currentView === 'today' && isEveningTime(resolvedStartDate));
   // 收缩态内联日期：月度分组（inlineDate），或所在视图不传达日期（项目/区域/标签/搜索等）时显示
-  $: showCollapsedDate = mode === 'edit' && !!task?.startDate && (inlineDate || (currentView !== 'today' && currentView !== 'upcoming'));
+  // 日志视图已有行首完成日期列，不再叠加开始日期徽章
+  $: showCollapsedDate = mode === 'edit' && !!task?.startDate && currentView !== 'log' && (inlineDate || (currentView !== 'today' && currentView !== 'upcoming'));
 
   // 项目/区域归属（编辑模式取 task，新建模式取本地状态）
   $: assignment = getAssignment(mode, task, projectId, areaId);
@@ -352,6 +382,14 @@
       // 取消完成
       await store.tasks.toggleTask(task.id);
       await store.tasks.updateTask(task.id, { completedDate: undefined });
+    } else if (pendingDone && !completionApplied) {
+      // 置灰等待期间再点一次 = 取消勾选（3s 窗口内的反悔机会）
+      if (moveTimeout) {
+        clearTimeout(moveTimeout);
+        moveTimeout = null;
+      }
+      pendingDone = false;
+      isMoving = false;
     } else {
       // 完成：先本地显示打勾 + 置灰，3 秒后才真正写入 store（移入日志）
       pendingDone = true;
@@ -647,13 +685,24 @@
 
   // 键盘事件
   function handleKeydown(e: KeyboardEvent) {
-    if (mode !== 'create') return;
+    // 中文输入法组词确认的回车不当作提交
+    if (e.key === "Enter" && (e.isComposing || e.keyCode === 229)) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleCreate();
+      if (mode === 'create') {
+        handleCreate();
+      } else {
+        // 编辑模式：回车 = 保存并收起（与新建的回车行为一致）
+        saveAndCollapse();
+      }
+      return;
     }
     if (e.key === "Escape") {
-      dispatch("cancel");
+      if (mode === 'create') {
+        dispatch("cancel");
+      } else {
+        saveAndCollapse();
+      }
     }
   }
 
@@ -692,6 +741,10 @@
 >
   <!-- 标题区域 -->
   <div class="task-card__header">
+    <!-- 日志视图：行首固定宽度完成日期列（今天完成的显示"今天"，其余"M月D日"） -->
+    {#if currentView === 'log' && mode === 'edit'}
+      <span class="task-card__log-date">{formatLogDate(task?.completedDate || task?.updated)}</span>
+    {/if}
     <!-- 复选框（日程行收缩态显示时间列，展开后换回复选框以便勾选） -->
     {#if mode === 'edit'}
       {#if scheduleMode && !expanded}
@@ -718,16 +771,17 @@
 
     <!-- 标题 -->
     {#if mode === 'create' || expanded}
-      <input
+      <textarea
         bind:this={titleInput}
-        type="text"
         class="task-card__title-input"
         placeholder={mode === 'create' ? "新建待办事项" : "任务标题"}
+        rows="1"
         bind:value={title}
+        use:autoGrow
         on:blur={mode === 'create' ? undefined : saveTitle}
         on:keydown={handleKeydown}
         on:click|stopPropagation
-      />
+      ></textarea>
     {:else}
       <div class="task-card__info">
         <div class="task-card__title" class:is-done={task?.status === "done" || pendingDone}>
@@ -1200,6 +1254,17 @@
       color: #3b82f6;
     }
 
+    // 日志视图行首完成日期列：固定宽度保证各行复选框对齐
+    &__log-date {
+      flex-shrink: 0;
+      width: 56px;
+      margin-top: 2px;
+      font-size: 12px;
+      color: var(--b3-theme-on-surface-light);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
     // 月度分组内联日期（勾选框与标题之间的 M/D，弱化但可扫读，等宽对齐）
     &__inline-date {
       flex-shrink: 0;
@@ -1255,6 +1320,7 @@
       font-size: 16px;
       font-weight: 500;
       color: #1f2937;
+      // 收缩态单行 + 省略号（换行只在编辑态的输入框里）
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -1271,12 +1337,18 @@
       flex: 1;
       font-size: 15px;
       font-weight: 600;
+      font-family: inherit;
+      line-height: 1.4;
       color: #1f2937;
       border: none;
       outline: none;
       padding: 2px 0;
       background: transparent;
       min-width: 0;
+      resize: none; // 靠 autoGrow 自动增高
+      overflow: hidden;
+      word-break: break-word;
+      white-space: pre-wrap;
     }
 
     &__date-badge {

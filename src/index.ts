@@ -153,8 +153,9 @@ export default class ThingsPlugin extends Plugin {
       value: "today",
       type: "select",
       title: "启动时默认显示",
-      description: "每次打开思源时默认显示的视图",
+      description: "每次打开思源时默认显示的视图；选「不打开」则不干预思源的启动逻辑（自动恢复上次打开的文档）",
       options: {
+        none: "不打开（跟随思源默认）",
         inbox: "收件箱",
         today: "今天",
         upcoming: "计划",
@@ -184,6 +185,12 @@ export default class ThingsPlugin extends Plugin {
 
       // 获取默认视图设置
       const defaultView = this.settingUtils.get("defaultView") || "today";
+
+      // 选了"不打开" → 不干预思源启动逻辑（不打开 Things 标签页）
+      if (defaultView === "none") {
+        console.log("[Things] defaultView=none，跳过启动时打开");
+        return;
+      }
 
       // 应用默认视图的函数
       const applyDefaultView = () => {
@@ -960,6 +967,17 @@ export default class ThingsPlugin extends Plugin {
       });
       this.updateTabTitle(title);
       this.updateTabIcon(this.getViewIcon(view));
+      // 把标签页切到前台：复用路径只更新内容、不会聚焦标签页，
+      // 停留在文档页时点侧边栏会"没反应"。思源 Layout 没有公开的 focusTab，
+      // 模拟点击页签头元素（等效于用户直接点该标签页），跨版本可靠
+      try {
+        const head = this.thingsTab.headElement as HTMLElement;
+        if (head && !head.classList.contains("item--focus")) {
+          head.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        }
+      } catch {
+        /* 静默降级 */
+      }
       return;
     }
 
