@@ -98,6 +98,49 @@
   // 根据视图获取任务列表 - 使用响应式声明确保视图切换时刷新
   $: tasks = getTasks(view, viewId, searchQuery, refreshKey, store.tasks.count);
 
+  // 随时视图排序逻辑（也用于标签/项目/区域视图）
+  // 顺序：今天白天⭐️ → 今晚🌙 → 其他有日期（升序） → 无日期（保留order）
+  function sortByAnytimeRules(tasks: Task[]): Task[] {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayStartTs = todayStart.getTime();
+    const todayEndTs = todayStartTs + 86400000;
+    const isToday = (ts?: number) => !!ts && ts >= todayStartTs && ts < todayEndTs;
+    const isTonight = (ts?: number) => {
+      if (!ts) return false;
+      const d = new Date(ts);
+      return d.getHours() === 18 && d.getMinutes() === 0;
+    };
+    return [...tasks].sort((a, b) => {
+      const aDate = a.startDate || a.deadline;
+      const bDate = b.startDate || b.deadline;
+      const aIsToday = isToday(aDate);
+      const bIsToday = isToday(bDate);
+      const aIsTonight = isTonight(aDate);
+      const bIsTonight = isTonight(bDate);
+      // 今天白天（⭐️）在最上面
+      const aIsDaytime = aIsToday && !aIsTonight;
+      const bIsDaytime = bIsToday && !bIsTonight;
+      if (aIsDaytime && !bIsDaytime) return -1;
+      if (!aIsDaytime && bIsDaytime) return 1;
+      if (aIsDaytime && bIsDaytime) return b.created - a.created;
+      // 今晚（🌙）在第二
+      if (aIsTonight && !bIsTonight) return -1;
+      if (!aIsTonight && bIsTonight) return 1;
+      if (aIsTonight && bIsTonight) return b.created - a.created;
+      // 其他今天任务
+      if (aIsToday && !bIsToday) return -1;
+      if (!aIsToday && bIsToday) return 1;
+      if (aIsToday && bIsToday) return b.created - a.created;
+      // 无日期的排在最后（保留order排序，支持拖拽）
+      if (!aDate && !bDate) return a.order - b.order;
+      if (!aDate) return 1;
+      if (!bDate) return -1;
+      // 其他有日期的：时间越靠前越在上面
+      return aDate - bDate;
+    });
+  }
+
   function getTasks(view: ViewType, viewId?: string, query?: string, _key?: number, _count?: number): Task[] {
     if (query) {
       return store.tasks.search(query);
@@ -111,7 +154,7 @@
       case "upcoming":
         return store.tasks.getUpcomingTasks().sort((a, b) => (a.startDate || 0) - (b.startDate || 0));
       case "anytime":
-        return store.tasks.getAnytimeTasks();
+        return sortByAnytimeRules(store.tasks.getAnytimeTasks());
       case "someday":
         return store.tasks.getSomedayTasks();
       case "log":
@@ -123,23 +166,23 @@
       case "tags":
         return []; // 标签总览由 TagOverview 接管
       case "project":
-        return viewId ? store.tasks.getProjectTasks(viewId) : [];
+        return viewId ? sortByAnytimeRules(store.tasks.getProjectTasks(viewId)) : [];
       case "area":
         if (!viewId) return [];
         const areaProjects = store.projects.getAreaProjects(viewId);
         const projectIds = new Set(areaProjects.map((p) => p.id));
-        return store.tasks
+        return sortByAnytimeRules(store.tasks
           .getAll()
-          .filter((t) => t.status === "todo" && (t.areaId === viewId || (t.projectId && projectIds.has(t.projectId))));
+          .filter((t) => t.status === "todo" && (t.areaId === viewId || (t.projectId && projectIds.has(t.projectId)))));
       case "tag":
-        return viewId ? store.tasks.getTagTasks(viewId) : [];
+        return viewId ? sortByAnytimeRules(store.tasks.getTagTasks(viewId)) : [];
       default:
         return [];
     }
   }
 
-  // 排序 - 使用 order 字段
-  $: sortedTasks = sortTasks(tasks);
+  // 排序 - 使用 order 字段（随时/标签/项目/区域视图已在 getTasks 中按日期排序，不再重排）
+  $: sortedTasks = (view === 'anytime' || view === 'tag' || view === 'project' || view === 'area') ? tasks : sortTasks(tasks);
 
   function sortTasks(tasks: Task[]): Task[] {
     return [...tasks].sort((a, b) => {
@@ -935,23 +978,23 @@
 
 <div class="task-list">
   <!-- 大标题 -->
-  <div class="task-list__header has-border">
-    {#if view === "tag" && viewId}
-      {@const tagObj = store.tags.get(viewId)}
-      {#if tagObj?.color}
-        <span class="task-list__tag-dot" style="background: {tagObj.color}"></span>
+  <div class="task-list__header">
+    <div class="task-list__header-top has-border">
+      {#if view === "tag" && viewId}
+        {@const tagObj = store.tags.get(viewId)}
+        {#if tagObj?.color}
+          <span class="task-list__tag-dot" style="background: {tagObj.color}"></span>
+        {:else}
+          <Icon name={viewIcon} size={22} klass="task-list__title-icon" />
+        {/if}
       {:else}
         <Icon name={viewIcon} size={22} klass="task-list__title-icon" />
       {/if}
-    {:else}
-      <Icon name={viewIcon} size={22} klass="task-list__title-icon" />
-    {/if}
-    <div class="task-list__title-wrap">
       <h1 class="task-list__title">{viewTitle}</h1>
-      {#if getViewDescription(view)}
-        <p class="task-list__description">{getViewDescription(view)}</p>
-      {/if}
     </div>
+    {#if getViewDescription(view)}
+      <p class="task-list__description">{getViewDescription(view)}</p>
+    {/if}
   </div>
 
   <!-- 创建项目/区域表单 -->
@@ -1190,15 +1233,21 @@
 
     &__header {
       display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 80px 0 14px;
+      flex-direction: column;
+      padding: 80px 0 0;
       flex-shrink: 0;
 
-      // 标题下方分隔线
-      &.has-border {
-        border-bottom: 1px solid var(--b3-border-color);
-        padding-bottom: 20px;
+      &-top {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding-bottom: 14px;
+
+        // 标题下方分隔线
+        &.has-border {
+          border-bottom: 1px solid var(--b3-border-color);
+          padding-bottom: 14px;
+        }
       }
     }
 
@@ -1382,6 +1431,7 @@
     &__title-icon {
       color: var(--b3-theme-on-background);
       line-height: 1;
+      margin-top: 2px;
     }
 
     &__tag-dot {
@@ -1389,6 +1439,7 @@
       height: 14px;
       border-radius: 50%;
       flex-shrink: 0;
+      margin-top: 4px;
     }
 
     &__empty-icon {
@@ -1408,12 +1459,13 @@
       color: var(--b3-theme-on-background);
       margin: 0;
       text-align: left;
+      line-height: 1.2;
     }
 
     &__description {
       font-size: 13px;
       color: var(--b3-theme-on-surface-light);
-      margin: 4px 0 0;
+      margin: 10px 0 0;
       text-align: left;
     }
 

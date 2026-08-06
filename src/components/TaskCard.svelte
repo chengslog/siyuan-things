@@ -252,9 +252,10 @@
 
   // 收缩态提醒徽章：带具体时刻、且未被日程行时间列 / 今晚组头传达时显示
   $: showTimeBadge = !scheduleMode && hasTimeOfDay(resolvedStartDate) && !(currentView === 'today' && isEveningTime(resolvedStartDate));
-  // 收缩态内联日期：所在视图不传达日期（项目/区域/标签/搜索等）时显示。
+  // 收缩态内联日期：所在视图不传达日期（项目/区域/标签/搜索/随时等）时显示。
   // 月度分组（inlineDate）改用行首日期列（日志同款），不再用内联徽章
   // 日志视图已有行首完成日期列，不再叠加开始日期徽章
+  // 收缩态内联日期：今天/今晚视图不显示，随时/标签/项目/区域视图显示非今天任务的日期
   $: showCollapsedDate = mode === 'edit' && !!task?.startDate && currentView !== 'log' && currentView !== 'today' && currentView !== 'upcoming';
 
   // 项目/区域归属（编辑模式取 task，新建模式取本地状态）
@@ -389,8 +390,11 @@
   $: renderedNotes = renderMarkdown(notes);
   // 检测备注内容是否超过 2 行（需要展开按钮）
   $: isNotesOverflowing = checkOverflow(notesContentEl);
-  // 随时视图中的"今天任务"（显示黄色星标）
-  $: isTodayInAnytime = currentView === 'anytime' && task?.startDate && isTodayTask(task.startDate);
+  // 显示今天/今晚标识的视图（随时、标签、项目、区域）
+  $: showTodayIndicator = currentView === 'anytime' || currentView === 'tag' || currentView === 'project' || currentView === 'area';
+  // 今天任务（⭐️）和今晚任务（🌙）检测
+  $: isTodayInAnytime = showTodayIndicator && task?.startDate && isTodayTask(task.startDate) && !isEveningTime(task.startDate);
+  $: isTonightInAnytime = showTodayIndicator && task?.startDate && isTodayTask(task.startDate) && isEveningTime(task.startDate);
 
   function checkOverflow(el: HTMLElement | null): boolean {
     if (!el) return false;
@@ -872,9 +876,17 @@
       <span class="task-card__check-placeholder"></span>
     {/if}
 
-    <!-- 收缩态内联日期（月度分组，或项目/区域/标签等不传达日期的视图） -->
-    {#if showCollapsedDate && !expanded}
-      <span class="task-card__inline-date">{formatMonthDay(task?.startDate)}</span>
+    <!-- 日期/图标（有日期或今天图标时显示，无日期不渲染） -->
+    {#if !expanded && showTodayIndicator}
+      {#if isTodayInAnytime}
+        <span class="task-card__date-col"><Icon name="iconThingsStarFilled" size={14} color="#FFB900" klass="task-card__today-indicator" /></span>
+      {:else if isTonightInAnytime}
+        <span class="task-card__date-col"><Icon name="iconThingsMoonFilled" size={14} color="#5A7FE0" klass="task-card__today-indicator" /></span>
+      {:else if showCollapsedDate}
+        <span class="task-card__date-col task-card__inline-date">{formatMonthDay(task?.startDate)}</span>
+      {/if}
+    {:else if showCollapsedDate && !expanded}
+      <span class="task-card__date-col task-card__inline-date">{formatMonthDay(task?.startDate)}</span>
     {/if}
 
     <!-- 标题 -->
@@ -893,9 +905,6 @@
     {:else}
       <div class="task-card__info">
         <div class="task-card__title" class:is-done={task?.status === "done" || pendingDone}>
-          {#if isTodayInAnytime}
-            <Icon name="iconThingsStarFilled" size={14} color="#FFB900" klass="task-card__today-star" />
-          {/if}
           {task?.title}
         </div>
         {#if subtitleDisplay && !scheduleMode}
@@ -928,8 +937,11 @@
             <span class="task-card__aux-item" title="备注"><Icon name="iconThingsNote" size={12} /></span>
           {/if}
           {#if task?.tags && task.tags.length > 0}
-            <span class="task-card__aux-item" title={tags.length ? `标签：${tags.map((t) => t.name).join('、')}` : '标签'}>
-              <Icon name="iconThingsTag" size={12} />
+            <span class="task-card__aux-item task-card__tags-inline" title={tags.length ? `标签：${tags.map((t) => t.name).join('、')}` : '标签'}>
+              {#each tags as tag}
+                <span class="task-card__tag-dot" style="background: {tag.color || '#999'}"></span>
+                <span class="task-card__tag-name">{tag.name}</span>
+              {/each}
             </span>
           {/if}
         </div>
@@ -1043,8 +1055,11 @@
                 class="task-card__tag-btn"
                 on:click|stopPropagation={() => { showTagPicker = !showTagPicker; showDatePicker = false; showDeadlinePicker = false; showProjectAreaPicker = false; }}
               >
-                <Icon name="iconThingsTag" size={12} />
-                <span>{tags.map(t => t.name).join(', ')}</span>
+                {#each tags as tag, i}
+                  <span class="task-card__tag-dot" style="background: {tag.color || '#999'}"></span>
+                  <span>{tag.name}</span>
+                  {#if i < tags.length - 1}<span>, </span>{/if}
+                {/each}
               </button>
               <button class="task-card__tag-remove" on:click|stopPropagation={clearTags}>×</button>
 
@@ -1325,7 +1340,7 @@
     &__header {
       display: flex;
       align-items: flex-start;
-      gap: 12px;
+      gap: 10px;
     }
 
     // 标题与所属项目/区域同行展示（项目名灰色小字跟在标题后），保持单行紧凑
@@ -1362,7 +1377,7 @@
       align-items: center;
       gap: 10px;
       flex-shrink: 0;
-      align-self: center;
+      margin-top: 3px;
     }
 
     &__aux-item {
@@ -1372,6 +1387,23 @@
       font-size: 12px;
       color: #9ca3af;
       white-space: nowrap;
+    }
+
+    // 收缩态标签内联显示（彩色圆点 + 标签名）
+    &__tags-inline {
+      gap: 4px;
+    }
+
+    &__tag-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    &__tag-name {
+      font-size: 12px;
+      color: #6b7280;
     }
 
     &__aux-deadline {
@@ -1438,7 +1470,7 @@
       flex-shrink: 0;
       width: 18px;
       height: 18px;
-      margin-top: 2px;
+      margin-top: 3px;
       padding: 0;
       border: 1.5px solid #d1d5db;
       border-radius: 5px;
@@ -1483,9 +1515,7 @@
       overflow: hidden;
       text-overflow: ellipsis;
       min-width: 0;
-      display: flex;
-      align-items: center;
-      gap: 4px;
+      flex: 1;
 
       &.is-done {
         text-decoration: line-through;
@@ -1497,6 +1527,21 @@
     // 随时视图中的今天任务黄色星标
     &__today-star {
       flex-shrink: 0;
+    }
+
+    // 随时视图中的今天/今晚标识（勾选框和标题之间）
+    &__today-indicator {
+      flex-shrink: 0;
+    }
+
+    // 日期/图标（固定宽度保证标题对齐）
+    &__date-col {
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-start;
+      flex-shrink: 0;
+      min-width: 20px;
+      margin-top: 4px;
     }
 
     &__title-input {
