@@ -1068,6 +1068,10 @@ export default class ThingsPlugin extends Plugin {
       const a = this.store.areas.get(viewId);
       return a?.name || "区域";
     }
+    if (view === "tag" && viewId) {
+      const t = this.store.tags.get(viewId);
+      return t?.name || "标签";
+    }
 
     return titles[view] || "Things";
   }

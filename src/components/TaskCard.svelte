@@ -15,6 +15,7 @@
   import { getStartDateDisplay, getDeadlineDisplay, getReminderDisplay } from "@/utils/display";
   import { renderMarkdown } from "@/utils/markdown";
   import { uploadImage } from "@/utils/upload";
+  import { smartPosition } from "@/utils/popup";
 
   // 模式：create 或 edit
   export let mode: 'create' | 'edit' = 'edit';
@@ -172,12 +173,11 @@
     return `${d.getMonth() + 1}/${d.getDate()}`;
   }
 
-  // 计划视图月度组的行首日期列："x月x日"，带时刻时追加 HH:mm（同日志行首样式）
+  // 计划视图月度组的行首日期列：统一格式 "M月D日"（不显示时间）
   function formatMonthDate(ts?: number): string {
     if (!ts) return "";
     const d = new Date(ts);
-    const base = `${d.getMonth() + 1}月${d.getDate()}日`;
-    return d.getHours() !== 0 || d.getMinutes() !== 0 ? `${base} ${formatTime(ts)}` : base;
+    return `${d.getMonth() + 1}月${d.getDate()}日`;
   }
 
   // 响应式数据
@@ -382,7 +382,16 @@
   // —— 备注 Markdown 展示/编辑 + 图片粘贴/拖拽 ——
   let editingNotes = false;
   let notesArea: HTMLTextAreaElement;
+  let notesExpanded = false;
+  let notesContentEl: HTMLElement;
   $: renderedNotes = renderMarkdown(notes);
+  // 检测备注内容是否超过 2 行（需要展开按钮）
+  $: isNotesOverflowing = checkOverflow(notesContentEl);
+
+  function checkOverflow(el: HTMLElement | null): boolean {
+    if (!el) return false;
+    return el.scrollHeight > el.clientHeight + 2;
+  }
 
   function startEditNotes() {
     editingNotes = true;
@@ -395,6 +404,11 @@
   }
 
   function handleNotesBlur() {
+    if (mode === 'edit') saveNotes();
+    editingNotes = false;
+  }
+
+  function saveAndCloseNotes() {
     if (mode === 'edit') saveNotes();
     editingNotes = false;
   }
@@ -818,12 +832,12 @@
 >
   <!-- 标题区域 -->
   <div class="task-card__header">
-    <!-- 日志视图：行首固定宽度完成日期列（今天完成的显示"今天"，其余"M月D日"） -->
-    {#if currentView === 'log' && mode === 'edit'}
+    <!-- 日志视图：行首固定宽度完成日期列（今天完成的显示"今天"，其余"M月D日"），仅收缩态显示 -->
+    {#if currentView === 'log' && mode === 'edit' && !expanded}
       <span class="task-card__log-date">{formatLogDate(task?.completedDate || task?.updated)}</span>
     {/if}
-    <!-- 计划视图月度组：行首固定宽度开始日期列（同日志样式，x月x日） -->
-    {#if inlineDate && mode === 'edit'}
+    <!-- 计划视图月度组：行首固定宽度开始日期列（同日志样式，x月x日），仅收缩态显示 -->
+    {#if inlineDate && mode === 'edit' && !expanded}
       <span class="task-card__month-date">{formatMonthDate(task?.startDate)}</span>
     {/if}
     <!-- 复选框（日程行收缩态显示时间列，展开后换回复选框以便勾选） -->
@@ -910,18 +924,47 @@
   <!-- 展开详情 -->
   {#if expanded}
     <div class="task-card__details" on:click|stopPropagation transition:fade={{ duration: 150 }}>
-      <!-- 备注：非编辑态渲染 Markdown 展示（点击转编辑）；编辑态支持粘贴/拖拽图片 -->
-      {#if mode === 'edit' && !editingNotes && notes.trim()}
-        <div class="task-card__notes-md" on:click|stopPropagation={startEditNotes} title="点击编辑备注">
-          {@html renderedNotes}
-        </div>
+      <!-- 备注：展示态（渲染 Markdown + 编辑按钮）↔ 编辑态（textarea + 完成按钮） -->
+      {#if mode === 'edit'}
+        {#if editingNotes}
+          <div class="task-card__notes-wrap task-card__notes-wrap--editing" on:mousedown|stopPropagation on:mouseup|stopPropagation>
+            <textarea
+              class="task-card__notes"
+              bind:this={notesArea}
+              bind:value={notes}
+              use:autoGrow
+              on:blur={handleNotesBlur}
+              on:paste={handleNotesPaste}
+              on:dragover|preventDefault
+              on:drop={handleNotesDrop}
+              placeholder="添加备注...（支持 Markdown，可粘贴/拖入图片）"
+              rows="2"
+            ></textarea>
+            <button class="task-card__notes-done" on:click|stopPropagation={saveAndCloseNotes} title="完成编辑">✓</button>
+          </div>
+        {:else}
+          <div class="task-card__notes-wrap" on:mousedown|stopPropagation on:mouseup|stopPropagation on:click|stopPropagation={startEditNotes}>
+            {#if notes.trim()}
+              <div class="task-card__notes-md" class:is-expanded={notesExpanded} bind:this={notesContentEl}>{@html renderedNotes}</div>
+              <button class="task-card__notes-edit" on:click|stopPropagation={startEditNotes} title="编辑备注">
+                <Icon name="iconThingsPencil" size={12} />
+              </button>
+              {#if isNotesOverflowing}
+                <button class="task-card__notes-expand" on:click|stopPropagation={() => notesExpanded = !notesExpanded} title={notesExpanded ? "收起" : "展开"}>
+                  {notesExpanded ? "收起" : "展开"}
+                </button>
+              {/if}
+            {:else}
+              <span class="task-card__notes-placeholder">添加备注…</span>
+            {/if}
+          </div>
+        {/if}
       {:else}
         <textarea
           class="task-card__notes"
           bind:this={notesArea}
           bind:value={notes}
           use:autoGrow
-          on:blur={mode === 'edit' ? handleNotesBlur : undefined}
           on:paste={handleNotesPaste}
           on:dragover|preventDefault
           on:drop={handleNotesDrop}
@@ -958,7 +1001,7 @@
               <button class="task-card__tag-remove" on:click|stopPropagation={clearStartDate}>×</button>
 
               {#if showDatePicker}
-                <div class="task-card__dropdown">
+                <div class="task-card__dropdown" use:smartPosition>
                   <DatePicker
                     timestamp={mode === 'edit' && task ? task.startDate : startDate}
                     on:change={handleDateChange}
@@ -990,7 +1033,7 @@
               <button class="task-card__tag-remove" on:click|stopPropagation={clearTags}>×</button>
 
               {#if showTagPicker}
-                <div class="task-card__dropdown">
+                <div class="task-card__dropdown" use:smartPosition>
                   <TagPicker
                     store={store}
                     selectedTags={task?.tags || []}
@@ -1014,7 +1057,7 @@
               <button class="task-card__tag-remove" on:click|stopPropagation={clearDeadline}>×</button>
 
               {#if showDeadlinePicker}
-                <div class="task-card__dropdown">
+                <div class="task-card__dropdown" use:smartPosition>
                   <DeadlinePicker
                     timestamp={mode === 'edit' && task ? task.deadline : deadline}
                     on:change={handleDeadlineChange}
@@ -1046,7 +1089,7 @@
               <button class="task-card__tag-remove" on:click|stopPropagation={clearAssignment}>×</button>
 
               {#if showProjectAreaPicker}
-                <div class="task-card__dropdown">
+                <div class="task-card__dropdown" use:smartPosition>
                   <ProjectAreaPicker
                     store={store}
                     selectedProjectId={assignment.projectId}
@@ -1074,7 +1117,7 @@
               </button>
 
               {#if showDatePicker}
-                <div class="task-card__dropdown task-card__dropdown--right">
+                <div class="task-card__dropdown task-card__dropdown--right" use:smartPosition>
                   <DatePicker
                     timestamp={mode === 'edit' && task ? task.startDate : startDate}
                     on:change={handleDateChange}
@@ -1097,7 +1140,7 @@
               </button>
 
               {#if showDeadlinePicker}
-                <div class="task-card__dropdown task-card__dropdown--right">
+                <div class="task-card__dropdown task-card__dropdown--right" use:smartPosition>
                   <DeadlinePicker
                     timestamp={mode === 'edit' && task ? task.deadline : deadline}
                     on:change={handleDeadlineChange}
@@ -1135,7 +1178,7 @@
               </button>
 
               {#if showTagPicker}
-                <div class="task-card__dropdown task-card__dropdown--right">
+                <div class="task-card__dropdown task-card__dropdown--right" use:smartPosition>
                   <TagPicker
                     store={store}
                     selectedTags={task?.tags || []}
@@ -1156,7 +1199,7 @@
               </button>
 
               {#if showTagPicker}
-                <div class="task-card__dropdown task-card__dropdown--right">
+                <div class="task-card__dropdown task-card__dropdown--right" use:smartPosition>
                   <TagPicker
                     store={store}
                     selectedTags={selectedTags}
@@ -1179,7 +1222,7 @@
               </button>
 
               {#if showProjectAreaPicker}
-                <div class="task-card__dropdown task-card__dropdown--right">
+                <div class="task-card__dropdown task-card__dropdown--right" use:smartPosition>
                   <ProjectAreaPicker
                     store={store}
                     selectedProjectId={assignment.projectId}
@@ -1339,7 +1382,7 @@
     &__schedule-time {
       flex-shrink: 0;
       width: 46px;
-      margin-top: 1px;
+      margin-top: 2px;
       font-size: 15px;
       font-weight: 500;
       font-variant-numeric: tabular-nums;
@@ -1357,10 +1400,10 @@
       white-space: nowrap;
     }
 
-    // 计划视图月度组行首开始日期列（同日志样式，带时刻时更宽）
+    // 计划视图月度组行首开始日期列：固定宽度与日志视图对齐
     &__month-date {
       flex-shrink: 0;
-      width: 104px;
+      width: 56px;
       margin-top: 2px;
       font-size: 12px;
       color: var(--b3-theme-on-surface-light);
@@ -1524,15 +1567,21 @@
       }
     }
 
-    // 备注 Markdown 展示态：点击进入编辑
+    // 备注 Markdown 展示态
     &__notes-md {
       width: 100%;
-      padding: 4px 0;
       font-size: 13px;
       line-height: 1.6;
       color: #4b5563;
-      cursor: text;
       word-break: break-word;
+      // 展示态固定高度，超出截断
+      max-height: 104px; // 约5行高度 (13px * 1.6 * 5 = 104px)
+      overflow: hidden;
+      position: relative;
+
+      &.is-expanded {
+        max-height: none;
+      }
 
       :global(p) {
         margin: 0 0 6px;
@@ -1578,6 +1627,94 @@
 
       &:focus {
         min-height: 40px;
+      }
+    }
+
+    // 备注包裹容器（浅色线框 + 编辑/完成按钮）
+    &__notes-wrap {
+      position: relative;
+      border: 1px solid #f0f0f0;
+      border-radius: 6px;
+      padding: 8px;
+      cursor: pointer;
+
+      &--editing {
+        border-color: #e0e0e0;
+        cursor: default;
+      }
+
+      // 编辑态 textarea 去掉顶部内边距（由 wrap 提供）
+      .task-card__notes {
+        padding: 0;
+      }
+    }
+
+    &__notes-edit,
+    &__notes-done {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      color: #9ca3af;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      transition: all 0.2s;
+      opacity: 0;
+
+      .task-card__notes-wrap:hover & {
+        opacity: 1;
+      }
+    }
+
+    &__notes-edit:hover,
+    &__notes-done:hover {
+      background: #f3f4f6;
+      color: #374151;
+    }
+
+    &__notes-done {
+      opacity: 1; // 编辑态始终显示
+    }
+
+    &__notes-expand {
+      position: absolute;
+      top: 4px;
+      right: 30px; // 编辑按钮右侧，编辑按钮在 right: 4px
+      padding: 2px 8px;
+      border: none;
+      background: transparent;
+      color: #9ca3af;
+      font-size: 11px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.2s;
+      opacity: 0;
+
+      .task-card__notes-wrap:hover & {
+        opacity: 1;
+      }
+
+      &:hover {
+        background: #f3f4f6;
+        color: #374151;
+      }
+    }
+
+    &__notes-placeholder {
+      font-size: 13px;
+      color: #9ca3af;
+      cursor: pointer;
+
+      &:hover {
+        color: #6b7280;
       }
     }
 

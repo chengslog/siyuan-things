@@ -1,7 +1,7 @@
 # 项目交接文档（AI 上下文）
 
 > 本文档面向 AI 助手/新开发者，包含项目全貌、关键实现机制、踩坑经验与最近的修复记录。
-> 最后更新：2026-07-30
+> 最后更新：2026-08-06
 
 ---
 
@@ -9,15 +9,25 @@
 
 > 给接手的新会话：先看这里，了解最近做到哪、接下来做什么。
 
-**本轮已完成**（2026-08-06，新需求 4 项）：
-1. **计划月份组任务改日志样式**：月度组任务行首加固定宽度（104px）开始日期列「x月x日」（带时刻追加 HH:mm），与日志行首样式一致；月度组任务保留勾选框（scheduleMode 日程行模式仅限近 7 天日期组：`!group.startsWith("m-")`）；月度组不再显示内联日期徽章（showCollapsedDate 排除 upcoming）
-2. **存储层改 IndexedDB**（替代 loadData/saveData 文件存储）：新增 `src/stores/idb.ts`（DB `siyuan-things`，stores: tasks/projects/areas/tags/settings，keyPath=id）；`BaseStore` 重写——内存 Map 仍是运行时数据源（读取/事件模型不变），add/update/delete 即时写 IDB，load 时 IDB 优先、空则**自动迁移旧文件数据**（旧文件保留作备份）；`libs/setting-utils.ts` 的 load/save 同样 patch 到 IDB `settings` store（id=name）
-   - ⚠️ 注意：数据迁移是一次性的（首载 IDB 空 + 文件有数据才迁移）；之后文件不再更新，备份价值以迁移时刻为准
-3. **Markdown 渲染**：`src/utils/markdown.ts`（marked 18 + DOMPurify 消毒，gfm+breaks）。收缩态标题行内 Markdown 渲染（`renderInlineMd`）；备注**展示态渲染块级 Markdown**（点击转 textarea 编辑、blur 保存回展示态），编辑态 textarea autoGrow
-4. **备注富文本图片**：`src/utils/upload.ts` 经思源 `/api/file/putFile` 上传到 `/data/assets/siyuan-things/`，返回 `assets/...` 引用；备注 textarea **粘贴/拖拽图片**自动上传并在光标处插入 `![](...)`；展示态 `<img>` 限宽 100%
-   - ⚠️ 依赖：新增 npm 依赖 marked/dompurify（已入 package.json）
+**本轮已完成**（2026-08-06，使用反馈修复 + UI 优化 9 项）：
+1. **存储层回退到文件存储**（替代 IndexedDB）：IndexedDB 写入静默失败导致任务重启后丢失；`BaseStore.load()` 改回 loadData/saveData 文件存储（思源可同步，多端一致），首次加载自动合并 IDB 残留数据到文件后清除 IDB
+2. **任务卡片备注交互优化**：空备注点击直接显示 textarea 进入编辑；有备注展示态（渲染 Markdown + ✎ 编辑按钮）↔ 编辑态（textarea + ✓ 完成按钮）双态切换；notes-wrap 加 `mousedown/mouseup|stopPropagation` 防点击备注区域触发卡片收起
+3. **已完成任务自动沉底**：`sortTasks()`/`groupTasks()` 添加 status 主排序键，`done` 排最后（项目视图、计划视图、日志视图均生效）
+4. **月视图日期格式统一**：`formatMonthDate()` 改为 "M月D日" 格式（与日志视图一致）；`__month-date` 宽度改为 56px 匹配 log-date
+5. **编辑态隐藏日期列**：任务卡片展开后，日志视图的 `__log-date` 和计划视图的 `__month-date` 不再显示（`&& !expanded` 条件）
+6. **标签页图标/标题修复**：VIEW_ICON_MAP 新增 `tag: "iconThingsTag"` 映射（原仅有 `tags`）；`getViewTitle()` 处理 tag 视图返回标签名；标签页标题显示彩色圆点（`tag.color`）代替图标
+7. **项目面板优化**：截止日期从 `__meta` 行移到 `__row` 进度条右侧同一行显示；备注框样式统一为与任务卡片一致的 Markdown 渲染 + 编辑按钮 + 浅色线框包裹（`border: 1px solid #f0f0f0`）
+8. **备注展开/收起功能**：任务卡片和项目备注都支持——展示态固定 `max-height: 104px`（约5行）超出截断；内容超过5行时右下角显示"展开"按钮，点击展开全部内容，按钮变为"收起"；**展开按钮和编辑按钮同在右上角**（`right: 30px` / `right: 4px`，hover 显示）；点击备注区域任意位置进入编辑
+9. **标签 Tab 图标统一**：VIEW_ICON_MAP 的 `tags`/`tag` 从 `iconThingsTag`（线框 `currentColor`）改为 `iconThingsTagColor`（黄色 `#F59E0B` 彩色标签），与侧边栏一致；其他视图图标（今天黄星/计划红日历等）本身已是彩色不受影响
 
-**上一轮完成**（2026-08-04~05，使用反馈修复 8 项，见下方明细）
+**上一轮完成**（2026-08-06 早，新需求 4 项）：
+1. **计划月份组任务改日志样式**：月度组任务行首加固定宽度（56px）开始日期列「x月x日」（带时刻追加 HH:mm），与日志行首样式一致；月度组保留勾选框（scheduleMode 日程行模式仅限近 7 天日期组：`!group.startsWith("m-")`）；月度组不再显示内联日期徽章（showCollapsedDate 排除 upcoming）
+2. **Markdown 渲染**：`src/utils/markdown.ts`（marked 18 + DOMPurify 消毒，gfm+breaks）。收缩态标题行内 Markdown 渲染（`renderInlineMd`）；备注**展示态渲染块级 Markdown**（点击转 textarea 编辑、blur 保存回展示态），编辑态 textarea autoGrow
+3. **备注富文本图片**：`src/utils/upload.ts` 经思源 `/api/file/putFile` 上传到 `/data/assets/siyuan-things/`，返回 `assets/...` 引用；备注 textarea **粘贴/拖拽图片**自动上传并在光标处插入 `![](...)`；展示态 `<img>` 限宽 100%
+   - ⚠️ 依赖：新增 npm 依赖 marked/dompurify（已入 package.json）
+4. **存储层改 IndexedDB**（后被回退，见本轮第1项）
+
+**更早一轮完成**（2026-08-04~05，使用反馈修复 8 项，见下方明细）
 
 **⚠️ 注意事项（接手必读）**：
 - **部署后必须重启思源或禁用再启用插件**——思源只在插件加载时读取插件 JS，只关开标签页不会生效；用户反馈"修了没效果"时先确认这点

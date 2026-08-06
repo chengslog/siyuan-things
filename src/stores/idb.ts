@@ -1,8 +1,6 @@
 /**
- * IndexedDB 持久化层——替代思源插件的 loadData/saveData 文件存储。
- * 内存 Map 仍是运行时数据源（各 store 的读取/事件模型不变），
- * IndexedDB 是落库层：add/update/delete 即时写入，load 时读出填充内存。
- * 首次加载若库里没数据而旧文件有数据，自动迁移（文件保留作备份）。
+ * IndexedDB 工具层——仅用于启动时检查并迁移残留数据。
+ * 主存储已回退到思源文件存储（可被同步），IDB 仅用于一次性清理。
  */
 
 const DB_NAME = "siyuan-things";
@@ -37,37 +35,6 @@ export async function idbGetAll<T = any>(store: IDBStoreName): Promise<T[]> {
     const req = db.transaction(store, "readonly").objectStore(store).getAll();
     req.onsuccess = () => resolve((req.result as T[]) || []);
     req.onerror = () => reject(req.error);
-  });
-}
-
-export async function idbPut(store: IDBStoreName, item: { id: string }): Promise<void> {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(store, "readwrite");
-    tx.objectStore(store).put(item);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-export async function idbPutBatch(store: IDBStoreName, items: { id: string }[]): Promise<void> {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(store, "readwrite");
-    const os = tx.objectStore(store);
-    for (const item of items) os.put(item);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-export async function idbDelete(store: IDBStoreName, id: string): Promise<void> {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(store, "readwrite");
-    tx.objectStore(store).delete(id);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
   });
 }
 

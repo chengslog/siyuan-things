@@ -1,13 +1,13 @@
 import type { Plugin } from 'siyuan';
 import type { StoreEvent } from '@/types';
-import { idbGetAll, idbPut, idbPutBatch, idbDelete, idbClear, type IDBStoreName } from './idb';
+import { idbGetAll, idbClear, type IDBStoreName } from './idb';
 
 type Listener = (event: StoreEvent) => void;
 
 /**
  * 基础数据存储类
- * 运行时数据在内存 Map，持久化层为 IndexedDB（替代旧的 JSON 文件存储）。
- * 首次加载若 IndexedDB 为空而旧文件有数据，自动迁移入库（旧文件保留作备份）。
+ * 运行时数据在内存 Map，持久化层为思源文件存储（可被思源同步）。
+ * 启动时若 IDB 有最近数据（从 IDB 迁移后的残留），先合并回文件再清 IDB。
  */
 export abstract class BaseStore<T extends { id: string }> {
   protected plugin: Plugin;
@@ -26,37 +26,47 @@ export abstract class BaseStore<T extends { id: string }> {
   }
 
   /**
-   * 加载数据：IndexedDB 优先；库里没有时回退旧文件并迁移入库
+   * 加载数据：文件存储为主。
+   * 启动时检查 IDB 是否有残留数据（上次 IDB 迁移后的写入），
+   * 若有则合并到文件，然后清 IDB，之后统一用文件存储。
    */
   async load(): Promise<void> {
     try {
+      // 1. 先从文件加载
       let data: T[] = [];
-      try {
-        data = await idbGetAll<T>(this.idbStore);
-      } catch (e) {
-        console.error(`[Things] IDB read failed, fallback to file: ${this.fileName}`, e);
+      const fileData = await this.plugin.loadData(this.fileName);
+      if (fileData && Array.isArray(fileData)) {
+        data = fileData as T[];
       }
+      console.log(`[Things] File read ${this.fileName}: ${data.length} items`);
 
-      if (!data.length) {
-        // 迁移旧文件数据（plugin.loadData 读 data/plugins/<name>/<fileName>）
-        const fileData = await this.plugin.loadData(this.fileName);
-        if (fileData && Array.isArray(fileData) && fileData.length) {
-          data = fileData as T[];
-          try {
-            await idbPutBatch(this.idbStore, data);
-            console.log(`[Things] Migrated ${data.length} ${this.fileName} items from file to IndexedDB`);
-          } catch (e) {
-            console.error(`[Things] Migration to IDB failed for ${this.fileName}:`, e);
-          }
+      // 2. 检查 IDB 是否有残留数据（从 IDB 迁移期写入的）
+      try {
+        const idbData = await idbGetAll<T>(this.idbStore);
+        if (idbData.length > 0) {
+          console.log(`[Things] IDB has ${idbData.length} residual items, merging to file...`);
+          // 合并：IDB 数据覆盖文件（以 id 为 key）
+          const merged = new Map<string, T>();
+          for (const item of data) merged.set(item.id, item);
+          for (const item of idbData) merged.set(item.id, item);
+          data = Array.from(merged.values());
+          // 写回文件
+          await this.plugin.saveData(this.fileName, data);
+          console.log(`[Things] ✓ Merged ${data.length} items to file`);
+          // 清 IDB
+          await idbClear(this.idbStore);
+          console.log(`[Things] ✓ Cleared IDB store: ${this.idbStore}`);
         }
+      } catch (e) {
+        console.error(`[Things] IDB residual check failed (non-fatal):`, e);
       }
 
       this.items.clear();
       for (const item of data) {
         this.items.set(item.id, item);
       }
+      console.log(`[Things] Loaded ${this.fileName}: ${this.items.size} items in memory`);
       if (data.length) {
-        // 触发变化事件，通知组件数据已加载
         this.emit({ type: 'change', ids: [] });
       }
     } catch (e) {
@@ -65,13 +75,13 @@ export abstract class BaseStore<T extends { id: string }> {
   }
 
   /**
-   * 全量落库（批量操作后调用）
+   * 全量落盘（批量操作后调用）
    */
   async save(): Promise<void> {
     try {
-      await idbPutBatch(this.idbStore, Array.from(this.items.values()));
+      await this.plugin.saveData(this.fileName, Array.from(this.items.values()));
     } catch (e) {
-      console.error(`[Things] Failed to save ${this.fileName} to IDB:`, e);
+      console.error(`[Things] Failed to save ${this.fileName}:`, e);
     }
   }
 
@@ -95,9 +105,9 @@ export abstract class BaseStore<T extends { id: string }> {
   async add(item: T): Promise<void> {
     this.items.set(item.id, item);
     try {
-      await idbPut(this.idbStore, item);
+      await this.plugin.saveData(this.fileName, Array.from(this.items.values()));
     } catch (e) {
-      console.error(`[Things] IDB put failed (${this.fileName}/${item.id}):`, e);
+      console.error(`[Things] Failed to save ${this.fileName} after add:`, e);
     }
     this.emit({ type: 'add', ids: [item.id] });
   }
@@ -108,9 +118,9 @@ export abstract class BaseStore<T extends { id: string }> {
   async update(item: T): Promise<void> {
     this.items.set(item.id, item);
     try {
-      await idbPut(this.idbStore, item);
+      await this.plugin.saveData(this.fileName, Array.from(this.items.values()));
     } catch (e) {
-      console.error(`[Things] IDB put failed (${this.fileName}/${item.id}):`, e);
+      console.error(`[Things] Failed to save ${this.fileName} after update:`, e);
     }
     this.emit({ type: 'update', ids: [item.id] });
   }
@@ -121,9 +131,9 @@ export abstract class BaseStore<T extends { id: string }> {
   async delete(id: string): Promise<void> {
     this.items.delete(id);
     try {
-      await idbDelete(this.idbStore, id);
+      await this.plugin.saveData(this.fileName, Array.from(this.items.values()));
     } catch (e) {
-      console.error(`[Things] IDB delete failed (${this.fileName}/${id}):`, e);
+      console.error(`[Things] Failed to save ${this.fileName} after delete:`, e);
     }
     this.emit({ type: 'delete', ids: [id] });
   }
@@ -168,9 +178,9 @@ export abstract class BaseStore<T extends { id: string }> {
   async clear(): Promise<void> {
     this.items.clear();
     try {
-      await idbClear(this.idbStore);
+      await this.plugin.saveData(this.fileName, []);
     } catch (e) {
-      console.error(`[Things] IDB clear failed (${this.fileName}):`, e);
+      console.error(`[Things] Failed to save ${this.fileName} after clear:`, e);
     }
     this.emit({ type: 'change', ids: [] });
   }

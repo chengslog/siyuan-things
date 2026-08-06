@@ -8,6 +8,7 @@
   import { formatDateFull } from "@/utils/calendar";
   import { isOverdue } from "@/utils/date";
   import { Icon } from "@/icons";
+  import { onMount, onDestroy } from "svelte";
 
   export let store: StoreManager;
   // 外部传入的刷新计数（projects store 变更时自增），保证本组件重算
@@ -20,7 +21,17 @@
     { status: "canceled", label: "已作废" },
   ];
 
+  const STATUS_LABELS: Record<ProjectStatus, string> = {
+    active: "进行中",
+    onhold: "已暂停",
+    completed: "已完成",
+    canceled: "已作废",
+  };
+
   $: projects = readProjects(store, version);
+
+  // 当前打开状态菜单的项目 ID
+  let statusMenuProjectId: string | null = null;
 
   function readProjects(s: StoreManager, _v: number): Project[] {
     return s.projects.getAll().sort((a, b) => a.order - b.order);
@@ -40,8 +51,46 @@
   }
 
   function open(p: Project) {
+    // 如果状态菜单打开，点击行时关闭菜单而不是进入项目
+    if (statusMenuProjectId === p.id) {
+      statusMenuProjectId = null;
+      return;
+    }
+    statusMenuProjectId = null;
     window.dispatchEvent(new CustomEvent("things-navigate", { detail: { view: "project", viewId: p.id } }));
   }
+
+  function toggleStatusMenu(e: MouseEvent, p: Project) {
+    e.stopPropagation();
+    statusMenuProjectId = statusMenuProjectId === p.id ? null : p.id;
+  }
+
+  async function changeStatus(p: Project, newStatus: ProjectStatus) {
+    if (p.status === newStatus) {
+      statusMenuProjectId = null;
+      return;
+    }
+    await store.projects.updateProject(p.id, { status: newStatus });
+    statusMenuProjectId = null;
+  }
+
+  // 点击外部关闭状态菜单
+  function handleOutsideClick(e: MouseEvent) {
+    if (statusMenuProjectId) {
+      const target = e.target as HTMLElement;
+      if (!target.closest('.projects-ov__status-chip')) {
+        statusMenuProjectId = null;
+      }
+    }
+  }
+
+  onMount(() => {
+    document.addEventListener('click', handleOutsideClick);
+  });
+
+  onDestroy(() => {
+    document.removeEventListener('click', handleOutsideClick);
+  });
 </script>
 
 <div class="projects-ov">
@@ -70,6 +119,24 @@
               <span class="projects-ov__bar-fill" style="width: {Math.round((prog.done / prog.total) * 100)}%"></span>
             </span>
           {/if}
+          <!-- 状态快速切换 -->
+          <div class="projects-ov__status-chip" class:is-open={statusMenuProjectId === p.id} on:click={(e) => toggleStatusMenu(e, p)}>
+            <span class="projects-ov__status-label">{STATUS_LABELS[p.status]}</span>
+            <span class="projects-ov__status-arrow">▾</span>
+            {#if statusMenuProjectId === p.id}
+              <div class="projects-ov__status-menu" on:click|stopPropagation>
+                {#each GROUPS as opt}
+                  <button
+                    class="projects-ov__status-option"
+                    class:is-active={p.status === opt.status}
+                    on:click={() => changeStatus(p, opt.status)}
+                  >
+                    {opt.label}
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </div>
         </button>
       {/each}
     {/if}
@@ -177,6 +244,77 @@
       text-align: center;
       font-size: 13px;
       color: var(--b3-theme-on-surface-light);
+    }
+
+    &__status-chip {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 3px 8px;
+      font-size: 11px;
+      color: var(--b3-theme-on-surface-light);
+      background: var(--b3-theme-surface-light);
+      border-radius: 10px;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: all 0.15s;
+
+      &:hover {
+        background: var(--b3-theme-border-color, #e5e7eb);
+        color: var(--b3-theme-on-surface);
+      }
+
+      &.is-open {
+        background: var(--b3-theme-primary);
+        color: white;
+      }
+    }
+
+    &__status-label {
+      white-space: nowrap;
+    }
+
+    &__status-arrow {
+      font-size: 10px;
+      line-height: 1;
+      opacity: 0.7;
+    }
+
+    &__status-menu {
+      position: absolute;
+      top: calc(100% + 4px);
+      right: 0;
+      z-index: 100;
+      min-width: 80px;
+      padding: 4px;
+      background: white;
+      border: 1px solid var(--b3-border-color, #e5e7eb);
+      border-radius: 6px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    }
+
+    &__status-option {
+      display: block;
+      width: 100%;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: var(--b3-theme-on-surface);
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      text-align: left;
+      white-space: nowrap;
+
+      &:hover {
+        background: var(--b3-theme-surface-light);
+      }
+
+      &.is-active {
+        color: var(--b3-theme-primary);
+        font-weight: 500;
+      }
     }
   }
 </style>

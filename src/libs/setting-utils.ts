@@ -117,22 +117,20 @@ export class SettingUtils {
     }
 
     async load() {
-        // IndexedDB 优先；库里没有时回退旧文件并迁移入库
-        let data: any = null;
+        // 文件存储（可被思源同步）
+        let data: any = await this.plugin.loadData(this.file);
+        // 检查 IDB 是否有残留数据，有则合并回文件
         try {
-            const { idbGetAll, idbPut } = await import('@/stores/idb');
+            const { idbGetAll, idbClear } = await import('@/stores/idb');
             const rows = await idbGetAll<any>('settings');
             const row = rows.find(r => r.id === this.name);
-            data = row ? row.value : null;
-            if (!data) {
-                data = await this.plugin.loadData(this.file);
-                if (data) {
-                    try { await idbPut('settings', { id: this.name, value: data }); } catch { /* ignore */ }
-                }
+            if (row?.value) {
+                data = row.value;
+                await this.plugin.saveData(this.file, data);
+                await idbClear('settings');
+                console.log('[Things] Migrated settings from IDB to file');
             }
-        } catch {
-            data = await this.plugin.loadData(this.file);
-        }
+        } catch { /* IDB not available, ignore */ }
         console.debug('Load config:', data);
         if (data) {
             for (let [key, item] of this.settings) {
@@ -145,12 +143,7 @@ export class SettingUtils {
 
     async save(data?: any) {
         data = data ?? this.dump();
-        try {
-            const { idbPut } = await import('@/stores/idb');
-            await idbPut('settings', { id: this.name, value: this.dump() });
-        } catch {
-            await this.plugin.saveData(this.file, this.dump());
-        }
+        await this.plugin.saveData(this.file, this.dump());
         console.debug('Save config:', data);
         return data;
     }

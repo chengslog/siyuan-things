@@ -143,9 +143,12 @@
 
   function sortTasks(tasks: Task[]): Task[] {
     return [...tasks].sort((a, b) => {
-      if (a.order !== b.order) {
-        return a.order - b.order;
-      }
+      // 已完成任务沉底
+      const aDone = a.status === 'done' ? 1 : 0;
+      const bDone = b.status === 'done' ? 1 : 0;
+      if (aDone !== bDone) return aDone - bDone;
+      // 同状态内按 order 排
+      if (a.order !== b.order) return a.order - b.order;
       return b.created - a.created;
     });
   }
@@ -210,7 +213,14 @@
       }
       groups.set("none", ungrouped);
       for (const arr of groups.values()) {
-        arr.sort((a, b) => (a.order !== b.order ? a.order - b.order : b.created - a.created));
+        arr.sort((a, b) => {
+          // 已完成任务沉底
+          const aDone = a.status === 'done' ? 1 : 0;
+          const bDone = b.status === 'done' ? 1 : 0;
+          if (aDone !== bDone) return aDone - bDone;
+          if (a.order !== b.order) return a.order - b.order;
+          return b.created - a.created;
+        });
       }
       return groups;
     }
@@ -281,7 +291,14 @@
       groups.get(bucket)?.push(task);
     }
     for (const arr of groups.values()) {
-      arr.sort((a, b) => (a.order !== b.order ? a.order - b.order : b.created - a.created));
+      arr.sort((a, b) => {
+        // 已完成任务沉底
+        const aDone = a.status === 'done' ? 1 : 0;
+        const bDone = b.status === 'done' ? 1 : 0;
+        if (aDone !== bDone) return aDone - bDone;
+        if (a.order !== b.order) return a.order - b.order;
+        return b.created - a.created;
+      });
     }
     return groups;
   }
@@ -875,6 +892,10 @@
       const a = store.areas.get(viewId);
       return a?.name || "区域";
     }
+    if (view === "tag" && viewId) {
+      const t = store.tags.get(viewId);
+      return t?.name || "标签";
+    }
 
     return titles[view] || "Things";
   }
@@ -902,7 +923,16 @@
 <div class="task-list">
   <!-- 大标题 -->
   <div class="task-list__header has-border">
-    <Icon name={viewIcon} size={22} klass="task-list__title-icon" />
+    {#if view === "tag" && viewId}
+      {@const tagObj = store.tags.get(viewId)}
+      {#if tagObj?.color}
+        <span class="task-list__tag-dot" style="background: {tagObj.color}"></span>
+      {:else}
+        <Icon name={viewIcon} size={22} klass="task-list__title-icon" />
+      {/if}
+    {:else}
+      <Icon name={viewIcon} size={22} klass="task-list__title-icon" />
+    {/if}
     <h1 class="task-list__title">{viewTitle}</h1>
   </div>
 
@@ -1334,6 +1364,13 @@
     &__title-icon {
       color: var(--b3-theme-on-background);
       line-height: 1;
+    }
+
+    &__tag-dot {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      flex-shrink: 0;
     }
 
     &__empty-icon {

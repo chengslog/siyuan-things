@@ -21,7 +21,8 @@ export const VIEW_ICON_MAP: Record<string, string> = {
   project: "iconThingsProject",
   areas: "iconThingsArea",
   area: "iconThingsArea",
-  tags: "iconThingsTag",
+  tags: "iconThingsTagColor",
+  tag: "iconThingsTagColor",
   search: "iconThingsSearch",
 };
 
