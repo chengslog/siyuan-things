@@ -13,6 +13,8 @@
   import Checklist from "./Checklist.svelte";
   import Icon from "@/icons/Icon.svelte";
   import { getStartDateDisplay, getDeadlineDisplay, getReminderDisplay } from "@/utils/display";
+  import { renderMarkdown } from "@/utils/markdown";
+  import { uploadImage } from "@/utils/upload";
 
   // 模式：create 或 edit
   export let mode: 'create' | 'edit' = 'edit';
@@ -170,6 +172,14 @@
     return `${d.getMonth() + 1}/${d.getDate()}`;
   }
 
+  // 计划视图月度组的行首日期列："x月x日"，带时刻时追加 HH:mm（同日志行首样式）
+  function formatMonthDate(ts?: number): string {
+    if (!ts) return "";
+    const d = new Date(ts);
+    const base = `${d.getMonth() + 1}月${d.getDate()}日`;
+    return d.getHours() !== 0 || d.getMinutes() !== 0 ? `${base} ${formatTime(ts)}` : base;
+  }
+
   // 响应式数据
   $: tags = mode === 'edit' && task ? task.tags.map((id) => store.tags.get(id)).filter(Boolean) : [];
   $: isDeadlineOverdue = mode === 'edit' && task?.deadline && isOverdue(task.deadline);
@@ -242,9 +252,10 @@
 
   // 收缩态提醒徽章：带具体时刻、且未被日程行时间列 / 今晚组头传达时显示
   $: showTimeBadge = !scheduleMode && hasTimeOfDay(resolvedStartDate) && !(currentView === 'today' && isEveningTime(resolvedStartDate));
-  // 收缩态内联日期：月度分组（inlineDate），或所在视图不传达日期（项目/区域/标签/搜索等）时显示
+  // 收缩态内联日期：所在视图不传达日期（项目/区域/标签/搜索等）时显示。
+  // 月度分组（inlineDate）改用行首日期列（日志同款），不再用内联徽章
   // 日志视图已有行首完成日期列，不再叠加开始日期徽章
-  $: showCollapsedDate = mode === 'edit' && !!task?.startDate && currentView !== 'log' && (inlineDate || (currentView !== 'today' && currentView !== 'upcoming'));
+  $: showCollapsedDate = mode === 'edit' && !!task?.startDate && currentView !== 'log' && currentView !== 'today' && currentView !== 'upcoming';
 
   // 项目/区域归属（编辑模式取 task，新建模式取本地状态）
   $: assignment = getAssignment(mode, task, projectId, areaId);
@@ -366,6 +377,72 @@
     if (task && notes !== (task.notes || "")) {
       await store.tasks.updateTask(task.id, { notes });
     }
+  }
+
+  // —— 备注 Markdown 展示/编辑 + 图片粘贴/拖拽 ——
+  let editingNotes = false;
+  let notesArea: HTMLTextAreaElement;
+  $: renderedNotes = renderMarkdown(notes);
+
+  function startEditNotes() {
+    editingNotes = true;
+    tick().then(() => {
+      notesArea?.focus();
+      if (notesArea) {
+        notesArea.selectionStart = notesArea.selectionEnd = notesArea.value.length;
+      }
+    });
+  }
+
+  function handleNotesBlur() {
+    if (mode === 'edit') saveNotes();
+    editingNotes = false;
+  }
+
+  // 在光标处插入文本（图片上传完成后回填 md 引用）
+  function insertAtCursor(text: string) {
+    const el = notesArea;
+    const start = el ? el.selectionStart ?? notes.length : notes.length;
+    const end = el ? el.selectionEnd ?? notes.length : notes.length;
+    notes = notes.slice(0, start) + text + notes.slice(end);
+    tick().then(() => {
+      if (el) {
+        el.selectionStart = el.selectionEnd = start + text.length;
+        el.focus();
+      }
+    });
+  }
+
+  async function uploadAndInsert(file: File) {
+    const url = await uploadImage(file);
+    if (url) {
+      insertAtCursor(`![](${url})`);
+      if (mode === 'edit') saveNotes();
+    } else {
+      showMessage("图片上传失败", 7000);
+    }
+  }
+
+  function handleNotesPaste(e: ClipboardEvent) {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) uploadAndInsert(file);
+        return;
+      }
+    }
+  }
+
+  function handleNotesDrop(e: DragEvent) {
+    const files = e.dataTransfer?.files;
+    if (!files || !files.length) return;
+    const imgs = Array.from(files).filter(f => f.type.startsWith('image/'));
+    if (!imgs.length) return;
+    e.preventDefault();
+    for (const f of imgs) uploadAndInsert(f);
   }
 
   // 切换完成状态
@@ -745,6 +822,10 @@
     {#if currentView === 'log' && mode === 'edit'}
       <span class="task-card__log-date">{formatLogDate(task?.completedDate || task?.updated)}</span>
     {/if}
+    <!-- 计划视图月度组：行首固定宽度开始日期列（同日志样式，x月x日） -->
+    {#if inlineDate && mode === 'edit'}
+      <span class="task-card__month-date">{formatMonthDate(task?.startDate)}</span>
+    {/if}
     <!-- 复选框（日程行收缩态显示时间列，展开后换回复选框以便勾选） -->
     {#if mode === 'edit'}
       {#if scheduleMode && !expanded}
@@ -829,14 +910,25 @@
   <!-- 展开详情 -->
   {#if expanded}
     <div class="task-card__details" on:click|stopPropagation transition:fade={{ duration: 150 }}>
-      <!-- 备注 -->
-      <textarea
-        class="task-card__notes"
-        bind:value={notes}
-        on:blur={mode === 'edit' ? saveNotes : undefined}
-        placeholder="添加备注..."
-        rows="2"
-      ></textarea>
+      <!-- 备注：非编辑态渲染 Markdown 展示（点击转编辑）；编辑态支持粘贴/拖拽图片 -->
+      {#if mode === 'edit' && !editingNotes && notes.trim()}
+        <div class="task-card__notes-md" on:click|stopPropagation={startEditNotes} title="点击编辑备注">
+          {@html renderedNotes}
+        </div>
+      {:else}
+        <textarea
+          class="task-card__notes"
+          bind:this={notesArea}
+          bind:value={notes}
+          use:autoGrow
+          on:blur={mode === 'edit' ? handleNotesBlur : undefined}
+          on:paste={handleNotesPaste}
+          on:dragover|preventDefault
+          on:drop={handleNotesDrop}
+          placeholder="添加备注...（支持 Markdown，可粘贴/拖入图片）"
+          rows="2"
+        ></textarea>
+      {/if}
 
       <!-- 检查清单 -->
       <div class="task-card__subtasks">
@@ -1265,6 +1357,17 @@
       white-space: nowrap;
     }
 
+    // 计划视图月度组行首开始日期列（同日志样式，带时刻时更宽）
+    &__month-date {
+      flex-shrink: 0;
+      width: 104px;
+      margin-top: 2px;
+      font-size: 12px;
+      color: var(--b3-theme-on-surface-light);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
     // 月度分组内联日期（勾选框与标题之间的 M/D，弱化但可扫读，等宽对齐）
     &__inline-date {
       flex-shrink: 0;
@@ -1408,6 +1511,7 @@
       border: none;
       outline: none;
       font-size: 13px;
+      font-family: inherit;
       color: #4b5563;
       background: transparent;
       resize: none;
@@ -1417,6 +1521,59 @@
 
       &::placeholder {
         color: #9ca3af;
+      }
+    }
+
+    // 备注 Markdown 展示态：点击进入编辑
+    &__notes-md {
+      width: 100%;
+      padding: 4px 0;
+      font-size: 13px;
+      line-height: 1.6;
+      color: #4b5563;
+      cursor: text;
+      word-break: break-word;
+
+      :global(p) {
+        margin: 0 0 6px;
+      }
+
+      :global(ul),
+      :global(ol) {
+        margin: 0 0 6px;
+        padding-left: 20px;
+      }
+
+      :global(code) {
+        background: var(--b3-theme-surface-light);
+        padding: 1px 4px;
+        border-radius: 4px;
+        font-size: 12px;
+      }
+
+      :global(pre) {
+        background: var(--b3-theme-surface-light);
+        padding: 8px;
+        border-radius: 6px;
+        overflow-x: auto;
+        margin: 0 0 6px;
+      }
+
+      :global(blockquote) {
+        margin: 0 0 6px;
+        padding-left: 10px;
+        border-left: 3px solid var(--b3-border-color);
+        color: var(--b3-theme-on-surface-light);
+      }
+
+      :global(img) {
+        max-width: 100%;
+        border-radius: 6px;
+        margin: 4px 0;
+      }
+
+      :global(a) {
+        color: var(--b3-theme-primary);
       }
 
       &:focus {

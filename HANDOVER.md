@@ -5,11 +5,19 @@
 
 ---
 
-## 📍 当前进度快照（2026-08-05）
+## 📍 当前进度快照（2026-08-06）
 
 > 给接手的新会话：先看这里，了解最近做到哪、接下来做什么。
 
-**本轮已完成**（2026-08-04~05，使用反馈修复 8 项，见下方列表 1–8）
+**本轮已完成**（2026-08-06，新需求 4 项）：
+1. **计划月份组任务改日志样式**：月度组任务行首加固定宽度（104px）开始日期列「x月x日」（带时刻追加 HH:mm），与日志行首样式一致；月度组任务保留勾选框（scheduleMode 日程行模式仅限近 7 天日期组：`!group.startsWith("m-")`）；月度组不再显示内联日期徽章（showCollapsedDate 排除 upcoming）
+2. **存储层改 IndexedDB**（替代 loadData/saveData 文件存储）：新增 `src/stores/idb.ts`（DB `siyuan-things`，stores: tasks/projects/areas/tags/settings，keyPath=id）；`BaseStore` 重写——内存 Map 仍是运行时数据源（读取/事件模型不变），add/update/delete 即时写 IDB，load 时 IDB 优先、空则**自动迁移旧文件数据**（旧文件保留作备份）；`libs/setting-utils.ts` 的 load/save 同样 patch 到 IDB `settings` store（id=name）
+   - ⚠️ 注意：数据迁移是一次性的（首载 IDB 空 + 文件有数据才迁移）；之后文件不再更新，备份价值以迁移时刻为准
+3. **Markdown 渲染**：`src/utils/markdown.ts`（marked 18 + DOMPurify 消毒，gfm+breaks）。收缩态标题行内 Markdown 渲染（`renderInlineMd`）；备注**展示态渲染块级 Markdown**（点击转 textarea 编辑、blur 保存回展示态），编辑态 textarea autoGrow
+4. **备注富文本图片**：`src/utils/upload.ts` 经思源 `/api/file/putFile` 上传到 `/data/assets/siyuan-things/`，返回 `assets/...` 引用；备注 textarea **粘贴/拖拽图片**自动上传并在光标处插入 `![](...)`；展示态 `<img>` 限宽 100%
+   - ⚠️ 依赖：新增 npm 依赖 marked/dompurify（已入 package.json）
+
+**上一轮完成**（2026-08-04~05，使用反馈修复 8 项，见下方明细）
 
 **⚠️ 注意事项（接手必读）**：
 - **部署后必须重启思源或禁用再启用插件**——思源只在插件加载时读取插件 JS，只关开标签页不会生效；用户反馈"修了没效果"时先确认这点
@@ -159,7 +167,7 @@ siyuan_Things_plugin/
 │   │   ├── sprite.ts             # 全部 <symbol> 定义（多色视图图标 + Lucide 单色图标）
 │   │   ├── Icon.svelte           # 通用图标组件 <Icon name size color klass/>
 │   │   └── index.ts              # VIEW_ICON_MAP 唯一映射表 + ICON_COLORS 品牌色
-│   ├── utils/                    # date.ts / calendar.ts / display.ts（日期展示）/ id.ts
+│   ├── utils/                    # date/calendar/display（日期展示）/markdown（marked+DOMPurify）/upload（图片上传）/id
 │   ├── types.ts                  # Task 等类型定义
 │   ├── index.ts                  # ★ 插件入口（标签页管理、dock、设置）
 │   └── index.scss                # 全局样式

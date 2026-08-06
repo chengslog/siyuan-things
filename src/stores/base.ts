@@ -1,10 +1,13 @@
 import type { Plugin } from 'siyuan';
-import type { StoreEvent, StoreEventType } from '@/types';
+import type { StoreEvent } from '@/types';
+import { idbGetAll, idbPut, idbPutBatch, idbDelete, idbClear, type IDBStoreName } from './idb';
 
 type Listener = (event: StoreEvent) => void;
 
 /**
  * 基础数据存储类
+ * 运行时数据在内存 Map，持久化层为 IndexedDB（替代旧的 JSON 文件存储）。
+ * 首次加载若 IndexedDB 为空而旧文件有数据，自动迁移入库（旧文件保留作备份）。
  */
 export abstract class BaseStore<T extends { id: string }> {
   protected plugin: Plugin;
@@ -17,17 +20,42 @@ export abstract class BaseStore<T extends { id: string }> {
     this.fileName = fileName;
   }
 
+  /** fileName（如 tasks.json）→ IndexedDB store 名（tasks） */
+  protected get idbStore(): IDBStoreName {
+    return this.fileName.replace(/\.json$/, "") as IDBStoreName;
+  }
+
   /**
-   * 从磁盘加载数据
+   * 加载数据：IndexedDB 优先；库里没有时回退旧文件并迁移入库
    */
   async load(): Promise<void> {
     try {
-      const data = await this.plugin.loadData(this.fileName);
-      if (data && Array.isArray(data)) {
-        this.items.clear();
-        for (const item of data) {
-          this.items.set(item.id, item);
+      let data: T[] = [];
+      try {
+        data = await idbGetAll<T>(this.idbStore);
+      } catch (e) {
+        console.error(`[Things] IDB read failed, fallback to file: ${this.fileName}`, e);
+      }
+
+      if (!data.length) {
+        // 迁移旧文件数据（plugin.loadData 读 data/plugins/<name>/<fileName>）
+        const fileData = await this.plugin.loadData(this.fileName);
+        if (fileData && Array.isArray(fileData) && fileData.length) {
+          data = fileData as T[];
+          try {
+            await idbPutBatch(this.idbStore, data);
+            console.log(`[Things] Migrated ${data.length} ${this.fileName} items from file to IndexedDB`);
+          } catch (e) {
+            console.error(`[Things] Migration to IDB failed for ${this.fileName}:`, e);
+          }
         }
+      }
+
+      this.items.clear();
+      for (const item of data) {
+        this.items.set(item.id, item);
+      }
+      if (data.length) {
         // 触发变化事件，通知组件数据已加载
         this.emit({ type: 'change', ids: [] });
       }
@@ -37,15 +65,13 @@ export abstract class BaseStore<T extends { id: string }> {
   }
 
   /**
-   * 保存数据到磁盘
+   * 全量落库（批量操作后调用）
    */
   async save(): Promise<void> {
     try {
-      const data = Array.from(this.items.values());
-      console.log(`[Things] Saving ${this.fileName}:`, data.length, 'items');
-      await this.plugin.saveData(this.fileName, data);
+      await idbPutBatch(this.idbStore, Array.from(this.items.values()));
     } catch (e) {
-      console.error(`[Things] Failed to save ${this.fileName}:`, e);
+      console.error(`[Things] Failed to save ${this.fileName} to IDB:`, e);
     }
   }
 
@@ -68,7 +94,11 @@ export abstract class BaseStore<T extends { id: string }> {
    */
   async add(item: T): Promise<void> {
     this.items.set(item.id, item);
-    await this.save();
+    try {
+      await idbPut(this.idbStore, item);
+    } catch (e) {
+      console.error(`[Things] IDB put failed (${this.fileName}/${item.id}):`, e);
+    }
     this.emit({ type: 'add', ids: [item.id] });
   }
 
@@ -77,7 +107,11 @@ export abstract class BaseStore<T extends { id: string }> {
    */
   async update(item: T): Promise<void> {
     this.items.set(item.id, item);
-    await this.save();
+    try {
+      await idbPut(this.idbStore, item);
+    } catch (e) {
+      console.error(`[Things] IDB put failed (${this.fileName}/${item.id}):`, e);
+    }
     this.emit({ type: 'update', ids: [item.id] });
   }
 
@@ -86,7 +120,11 @@ export abstract class BaseStore<T extends { id: string }> {
    */
   async delete(id: string): Promise<void> {
     this.items.delete(id);
-    await this.save();
+    try {
+      await idbDelete(this.idbStore, id);
+    } catch (e) {
+      console.error(`[Things] IDB delete failed (${this.fileName}/${id}):`, e);
+    }
     this.emit({ type: 'delete', ids: [id] });
   }
 
@@ -129,7 +167,11 @@ export abstract class BaseStore<T extends { id: string }> {
    */
   async clear(): Promise<void> {
     this.items.clear();
-    await this.save();
+    try {
+      await idbClear(this.idbStore);
+    } catch (e) {
+      console.error(`[Things] IDB clear failed (${this.fileName}):`, e);
+    }
     this.emit({ type: 'change', ids: [] });
   }
 }

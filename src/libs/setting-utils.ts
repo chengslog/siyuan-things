@@ -117,7 +117,22 @@ export class SettingUtils {
     }
 
     async load() {
-        let data = await this.plugin.loadData(this.file);
+        // IndexedDB 优先；库里没有时回退旧文件并迁移入库
+        let data: any = null;
+        try {
+            const { idbGetAll, idbPut } = await import('@/stores/idb');
+            const rows = await idbGetAll<any>('settings');
+            const row = rows.find(r => r.id === this.name);
+            data = row ? row.value : null;
+            if (!data) {
+                data = await this.plugin.loadData(this.file);
+                if (data) {
+                    try { await idbPut('settings', { id: this.name, value: data }); } catch { /* ignore */ }
+                }
+            }
+        } catch {
+            data = await this.plugin.loadData(this.file);
+        }
         console.debug('Load config:', data);
         if (data) {
             for (let [key, item] of this.settings) {
@@ -130,7 +145,12 @@ export class SettingUtils {
 
     async save(data?: any) {
         data = data ?? this.dump();
-        await this.plugin.saveData(this.file, this.dump());
+        try {
+            const { idbPut } = await import('@/stores/idb');
+            await idbPut('settings', { id: this.name, value: this.dump() });
+        } catch {
+            await this.plugin.saveData(this.file, this.dump());
+        }
         console.debug('Save config:', data);
         return data;
     }
