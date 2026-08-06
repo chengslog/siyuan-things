@@ -918,6 +918,19 @@
     };
     return map[view] || { icon: "iconThings", text: "暂无任务" };
   }
+
+  // 视图收纳逻辑说明
+  function getViewDescription(v: ViewType): string {
+    const desc: Record<string, string> = {
+      inbox: "未分配日期、项目、区域或标签的任务会出现在这里",
+      today: "开始日期或截止日期为今天的任务",
+      upcoming: "开始日期在未来的任务，到日期后自动进入今天",
+      anytime: "所有现在能做的活跃任务，包括今天的任务",
+      someday: "暂无计划的灵感想法，定期回顾",
+      log: "已完成的任务存档",
+    };
+    return desc[v] || "";
+  }
 </script>
 
 <div class="task-list">
@@ -933,7 +946,12 @@
     {:else}
       <Icon name={viewIcon} size={22} klass="task-list__title-icon" />
     {/if}
-    <h1 class="task-list__title">{viewTitle}</h1>
+    <div class="task-list__title-wrap">
+      <h1 class="task-list__title">{viewTitle}</h1>
+      {#if getViewDescription(view)}
+        <p class="task-list__description">{getViewDescription(view)}</p>
+      {/if}
+    </div>
   </div>
 
   <!-- 创建项目/区域表单 -->
@@ -1378,11 +1396,24 @@
       margin-bottom: 4px;
     }
 
+    &__title-wrap {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+    }
+
     &__title {
       font-size: 24px;
       font-weight: 700;
       color: var(--b3-theme-on-background);
       margin: 0;
+      text-align: left;
+    }
+
+    &__description {
+      font-size: 13px;
+      color: var(--b3-theme-on-surface-light);
+      margin: 4px 0 0;
       text-align: left;
     }
 

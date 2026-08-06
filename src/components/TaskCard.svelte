@@ -339,6 +339,7 @@
         document.addEventListener('click', handleOutsideClick);
       }, 10);
     } else {
+      notesExpanded = false; // 收起卡片时重置备注展开状态
       document.removeEventListener('click', handleOutsideClick);
     }
   }
@@ -361,6 +362,7 @@
       await saveTitle();
       await saveNotes();
       expanded = false;
+      notesExpanded = false; // 收起卡片时重置备注展开状态
     }
     document.removeEventListener('click', handleOutsideClick);
   }
@@ -387,10 +389,20 @@
   $: renderedNotes = renderMarkdown(notes);
   // 检测备注内容是否超过 2 行（需要展开按钮）
   $: isNotesOverflowing = checkOverflow(notesContentEl);
+  // 随时视图中的"今天任务"（显示黄色星标）
+  $: isTodayInAnytime = currentView === 'anytime' && task?.startDate && isTodayTask(task.startDate);
 
   function checkOverflow(el: HTMLElement | null): boolean {
     if (!el) return false;
     return el.scrollHeight > el.clientHeight + 2;
+  }
+
+  // 判断任务日期是否是今天
+  function isTodayTask(startDate: number): boolean {
+    const now = new Date();
+    const todayEnd = new Date(now);
+    todayEnd.setHours(23, 59, 59, 999);
+    return startDate <= todayEnd.getTime();
   }
 
   function startEditNotes() {
@@ -643,6 +655,7 @@
     if (willChangeCauseMove(changes)) {
       isMovingOut = true;   // 置灰
       expanded = false;     // 收起卡片
+      notesExpanded = false; // 重置备注展开状态
       await new Promise(resolve => setTimeout(resolve, 300)); // 等待置灰动画
       await store.tasks.updateTask(task.id, changes); // 写入 store → 任务移出当前视图 → outro 滑出
       isMovingOut = false;
@@ -880,6 +893,9 @@
     {:else}
       <div class="task-card__info">
         <div class="task-card__title" class:is-done={task?.status === "done" || pendingDone}>
+          {#if isTodayInAnytime}
+            <Icon name="iconThingsStarFilled" size={14} color="#FFB900" klass="task-card__today-star" />
+          {/if}
           {task?.title}
         </div>
         {#if subtitleDisplay && !scheduleMode}
@@ -943,7 +959,7 @@
             <button class="task-card__notes-done" on:click|stopPropagation={saveAndCloseNotes} title="完成编辑">✓</button>
           </div>
         {:else}
-          <div class="task-card__notes-wrap" on:mousedown|stopPropagation on:mouseup|stopPropagation on:click|stopPropagation={startEditNotes}>
+          <div class="task-card__notes-wrap" class:task-card__notes-wrap--has-content={notes.trim()} on:mousedown|stopPropagation on:mouseup|stopPropagation on:click|stopPropagation={startEditNotes}>
             {#if notes.trim()}
               <div class="task-card__notes-md" class:is-expanded={notesExpanded} bind:this={notesContentEl}>{@html renderedNotes}</div>
               <button class="task-card__notes-edit" on:click|stopPropagation={startEditNotes} title="编辑备注">
@@ -1243,10 +1259,6 @@
           {/if}
         </div>
 
-        <!-- 随时视图新建提示：不带分类的任务不属于随时 -->
-        {#if mode === 'create' && (presetView || currentView) === "anytime" && !projectId && !areaId && selectedTags.length === 0}
-          <div class="task-card__anytime-hint">「随时」只显示带项目/区域/标签的任务；都不设置时任务将归入收件箱</div>
-        {/if}
       </div>
     </div>
   {/if}
@@ -1471,12 +1483,20 @@
       overflow: hidden;
       text-overflow: ellipsis;
       min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 4px;
 
       &.is-done {
         text-decoration: line-through;
         color: #9ca3af;
         opacity: 0.7;
       }
+    }
+
+    // 随时视图中的今天任务黄色星标
+    &__today-star {
+      flex-shrink: 0;
     }
 
     &__title-input {
@@ -1630,13 +1650,17 @@
       }
     }
 
-    // 备注包裹容器（浅色线框 + 编辑/完成按钮）
+    // 备注包裹容器（有内容时显示浅色线框 + 编辑/完成按钮）
     &__notes-wrap {
       position: relative;
-      border: 1px solid #f0f0f0;
+      border: 1px solid transparent;
       border-radius: 6px;
       padding: 8px;
       cursor: pointer;
+
+      &--has-content {
+        border-color: #f0f0f0;
+      }
 
       &--editing {
         border-color: #e0e0e0;
@@ -1788,16 +1812,6 @@
           color: #dc2626;
         }
       }
-    }
-
-    // 随时视图新建提示
-    &__anytime-hint {
-      margin-top: 10px;
-      padding: 6px 10px;
-      font-size: 12px;
-      color: var(--b3-theme-on-surface-light);
-      background: var(--b3-theme-surface-light);
-      border-radius: 6px;
     }
 
     &__flag {

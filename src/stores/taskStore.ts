@@ -3,6 +3,15 @@ import type { Task, TaskStatus } from '@/types';
 import { BaseStore } from './base';
 import { genUUID } from '@/utils/id';
 
+/**
+ * 检查任务的重复规则是否命中今天
+ * TODO: 重复功能尚未实现，暂返回 false
+ */
+function isRecurringMatchToday(_task: Task, _todayStartTs: number, _todayEndTs: number): boolean {
+  // 预留接口，待重复功能实现后补充逻辑
+  return false;
+}
+
 export class TaskStore extends BaseStore<Task> {
   private archiveFileName: string;
   private archivedItems: Map<string, Task> = new Map();
@@ -148,6 +157,7 @@ export class TaskStore extends BaseStore<Task> {
       updated: now,
       startDate: partial.startDate,
       deadline: partial.deadline,
+      someday: partial.someday,
       projectId: partial.projectId,
       areaId: partial.areaId,
       parentId: partial.parentId,
@@ -221,24 +231,39 @@ export class TaskStore extends BaseStore<Task> {
 
   /**
    * 获取今天的任务
-   * 开始日期 <= 今天，包括过期未完成的任务
+   * 满足以下任一条件：
+   * 1. 开始日期 <= 今天
+   * 2. 截止日期 = 今天（即使没有开始日期）
+   * 3. (预留) 重复规则命中今天
+   * 且非 someday
    */
   getTodayTasks(): Task[] {
-    const todayEnd = new Date();
+    const now = new Date();
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+    const todayStartTs = todayStart.getTime();
+
+    const todayEnd = new Date(now);
     todayEnd.setHours(23, 59, 59, 999);
     const todayEndTs = todayEnd.getTime();
 
     return this.getAll().filter(t =>
       t.status === 'todo' &&
-      t.startDate &&
-      t.startDate <= todayEndTs &&
-      !t.someday
+      !t.someday &&
+      (
+        // 条件1：开始日期 <= 今天
+        (t.startDate && t.startDate <= todayEndTs) ||
+        // 条件2：截止日期 = 今天（即使没有开始日期）
+        (t.deadline && t.deadline >= todayStartTs && t.deadline <= todayEndTs) ||
+        // 条件3：(预留) 重复规则命中今天
+        isRecurringMatchToday(t, todayStartTs, todayEndTs)
+      )
     );
   }
 
   /**
    * 获取即将到来的任务
-   * 开始日期 > 今天，或者只有截止日期的任务
+   * 开始日期 > 今天，或者截止日期 > 今天（且无开始日期）
    */
   getUpcomingTasks(): Task[] {
     const todayEnd = new Date();
@@ -249,7 +274,7 @@ export class TaskStore extends BaseStore<Task> {
       t.status === 'todo' &&
       !t.someday && (
         (t.startDate && t.startDate > todayEndTs) ||
-        (t.deadline && !t.startDate)
+        (t.deadline && t.deadline > todayEndTs && !t.startDate)
       )
     );
   }
@@ -258,13 +283,32 @@ export class TaskStore extends BaseStore<Task> {
    * 获取"随时"任务
    * 没有日期但有项目、区域或标签的任务（可操作但没有时间限制）
    */
+  /**
+   * 获取"随时"任务（对齐 Things 3 逻辑）
+   * 所有现在能做的活跃任务，包括：
+   * 1. 无日期任务（无 startDate 且无 deadline）
+   * 2. 只有截止日期的任务（活跃状态，可立即处理）
+   * 3. 日期是今天的任务（今天也能随时做）
+   * 排除：某天、即将到来（未来日期）、子任务
+   */
   getAnytimeTasks(): Task[] {
+    const now = new Date();
+    const todayEnd = new Date(now);
+    todayEnd.setHours(23, 59, 59, 999);
+    const todayEndTs = todayEnd.getTime();
+
     return this.getAll().filter(t =>
       t.status === 'todo' &&
-      !t.startDate &&
       !t.someday &&
       !t.parentId &&
-      (t.projectId || t.areaId || (t.tags && t.tags.length > 0))
+      (
+        // 条件1：无日期任务
+        (!t.startDate && !t.deadline) ||
+        // 条件2：只有截止日期（活跃状态，可立即处理）
+        (t.deadline && !t.startDate) ||
+        // 条件3：日期是今天（今天任务也出现在随时）
+        (t.startDate && t.startDate <= todayEndTs)
+      )
     );
   }
 

@@ -247,7 +247,7 @@
         <button class="project-panel__notes-done" on:click|stopPropagation={commitNotes} title="完成编辑">✓</button>
       </div>
     {:else}
-      <div class="project-panel__notes-wrap" on:mousedown|stopPropagation on:mouseup|stopPropagation on:click|stopPropagation={startEditNotes}>
+      <div class="project-panel__notes-wrap" class:project-panel__notes-wrap--has-content={project.notes?.trim()} on:mousedown|stopPropagation on:mouseup|stopPropagation on:click|stopPropagation={startEditNotes}>
         {#if project.notes?.trim()}
           <div class="project-panel__notes-md" class:is-expanded={notesExpanded} bind:this={notesContentEl}>{@html renderedNotes}</div>
           <button class="project-panel__notes-edit" on:click|stopPropagation={startEditNotes} title="编辑备注">
@@ -419,10 +419,14 @@
 
     &__notes-wrap {
       position: relative;
-      border: 1px solid #f0f0f0;
+      border: 1px solid transparent;
       border-radius: 6px;
       padding: 8px;
       cursor: pointer;
+
+      &--has-content {
+        border-color: #f0f0f0;
+      }
 
       &--editing {
         border-color: #e0e0e0;
