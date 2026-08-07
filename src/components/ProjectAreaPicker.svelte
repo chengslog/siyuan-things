@@ -2,7 +2,7 @@
   /**
    * 项目/区域选择器（Things 3 的 "Projects and Areas" 行）。
    * 选项目 → projectId（areaId 清空，区域随项目的 areaId 间接体现）；
-   * 选区域 → areaId（projectId 清空）；"无" → 都清空。
+   * 选区域 → areaId（projectId 清空）。
    */
   import { createEventDispatcher } from "svelte";
   import type { StoreManager } from "@/stores";
@@ -23,7 +23,8 @@
   $: visibleAreas = q
     ? areas.filter((a) => a.name.toLowerCase().includes(q) || matchedProjects.some((p) => p.areaId === a.id))
     : areas;
-  $: orphanProjects = matchedProjects.filter((p) => !p.areaId);
+  $: validAreaIds = new Set(areas.map((a) => a.id));
+  $: orphanProjects = matchedProjects.filter((p) => !p.areaId || !validAreaIds.has(p.areaId));
 
   function pickProject(id: string) {
     dispatch("change", { projectId: id, areaId: undefined });
@@ -32,11 +33,6 @@
 
   function pickArea(id: string) {
     dispatch("change", { projectId: undefined, areaId: id });
-    dispatch("close");
-  }
-
-  function clearAll() {
-    dispatch("change", { projectId: undefined, areaId: undefined });
     dispatch("close");
   }
 </script>
@@ -52,15 +48,6 @@
   </div>
 
   <div class="pa-picker__list">
-    <button
-      class="pa-picker__option"
-      class:is-selected={!selectedProjectId && !selectedAreaId}
-      on:click={clearAll}
-    >
-      <Icon name="iconThingsInbox" size={16} />
-      <span>无</span>
-    </button>
-
     {#each visibleAreas as area (area.id)}
       {@const areaProjects = matchedProjects.filter((p) => p.areaId === area.id)}
       <button
@@ -83,16 +70,19 @@
       {/each}
     {/each}
 
-    {#each orphanProjects as p (p.id)}
-      <button
-        class="pa-picker__option pa-picker__option--project"
-        class:is-selected={selectedProjectId === p.id}
-        on:click={() => pickProject(p.id)}
-      >
-        <Icon name="iconThingsProject" size={14} />
-        <span>{p.name}</span>
-      </button>
-    {/each}
+    {#if orphanProjects.length > 0}
+      <div class="pa-picker__separator">无区域</div>
+      {#each orphanProjects as p (p.id)}
+        <button
+          class="pa-picker__option pa-picker__option--project"
+          class:is-selected={selectedProjectId === p.id}
+          on:click={() => pickProject(p.id)}
+        >
+          <Icon name="iconThingsProject" size={14} />
+          <span>{p.name}</span>
+        </button>
+      {/each}
+    {/if}
   </div>
 </div>
 
@@ -122,6 +112,15 @@
       max-height: 300px;
       overflow-y: auto;
       padding: 6px;
+    }
+
+    &__separator {
+      padding: 8px 10px 4px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--b3-theme-on-surface-light);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
 
     &__option {
