@@ -99,7 +99,7 @@
   $: tasks = getTasks(view, viewId, searchQuery, refreshKey, store.tasks.count);
 
   // 随时视图排序逻辑（也用于标签/项目/区域视图）
-  // 顺序：今天白天⭐️ → 今晚🌙 → 其他有日期（升序） → 无日期（保留order）
+  // 顺序：今天白天⭐️ → 今晚🌙 → 其他有日期（升序） → 无日期（保留order） → 已完成沉底
   function sortByAnytimeRules(tasks: Task[]): Task[] {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
@@ -112,6 +112,11 @@
       return d.getHours() === 18 && d.getMinutes() === 0;
     };
     return [...tasks].sort((a, b) => {
+      // 已完成任务沉底
+      const aDone = a.status === 'done' ? 1 : 0;
+      const bDone = b.status === 'done' ? 1 : 0;
+      if (aDone !== bDone) return aDone - bDone;
+
       const aDate = a.startDate || a.deadline;
       const bDate = b.startDate || b.deadline;
       const aIsToday = isToday(aDate);

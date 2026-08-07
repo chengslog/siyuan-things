@@ -393,7 +393,7 @@ export default class ThingsPlugin extends Plugin {
     const container = element.querySelector('#things-projects');
     if (!container) return;
 
-    const projects = this.store.projects.getActiveProjects();
+    const projects = this.store.projects.getActiveProjects().sort((a, b) => a.order - b.order);
     let html = '';
 
     for (const p of projects) {
@@ -444,7 +444,7 @@ export default class ThingsPlugin extends Plugin {
     const container = element.querySelector('#things-areas');
     if (!container) return;
 
-    const areas = this.store.areas.getAll();
+    const areas = this.store.areas.getAll().sort((a, b) => a.order - b.order);
     let html = '';
 
     for (const a of areas) {

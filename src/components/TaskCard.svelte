@@ -104,6 +104,9 @@
       deadline = task.deadline;
       someday = task.someday || false;
       selectedTags = [...(task.tags || [])];
+      // 初始化项目/区域归属（之前漏掉了，导致编辑后失去焦点会清除归属）
+      projectId = task.projectId;
+      areaId = task.areaId;
       // 加载子任务到本地状态
       const subTasks = store.tasks.getSubTasks(task.id);
       if (subTasks.length > 0) {
@@ -143,6 +146,8 @@
     window.removeEventListener('card-expanded', handleCardExpanded as EventListener);
     if (mode === 'edit' && task) {
       unregisterItem(task.id);
+      // 组件销毁前保存待处理的变更（如切换视图时）
+      savePendingChanges();
     }
     if (moveTimeout) clearTimeout(moveTimeout);
     // 若组件在完成延迟结束前被销毁（如切换视图），立即完成任务，避免丢失用户的勾选操作
@@ -150,6 +155,29 @@
       store.tasks.toggleTask(task.id);
     }
   });
+
+  // 保存待处理的变更（不执行动画，直接写 store）
+  async function savePendingChanges() {
+    if (mode !== 'edit' || !task) return;
+
+    const changes: Partial<Task> = {};
+    if (title !== task.title) changes.title = title;
+    if (notes !== (task.notes || "")) changes.notes = notes;
+    if (startDate !== task.startDate) changes.startDate = startDate;
+    if (deadline !== task.deadline) changes.deadline = deadline;
+    if (someday !== (task.someday || false)) changes.someday = someday;
+    if (projectId !== task.projectId) changes.projectId = projectId;
+    if (areaId !== task.areaId) changes.areaId = areaId;
+
+    const oldTags = task.tags || [];
+    const tagsChanged = selectedTags.length !== oldTags.length ||
+      selectedTags.some(t => !oldTags.includes(t));
+    if (tagsChanged) changes.tags = selectedTags;
+
+    if (Object.keys(changes).length > 0) {
+      await store.tasks.updateTask(task.id, changes);
+    }
+  }
 
   // 卡片互斥：其他卡片展开时，收起当前卡片
   function handleCardExpanded(e: CustomEvent) {
@@ -181,7 +209,8 @@
   }
 
   // 响应式数据
-  $: tags = mode === 'edit' && task ? task.tags.map((id) => store.tags.get(id)).filter(Boolean) : [];
+  // 使用本地状态 selectedTags 而非 task.tags，因为编辑时只更新本地状态
+  $: tags = selectedTags.map((id) => store.tags.get(id)).filter(Boolean);
   $: isDeadlineOverdue = mode === 'edit' && task?.deadline && isOverdue(task.deadline);
 
   // 编辑模式：本地维护检查清单状态，避免 store 更新导致重置
@@ -242,9 +271,10 @@
   // 注意：必须把响应式变量作为参数显式传入。Svelte 的 $: 不会穿透函数调用追踪依赖，
   // 若写成无参调用，只会在组件初始化时计算一次，设置/清除日期后胶囊不会刷新。
   // 展示逻辑统一在 utils/display.ts：返回 { icon: symbolId, text, color? }，模板用 <Icon> 渲染。
-  $: resolvedStartDate = mode === 'edit' && task ? task.startDate : startDate;
-  $: resolvedSomeday = mode === 'edit' && task ? !!task.someday : someday;
-  $: resolvedDeadline = mode === 'edit' && task ? task.deadline : deadline;
+  // 编辑模式下也使用本地状态（而非 task.xxx），因为修改日期时只更新本地状态，失去焦点时才写 store
+  $: resolvedStartDate = startDate;
+  $: resolvedSomeday = someday;
+  $: resolvedDeadline = deadline;
   $: dateDisplay = getStartDateDisplay(resolvedStartDate, resolvedSomeday, currentView);
   $: dateReminderDisplay = resolvedSomeday ? null : getReminderDisplay(resolvedStartDate);
   $: deadlineDisplay = getDeadlineDisplay(resolvedDeadline);
@@ -264,9 +294,10 @@
   $: assignmentArea = getAssignmentArea(store, assignment.areaId);
 
   function getAssignment(mode: 'create' | 'edit', task: Task | null, pid: string | undefined, aid: string | undefined) {
+    // 编辑模式下也使用本地状态（而非 task.xxx），因为修改归属时只更新本地状态
     return {
-      projectId: mode === 'edit' && task ? task.projectId : pid,
-      areaId: mode === 'edit' && task ? task.areaId : aid,
+      projectId: pid,
+      areaId: aid,
     };
   }
 
@@ -282,13 +313,14 @@
   async function handleProjectAreaChange(e: CustomEvent) {
     const pid = e.detail.projectId as string | undefined;
     const aid = e.detail.areaId as string | undefined;
-    if (mode === 'create') {
-      projectId = pid;
-      areaId = aid;
-    } else if (task) {
-      await applyChangeWithAnimation({ projectId: pid, areaId: aid });
-    }
+    // 无论 create 还是 edit 模式，都只更新本地状态
+    // edit 模式的 store 更新延迟到 saveAndCollapse 时执行
+    projectId = pid;
+    areaId = aid;
     showProjectAreaPicker = false;
+    if (mode === 'create') {
+      tick().then(() => titleInput?.focus());
+    }
   }
 
   function clearAssignment() {
@@ -335,6 +367,9 @@
     if (expanded && task) {
       title = task.title;
       notes = task.notes || "";
+      // 重新加载归属状态，防止外部更新后本地状态不同步
+      projectId = task.projectId;
+      areaId = task.areaId;
       window.dispatchEvent(new CustomEvent('card-expanded', { detail: { cardId: task.id } }));
       setTimeout(() => {
         document.addEventListener('click', handleOutsideClick);
@@ -360,10 +395,53 @@
   // 保存并折叠
   async function saveAndCollapse() {
     if (mode === 'edit' && task) {
+      // 构建变更对象：比较本地状态与 task
+      const changes: Partial<Task> = {};
+
+      if (title !== task.title) changes.title = title;
+      if (notes !== (task.notes || "")) changes.notes = notes;
+      if (startDate !== task.startDate) changes.startDate = startDate;
+      if (deadline !== task.deadline) changes.deadline = deadline;
+      if (someday !== (task.someday || false)) changes.someday = someday;
+      if (projectId !== task.projectId) changes.projectId = projectId;
+      if (areaId !== task.areaId) changes.areaId = areaId;
+
+      // 比较标签数组
+      const oldTags = task.tags || [];
+      const tagsChanged = selectedTags.length !== oldTags.length ||
+        selectedTags.some(t => !oldTags.includes(t));
+      if (tagsChanged) changes.tags = selectedTags;
+
+      // 先保存标题和备注（不触发动画）
       await saveTitle();
       await saveNotes();
-      expanded = false;
-      notesExpanded = false; // 收起卡片时重置备注展开状态
+
+      // 检查是否有日期/标签/归属等变更需要处理
+      const hasOtherChanges = Object.keys(changes).some(k =>
+        k !== 'title' && k !== 'notes'
+      );
+
+      if (hasOtherChanges && willChangeCauseMove(changes)) {
+        // 需要迁移：执行动画
+        isMovingOut = true;
+        expanded = false;
+        notesExpanded = false;
+        await new Promise(resolve => setTimeout(resolve, 300));
+        // 写入 store（排除已单独保存的 title/notes）
+        const { title: _, notes: __, ...restChanges } = changes;
+        if (Object.keys(restChanges).length > 0) {
+          await store.tasks.updateTask(task.id, restChanges);
+        }
+        isMovingOut = false;
+      } else {
+        // 不需要迁移：直接保存
+        const { title: _, notes: __, ...restChanges } = changes;
+        if (Object.keys(restChanges).length > 0) {
+          await store.tasks.updateTask(task.id, restChanges);
+        }
+        expanded = false;
+        notesExpanded = false;
+      }
     }
     document.removeEventListener('click', handleOutsideClick);
   }
@@ -533,33 +611,33 @@
 
   // 日期变化
   async function handleDateChange(e: CustomEvent) {
-    if (mode === 'create') {
-      startDate = e.detail.timestamp;
-      someday = e.detail.someday || false;
-    } else if (task) {
-      await applyChangeWithAnimation({ startDate: e.detail.timestamp, someday: e.detail.someday || false });
-    }
+    // 无论 create 还是 edit 模式，都只更新本地状态
+    // edit 模式的 store 更新延迟到 saveAndCollapse 时执行
+    startDate = e.detail.timestamp;
+    someday = e.detail.someday || false;
     showDatePicker = false;
+    // create 模式下，关闭选择器后把焦点返回标题输入框，避免 handleBlur 触发 cancel
+    if (mode === 'create') {
+      tick().then(() => titleInput?.focus());
+    }
   }
 
   // 截止日期变化
   async function handleDeadlineChange(e: CustomEvent) {
-    if (mode === 'create') {
-      deadline = e.detail.timestamp;
-    } else if (task) {
-      await applyChangeWithAnimation({ deadline: e.detail.timestamp });
-    }
+    deadline = e.detail.timestamp;
     showDeadlinePicker = false;
+    if (mode === 'create') {
+      tick().then(() => titleInput?.focus());
+    }
   }
 
   // 标签变化
   async function handleTagChange(e: CustomEvent) {
-    if (mode === 'create') {
-      selectedTags = e.detail.tags;
-    } else if (task) {
-      await applyChangeWithAnimation({ tags: e.detail.tags });
-    }
+    selectedTags = e.detail.tags;
     showTagPicker = false;
+    if (mode === 'create') {
+      tick().then(() => titleInput?.focus());
+    }
   }
 
   // 检查清单变化
@@ -604,35 +682,43 @@
 
   // 清除日期
   async function clearStartDate() {
-    if (mode === 'create') {
-      startDate = undefined;
-      someday = false;
-    } else if (task) {
-      await applyChangeWithAnimation({ startDate: undefined, someday: false });
-    }
+    startDate = undefined;
+    someday = false;
   }
 
   // 清除标签
   async function clearTags() {
-    if (mode === 'create') {
-      selectedTags = [];
-    } else if (task) {
-      await applyChangeWithAnimation({ tags: [] });
-    }
+    selectedTags = [];
   }
 
   // 清除截止日期
   async function clearDeadline() {
-    if (mode === 'create') {
-      deadline = undefined;
-    } else if (task) {
-      await applyChangeWithAnimation({ deadline: undefined });
-    }
+    deadline = undefined;
   }
 
   // 判断给定变更是否会使任务移出当前视图（基于当前任务与变更的合并结果）
   function willChangeCauseMove(changes: Partial<Task>): boolean {
     if (!task) return false;
+
+    // 项目/区域/标签视图：任务按归属分类，不会因日期/标签变化而迁出
+    if (currentView === 'project' || currentView === 'area' || currentView === 'tag') {
+      // 只有当归属字段被显式修改时才检查
+      if (currentView === 'project' && 'projectId' in changes) {
+        const newProjectId = changes.projectId;
+        return newProjectId !== task.projectId;
+      }
+      if (currentView === 'area' && 'areaId' in changes) {
+        const newAreaId = changes.areaId;
+        return newAreaId !== task.areaId;
+      }
+      if (currentView === 'tag' && 'tags' in changes) {
+        const newTags = changes.tags || [];
+        const oldTags = task.tags || [];
+        if (newTags.length !== oldTags.length) return true;
+        return newTags.some(t => !oldTags.includes(t));
+      }
+      return false;
+    }
 
     const merged = { ...task, ...changes };
 
@@ -936,7 +1022,7 @@
           {#if task?.notes}
             <span class="task-card__aux-item" title="备注"><Icon name="iconThingsNote" size={12} /></span>
           {/if}
-          {#if task?.tags && task.tags.length > 0}
+          {#if selectedTags.length > 0}
             <span class="task-card__aux-item task-card__tags-inline" title={tags.length ? `标签：${tags.map((t) => t.name).join('、')}` : '标签'}>
               {#each tags as tag}
                 <span class="task-card__tag-dot" style="background: {tag.color || '#999'}"></span>
@@ -1067,7 +1153,7 @@
                 <div class="task-card__dropdown" use:smartPosition>
                   <TagPicker
                     store={store}
-                    selectedTags={task?.tags || []}
+                    selectedTags={selectedTags}
                     on:change={handleTagChange}
                   />
                 </div>
@@ -1212,7 +1298,7 @@
                 <div class="task-card__dropdown task-card__dropdown--right" use:smartPosition>
                   <TagPicker
                     store={store}
-                    selectedTags={task?.tags || []}
+                    selectedTags={selectedTags}
                     on:change={handleTagChange}
                   />
                 </div>
