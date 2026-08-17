@@ -369,7 +369,7 @@ export class TaskStore extends BaseStore<Task> {
    */
   getCompletedTasks(): Task[] {
     return this.getAll()
-      .filter(t => t.status === 'done')
+      .filter(t => t.status === 'done' && !t.parentId)
       .sort((a, b) => (b.completedDate || 0) - (a.completedDate || 0));
   }
 
