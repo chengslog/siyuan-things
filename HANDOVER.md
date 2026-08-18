@@ -1,11 +1,57 @@
 # 项目交接文档（AI 上下文）
 
 > 本文档面向 AI 助手/新开发者，包含项目全貌、关键实现机制、踩坑经验与最近的修复记录。
-> 最后更新：2026-08-07
+> 最后更新：2026-08-18
 
 ---
 
-## 📍 当前进度快照（2026-08-07）
+## 📍 当前进度快照（2026-08-18：AI 任务整理功能）
+
+> 给接手的新会话：先看这里，了解最近做到哪、接下来做什么。
+
+**本轮完成**（2026-08-17~18，AI 智能任务整理功能——设计文档 `pasted-text-20260818-194351` 为准）：
+
+### 1. AI 服务层
+- **`src/services/aiParser.ts`**：SSE 流式调用 AI（原生 `fetch` + `ReadableStream` 逐行解析 `data:`），真实解析 DeepSeek 推理模型的 **`reasoning_content`**（思考内容）与 `content`（回答），流式失败自动回退非流式。`THINKING_LEVELS` 三档思考强度 = temperature + max_tokens + 提示词指令组合（简洁 0.3/1024、平衡 0.7/2048、深入 1.0/4096，DeepSeek 系列追加 `reasoning_effort`）。SYSTEM_PROMPT 日期动态注入（曾硬编码 2026-08-17）。AI 配置来源：插件设置 `aiMode`（siyuan=复用思源 `window.siyuan.config.ai.providers` 的 apiKey/baseURL/模型列表 / custom=自定义端点）
+- **`src/stores/aiChat.ts`**：AI 会话共享 store（`aiRounds`/`aiInputText`/`aiSelectedModel`/`aiThinkingLevel`/`aiIsSending`）+ `sendAiMessage`（流式更新轮次）/`adoptAiTask`（写任务 store，检查项转子任务）/`parsedToTaskData`/`parsedToPrefill`。**面板与浮窗共用同一份会话**——面板收起再开浮窗内容不丢（设计文档 §18）
+
+### 2. 组件层
+- **`AIChatCore.svelte`**（卡片流核心，面板与浮窗共用）：引导区（示例 prompt）→ 用户输入卡片 → AI 思考卡片（真实流式推理文本 + 状态徽章 思考中/整理中/✓完成）→ 结果卡片（复用 `TaskCard mode="create"` + 「采纳」按钮 → ✓已添加 + Toast）；底部输入栏（textarea ≤100px + 模型下拉 + 思考强度下拉 + 发送，Enter 发送）；支持连续对话追加卡片流
+- **`AIPanel.svelte`**：右侧常驻面板（宽屏形态），卡片式（圆角 14/边框/浅阴影），内容 max 620px 居中，**margin 归零由 App 卡片容器统一管理**（曾双重 margin 导致与任务卡高度不一致）
+- **`AICreator.svelte`**：全局浮窗（三段式 header/卡片流/输入栏）。**遮罩是 `position:absolute` 局部遮罩**（覆盖 Things 标签页区域、任务列表之上），非 `fixed` 全局遮罩——思源 dock 不受影响
+- **`TaskCard.svelte`** 新增：`noAutoSave`（AI 预览禁失焦/回车自动创建）、`prefilledData`（AI 预填 title/checklist/startDate/deadline/tags/priority）、**优先级 UI**（工具栏右侧旗帜入口 + 左侧彩色胶囊 高红/中黄/低灰 + 下拉选择，创建/编辑均持久化）
+- **`App.svelte` 复活为外壳**（不再是死代码）：标签页挂 App，App 内渲染 TaskList + AI 面板 + 浮窗
+
+### 3. 布局状态机（App.svelte，严格按设计文档）
+- **断点信号源**：`ResizeObserver` 监听**标签页容器自身宽度**（`thingsWidth`）——思源左/右 dock 开合只挤占容器、不触发 window resize，不能用 window.innerWidth 判断。启动时 4 次重测兜底（立即/rAF/100ms/500ms + 父元素逐级回退 + window 兜底）
+- **三态**：`full`（TaskList + AI 面板两列）/ `button`（面板退出，右下角 ✧＋ FAB）/ `secondary`（任务列表隐藏，侧边栏为一级）
+- **动态阈值**：任务列表最小宽 = **页面宽 2/5**、AI 面板最小宽 = **页面宽 1/5**（随窗口缩放动态）；FULL 条件 = 容器 ≥ 2/5 + 1/5 + 分隔条。**挤占优先级**：网格里 TaskList 是 1fr 先吸收收缩 → 到 2/5 后由面板宽度钳制保证不再缩 → 面板缩到 1/5 → FULL 条件破，面板消失变按钮
+- **分隔条 2**（TaskList↔AI 面板）：6px 可拖，钳制 [1/5 页面宽, 容器-2/5-分隔条]，松手持久化 `aiPanelWidth` 到设置，双击未做（可选）
+- **二级页面**：容器 < 页面 2/5 时任务列表隐藏（占位提示"请在左侧停靠栏选择视图"），点侧边栏导航（things-navigate）展示任务列表 + 顶部「← 收起」返回条；进入/离开边沿触发 `things-secondary-enter/leave` 窗口事件
+- **侧边栏扩宽覆盖任务区**（index.ts）：二级模式时修改思源 `uiLayout.left.data` 中 things_nav 面板的 `size.width`（原宽 + 任务区宽）+ `leftDock.setSize()` + `saveLayout()`；点导航/离开二级恢复原宽；onunload 兜底恢复。⚠️ 思源注册的 dock type = **插件名+类型**（`siyuan-thingsthings_nav`），不是注册时写的 `things_nav`（查 conf/conf.json 实锤）
+
+### 4. 其他
+- index.ts：dock 面板保持 renderDock 原样；监听 `things-open-ai`（弹浮窗）/`things-secondary-enter/leave`（扩宽/恢复 dock）
+- 设置项：`aiMode`（复用思源/自定义）+ `aiApiEndpoint`/`aiApiKey`/`aiModel`（自定义模式展开显示）；`openSetting` 手绘对话框已支持多配置项渲染
+- 图标：`iconThingsSparkles`/`iconThingsSend` 已入 sprite
+
+**本轮踩坑（血泪）**：
+1. **`$: x: Type = ...` 响应式声明带类型注解会被编译成标签语句** → 运行时报 `ReferenceError: AIState is not defined`，整个标签页白屏。响应式声明一律不写类型注解（三元自动推断）
+2. **Svelte 响应式语句按声明顺序执行**：响应式 `$: if` 里引用后面才声明的响应式变量（availableModels）→ 首次求值 undefined 崩溃。声明顺序必须"被依赖者在前"
+3. **子组件渲染崩溃会摧毁整个组件树**：AIChatCore 抛错 → App 连带 TaskList 全消失（"任务列表都不显示了"）。组件级错误无边界隔离，排错时先看 Console 第一个红错
+4. **思源 dock tab type = 插件名 + 注册类型**：`addDock({ type: "things_nav" })` 实际注册为 `siyuan-thingsthings_nav`，匹配配置时用 `this.name + "things_nav"`
+5. **forwardProxy 会触发思源全局 requesting 进度条** → AI 调用一律原生 fetch
+6. **思源没有暴露 AI 对话 API 给插件**（曾试 `/api/ai/chat`/`chatCompletion` 报错）：复用思源配置 = 读 `window.siyuan.config.ai.providers` 拿 apiKey/baseURL 后自己 fetch 供应商端点
+7. dock 面板宽度修改后必须 `setSize()` + `saveLayout()` 双调用才生效
+
+**建议的下一步**：
+- 验证/打磨：dock 扩宽在思源最大宽度限制下的表现、深色主题适配（AI 卡片硬编码 #f6f7f9/#e4e8ec）
+- COMPACT 残留：TaskList 的 `aiMode` 还保留 header/compact 分支代码（当前 App 不再传），可清理
+- 分隔条双击恢复默认宽度（设计文档未要求，可选）
+
+---
+
+## 📍 历史进度快照（2026-08-07 及更早）
 
 > 给接手的新会话：先看这里，了解最近做到哪、接下来做什么。
 
@@ -200,7 +246,7 @@
 siyuan_Things_plugin/
 ├── src/
 │   ├── components/
-│   │   ├── TaskCard.svelte       # ★ 核心：统一任务卡片（mode='create'|'edit'），~1180 行
+│   │   ├── TaskCard.svelte       # ★ 核心：统一任务卡片（mode='create'|'edit'，含优先级 UI/noAutoSave/prefilledData）
 │   │   ├── TaskList.svelte       # 任务列表视图（含拖拽排序、slideOut 滑出过渡）
 │   │   ├── TaskItem.svelte       # ⚠️ 死代码，无任何引用，实际渲染用 TaskCard
 │   │   ├── Sidebar.svelte        # 侧边栏导航
@@ -210,7 +256,14 @@ siyuan_Things_plugin/
 │   │   ├── Checklist.svelte      # 检查清单（增删改、回车新建、拖拽排序）
 │   │   ├── TimePicker.svelte     # 时分选择器
 │   │   └── DragSort.svelte       # 拖拽排序组件
-│   ├── stores/
+│   ├── components/
+│   │   ├── App.svelte            # ★ 外壳（已复活）：三态布局状态机 + 分隔条2 + 二级页面（不再是无引用死代码）
+│   │   ├── AIChatCore.svelte     # AI 卡片流核心（面板/浮窗共用，真实流式思考）
+│   │   ├── AIPanel.svelte        # 右侧常驻 AI 面板（宽屏形态）
+│   │   ├── AICreator.svelte      # AI 全局浮窗（局部遮罩，任务列表之上）
+│   │   ├── services/aiParser.ts  # AI 服务：SSE 流式 + reasoning_content + 思考强度
+│   │   ├── stores/
+│   │   ├── aiChat.ts             # AI 会话共享 store（面板/浮窗共用，跨形态不丢会话）
 │   │   ├── base.ts               # 基础存储类（思源 storage 持久化）
 │   │   ├── taskStore.ts          # 任务存储（toggleTask/updateTask/getSubTasks 等）
 │   │   ├── projectStore.ts / areaStore.ts / tagStore.ts
@@ -373,7 +426,9 @@ xcopy /E /Y /I "dist\*" "D:\siyuan\data\plugins\siyuan-things\"
 
 | 事项 | 状态/优先级 |
 |------|------|
-| 死代码可删除：TaskItem.svelte、App.svelte、TaskCreate.svelte、TaskDetail.svelte、Sidebar.svelte（dock 由 index.ts renderDock 手绘，Sidebar 组件未使用）均无任何引用 | 待清理 |
+| 死代码可删除：TaskItem.svelte、TaskCreate.svelte、TaskDetail.svelte、Sidebar.svelte（dock 由 index.ts renderDock 手绘；**App.svelte 已复活为外壳，勿删**） | 待清理 |
+| AI 卡片硬编码浅色值（#f6f7f9/#e4e8ec 等）未适配深色主题 | 待处理 |
+| TaskList 的 aiMode 仍保留 header/compact 分支（App 已不再传入） | 可清理 |
 | 计划视图「只有 deadline 无 startDate」的任务被 `groupTasks` 丢弃、不显示 | 待修复 |
 | 侧边栏数量偶尔不更新 | 待复现修复 |
 | 统一样式使用 CSS 变量（部分硬编码 #f3f4f6 等） | 中 |

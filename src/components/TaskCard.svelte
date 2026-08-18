@@ -2,7 +2,7 @@
   import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
   import { fade } from "svelte/transition";
   import { showMessage } from "siyuan";
-  import type { Task } from "@/types";
+  import type { Task, Priority } from "@/types";
   import type { StoreManager } from "@/stores";
   import { formatRelativeDate, isOverdue } from "@/utils/date";
   import { isTodayDate, isTomorrowDate, formatDateFull } from "@/utils/calendar";
@@ -40,24 +40,37 @@
   // 创建卡显式携带的目标视图上下文（拖 + 切视图与挂载有时序差，优先于 currentView）
   export let presetView: string | undefined = undefined;
   export let presetViewId: string | undefined = undefined;
+  // AI 预览模式：禁用失焦自动保存和回车自动创建，由外部控制保存时机
+  export let noAutoSave: boolean = false;
+  // AI 预填充数据：create 模式下用这些数据初始化本地状态
+  export let prefilledData: {
+    title?: string;
+    notes?: string;
+    checklist?: string[];
+    startDate?: number;
+    deadline?: number;
+    tags?: string[];
+    priority?: string;
+  } | undefined = undefined;
 
   const dispatch = createEventDispatcher();
 
   let cardEl: HTMLElement;
 
   // 表单数据
-  let title = "";
-  let notes = "";
-  let startDate: number | undefined = undefined;
-  let deadline: number | undefined = undefined;
+  let title = prefilledData?.title || "";
+  let notes = prefilledData?.notes || "";
+  let startDate: number | undefined = prefilledData?.startDate;
+  let deadline: number | undefined = prefilledData?.deadline;
   let someday: boolean = false;
-  let selectedTags: string[] = [];
+  let selectedTags: string[] = prefilledData?.tags || [];
   let projectId: string | undefined = undefined;
   let areaId: string | undefined = undefined;
   let headingId: string | undefined = undefined;
-  let checklist: Array<{ id: string; title: string; completed: boolean }> = [
-    { id: "empty", title: "", completed: false }
-  ];
+  let priority: Priority = (prefilledData?.priority as Priority) || 'none';
+  let checklist: Array<{ id: string; title: string; completed: boolean }> = prefilledData?.checklist && prefilledData.checklist.length > 0
+    ? prefilledData.checklist.map((t, i) => ({ id: `ck-${Date.now()}-${i}`, title: t, completed: false }))
+    : [{ id: "empty", title: "", completed: false }];
 
   // UI 状态
   let expanded = mode === 'create'; // 新建模式默认展开
@@ -65,6 +78,7 @@
   let showDeadlinePicker = false;
   let showTagPicker = false;
   let showProjectAreaPicker = false;
+  let showPriorityPicker = false;
   let showChecklist = true;
   let isInteracting = false;
   let isMovingOut = false;
@@ -104,6 +118,7 @@
       deadline = task.deadline;
       someday = task.someday || false;
       selectedTags = [...(task.tags || [])];
+      priority = task.priority || 'none';
       // 初始化项目/区域归属（之前漏掉了，导致编辑后失去焦点会清除归属）
       projectId = task.projectId;
       areaId = task.areaId;
@@ -342,12 +357,13 @@
 
     // 弹窗打开时：卡片内任何点击（弹窗自身除外，其内部已 stopPropagation）先关弹窗，
     // 不触发展开/折叠。修复"打开日期选择器后点卡片空白处弹窗不消失"。
-    const hasOpenDropdown = showDatePicker || showDeadlinePicker || showTagPicker || showProjectAreaPicker;
+    const hasOpenDropdown = showDatePicker || showDeadlinePicker || showTagPicker || showProjectAreaPicker || showPriorityPicker;
     if (hasOpenDropdown && (!target || !target.closest('.task-card__dropdown'))) {
       showDatePicker = false;
       showDeadlinePicker = false;
       showTagPicker = false;
       showProjectAreaPicker = false;
+      showPriorityPicker = false;
       return;
     }
 
@@ -405,6 +421,7 @@
       if (someday !== (task.someday || false)) changes.someday = someday;
       if (projectId !== task.projectId) changes.projectId = projectId;
       if (areaId !== task.areaId) changes.areaId = areaId;
+      if (priority !== (task.priority || 'none')) changes.priority = priority;
 
       // 比较标签数组
       const oldTags = task.tags || [];
@@ -640,6 +657,40 @@
     }
   }
 
+  // ========== 优先级 ==========
+  function priorityLabel(p?: Priority): string {
+    if (p === 'high') return '高';
+    if (p === 'medium') return '中';
+    if (p === 'low') return '低';
+    return '';
+  }
+
+  function priorityColor(p?: Priority): string {
+    if (p === 'high') return '#dc2626';
+    if (p === 'medium') return '#f59e0b';
+    if (p === 'low') return '#6b7280';
+    return '';
+  }
+
+  function handlePriorityChange(e: CustomEvent) {
+    const p = e.detail.priority as Priority;
+    priority = p;
+    showPriorityPicker = false;
+  }
+
+  function clearPriority() {
+    priority = 'none';
+    showPriorityPicker = false;
+  }
+
+  function togglePriorityPicker() {
+    showPriorityPicker = !showPriorityPicker;
+    showDatePicker = false;
+    showDeadlinePicker = false;
+    showTagPicker = false;
+    showProjectAreaPicker = false;
+  }
+
   // 检查清单变化
   async function handleChecklistChange(e: CustomEvent) {
     const { items: newItems } = e.detail;
@@ -816,6 +867,7 @@
         projectId,
         areaId,
         headingId,
+        priority,
       };
 
       // 目标视图以显式 preset 为准（拖 + 切视图时 currentView 可能还是旧视图），
@@ -883,6 +935,7 @@
     if (e.key === "Enter" && (e.isComposing || e.keyCode === 229)) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
+      if (noAutoSave) return;
       if (mode === 'create') {
         handleCreate();
       } else {
@@ -902,7 +955,7 @@
 
   // 焦点丢失
   function handleBlur(e: FocusEvent) {
-    if (mode !== 'create' || isInteracting) return;
+    if (mode !== 'create' || isInteracting || noAutoSave) return;
     setTimeout(() => {
       const activeElement = document.activeElement;
       if (cardEl && !cardEl.contains(activeElement)) {
@@ -1218,6 +1271,40 @@
               {/if}
             </div>
           {/if}
+
+          <!-- 优先级（已设置时） -->
+          {#if priority !== 'none'}
+            <div class="task-card__tag-item">
+              <button
+                class="task-card__tag-btn"
+                on:click|stopPropagation={togglePriorityPicker}
+              >
+                <Icon name="iconThingsFlag" size={12} color={priorityColor(priority)} />
+                <span style="color: {priorityColor(priority)}">{priorityLabel(priority)}</span>
+              </button>
+              <button class="task-card__tag-remove" on:click|stopPropagation={clearPriority}>×</button>
+
+              {#if showPriorityPicker}
+                <div class="task-card__dropdown task-card__priority-dropdown" use:smartPosition>
+                  <button class="task-card__priority-option" class:is-active={priority === 'high'} on:click|stopPropagation={() => { priority = 'high'; showPriorityPicker = false; }}>
+                    <Icon name="iconThingsFlag" size={12} color="#dc2626" />
+                    <span>高</span>
+                  </button>
+                  <button class="task-card__priority-option" class:is-active={priority === 'medium'} on:click|stopPropagation={() => { priority = 'medium'; showPriorityPicker = false; }}>
+                    <Icon name="iconThingsFlag" size={12} color="#f59e0b" />
+                    <span>中</span>
+                  </button>
+                  <button class="task-card__priority-option" class:is-active={priority === 'low'} on:click|stopPropagation={() => { priority = 'low'; showPriorityPicker = false; }}>
+                    <Icon name="iconThingsFlag" size={12} color="#6b7280" />
+                    <span>低</span>
+                  </button>
+                  <button class="task-card__priority-option" class:is-active={priority === 'none'} on:click|stopPropagation={() => { priority = 'none'; showPriorityPicker = false; }}>
+                    <span>无优先级</span>
+                  </button>
+                </div>
+              {/if}
+            </div>
+          {/if}
         </div>
 
         <!-- 右侧：功能按钮 -->
@@ -1322,6 +1409,36 @@
                     selectedTags={selectedTags}
                     on:change={handleTagChange}
                   />
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- 优先级（未设置时） -->
+          {#if priority === 'none'}
+            <div class="task-card__action-group">
+              <button
+                class="task-card__tool-btn"
+                title="设置优先级"
+                on:click|stopPropagation={togglePriorityPicker}
+              >
+                <Icon name="iconThingsFlag" size={16} />
+              </button>
+
+              {#if showPriorityPicker}
+                <div class="task-card__dropdown task-card__dropdown--right task-card__priority-dropdown" use:smartPosition>
+                  <button class="task-card__priority-option" class:is-active={priority === 'high'} on:click|stopPropagation={() => { priority = 'high'; showPriorityPicker = false; }}>
+                    <Icon name="iconThingsFlag" size={12} color="#dc2626" />
+                    <span>高</span>
+                  </button>
+                  <button class="task-card__priority-option" class:is-active={priority === 'medium'} on:click|stopPropagation={() => { priority = 'medium'; showPriorityPicker = false; }}>
+                    <Icon name="iconThingsFlag" size={12} color="#f59e0b" />
+                    <span>中</span>
+                  </button>
+                  <button class="task-card__priority-option" class:is-active={priority === 'low'} on:click|stopPropagation={() => { priority = 'low'; showPriorityPicker = false; }}>
+                    <Icon name="iconThingsFlag" size={12} color="#6b7280" />
+                    <span>低</span>
+                  </button>
                 </div>
               {/if}
             </div>
@@ -2038,6 +2155,39 @@
       &--right {
         left: auto;
         right: 0;
+      }
+    }
+
+    &__priority-dropdown {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 4px;
+    }
+
+    &__priority-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 6px 10px;
+      border: none;
+      background: transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--b3-theme-on-surface, #374151);
+      transition: background 0.15s;
+      white-space: nowrap;
+
+      &:hover {
+        background: var(--b3-theme-surface-light, #f3f4f6);
+      }
+
+      &.is-active {
+        background: var(--b3-theme-primary-light, rgba(59, 127, 240, 0.1));
+        color: var(--b3-theme-primary, #3b7ff0);
+        font-weight: 500;
       }
     }
   }

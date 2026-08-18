@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, getContext } from "svelte";
   import { cubicOut } from "svelte/easing";
+  import { slide } from "svelte/transition";
   import TaskCard from "./TaskCard.svelte";
   import DragSort from "./DragSort.svelte";
   import type { ViewType, Task } from "@/types";
@@ -18,9 +19,18 @@
   export let viewId: string | undefined;
   export let searchQuery: string;
   export let store: StoreManager;
+  // AI 展示形态（设计文档状态机）：
+  // full=AI 面板独立列；button=右下角 ✧ FAB；header=Header 内 ✦＋；compact=Header 仅小 ✦
+  export let aiMode: 'full' | 'button' | 'header' | 'compact' = 'button';
+  // AI 浮窗打开时隐藏整个 FAB 组
+  export let hideFabs: boolean = false;
+
+  // 获取 plugin 实例（从 App.svelte 的 context 中）
+  const plugin = getContext<any>("plugin");
 
   let showCreateForm = false;
   let showEntityForm: "project" | "area" | null = null;
+
   // 创建卡片在列表中的插入位置（null = 顶部）；仅当对应分组存在时生效
   let createTarget: { group: string; index: number } | null = null;
   $: activeCreateSlot = showCreateForm && createTarget && groupedTasks.has(createTarget.group) ? createTarget : null;
@@ -455,6 +465,24 @@
     showCreateForm = true;
   }
 
+  // ========== AI 创建器入口：派发事件，由 App 外壳打开浮窗 ==========
+  function openAICreator(target: { group: string; index: number } | null, dest?: { view: ViewType; viewId?: string }) {
+    // 计算预设日期（同 createPreset 逻辑）
+    const presetDate = computeCreatePreset(target, dest?.view || view)?.startDate;
+    window.dispatchEvent(new CustomEvent("things-open-ai", {
+      detail: {
+        destView: dest?.view,
+        destViewId: dest?.viewId,
+        presetDate,
+      },
+    }));
+  }
+
+  // Header 内 AI 按钮点击（无落点上下文）
+  function openAICreatorDefault() {
+    openAICreator(null, { view, viewId });
+  }
+
   // 创建完成后：把新任务挪到插入位置（在当前视图内重写 order）
   async function handleTaskCreated(e: CustomEvent) {
     const created = e?.detail?.task;
@@ -708,6 +736,7 @@
 
   // —— 悬浮 + 按钮：点击=当前视图新建；按住可拖到侧边栏视图 / 任务列表，松手即在对应视图新建 ——
   let fabBtnEl: HTMLButtonElement;
+  let aiFabBtnEl: HTMLButtonElement;
 
   // 允许新建任务的侧边栏落点（排除日志/总览页；项目/区域/标签须有具体 id）
   function isCreatableNav(nav: HTMLElement): boolean {
@@ -719,10 +748,10 @@
     return true; // inbox/today/upcoming/anytime/someday
   }
 
-  function handleFabMouseDown(e: MouseEvent) {
+  // 通用拖拽处理器：支持 "+" 和 "✨" 两个按钮
+  function handleFabDragDown(e: MouseEvent, fab: HTMLButtonElement, onDrop: (target: { group: string; index: number } | null, dest: { view: ViewType; viewId?: string }) => void) {
     if (e.button !== 0) return;
     e.preventDefault();
-    const fab = fabBtnEl;
     const startX = e.clientX;
     const startY = e.clientY;
     const home = fab.getBoundingClientRect(); // 按钮原位（用于回弹）
@@ -855,7 +884,7 @@
       document.removeEventListener("mouseup", onUp);
       cancelOpen();
       if (!dragging) {
-        openCreate(null, { view, viewId }); // 直接点击 → 当前视图顶部新建
+        onDrop(null, { view, viewId }); // 直接点击 → 当前视图顶部
         return;
       }
       const nav = hoverNav;
@@ -874,22 +903,30 @@
       }, 420);
 
       if (nav) {
-        // 在侧边栏视图上松手 → 打开该视图并在顶部弹出新建卡片（创建卡显式携带目标视图）
+        // 在侧边栏视图上松手 → 打开该视图并在顶部弹出
         const nv = nav.dataset.view as ViewType;
         const nid = nav.dataset.id;
         window.dispatchEvent(new CustomEvent("things-navigate", { detail: { view: nv, viewId: nid } }));
-        openCreate(null, { view: nv, viewId: nid });
+        onDrop(null, { view: nv, viewId: nid });
       } else if (list) {
-        // 在任务列表上松手 → 在插入位置弹出新建卡片（创建卡显式携带当前视图上下文）。
-        // 注意：不再根据"拖拽途中扫过的侧边栏视图"改道——那会把用户往分组里拖的创建
-        // 误导成顶部新建（任务落进未分组）；要切视图请先在侧边栏悬停切换或直接松手在侧边栏
-        openCreate(insertTarget, { view, viewId });
+        // 在任务列表上松手 → 在插入位置弹出
+        onDrop(insertTarget, { view, viewId });
       }
       // 两者都不是：仅回弹，不做任何操作
     };
 
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
+  }
+
+  // "+" 按钮拖拽
+  function handleFabMouseDown(e: MouseEvent) {
+    handleFabDragDown(e, fabBtnEl, (target, dest) => openCreate(target, dest));
+  }
+
+  // "✨" 按钮拖拽
+  function handleAIFabMouseDown(e: MouseEvent) {
+    handleFabDragDown(e, aiFabBtnEl, (target, dest) => openAICreator(target, dest));
   }
 
   // 视图标题（依赖 refreshKey：项目改名后标题同步刷新）
@@ -981,7 +1018,7 @@
   }
 </script>
 
-<div class="task-list">
+<div class="task-list" class:is-compact={aiMode === 'compact'}>
   <!-- 大标题 -->
   <div class="task-list__header">
     <div class="task-list__header-top has-border">
@@ -996,6 +1033,25 @@
         <Icon name={viewIcon} size={22} klass="task-list__title-icon" />
       {/if}
       <h1 class="task-list__title">{viewTitle}</h1>
+
+      <!-- Header 操作区（AI_HEADER / COMPACT 状态：AI Button 移到 Header） -->
+      {#if aiMode === 'header'}
+        <div class="task-list__header-actions">
+          <button class="task-list__header-btn" title="AI 任务整理" on:click={openAICreatorDefault}>
+            <svg><use xlink:href="#iconThingsSparkles" /></svg>
+            <span>AI</span>
+          </button>
+          <button class="task-list__header-btn" title="新建任务" on:click={() => openCreate(null, { view, viewId })}>
+            <svg><use xlink:href="#iconThingsAdd" /></svg>
+          </button>
+        </div>
+      {:else if aiMode === 'compact'}
+        <div class="task-list__header-actions">
+          <button class="task-list__header-btn task-list__header-btn--mini" title="AI 任务整理" on:click={openAICreatorDefault}>
+            <svg><use xlink:href="#iconThingsSparkles" /></svg>
+          </button>
+        </div>
+      {/if}
     </div>
     {#if getViewDescription(view)}
       <p class="task-list__description">{getViewDescription(view)}</p>
@@ -1213,17 +1269,29 @@
     {/if}
   </div>
 
-  <!-- 悬浮 + 按钮：点击=当前视图新建；按住可拖到侧边栏视图或任务列表新建 -->
-  <div class="things-fab">
-    <button
-      class="things-fab__btn"
-      bind:this={fabBtnEl}
-      title="新建任务（可拖到侧边栏或列表）"
-      on:mousedown={handleFabMouseDown}
-    >
-      <svg><use xlink:href="#iconThingsAdd" /></svg>
-    </button>
-  </div>
+  <!-- 悬浮按钮组（状态机）：full=仅＋；button=✧＋；header/compact=隐藏（按钮移到 Header） -->
+  {#if aiMode === 'full' || aiMode === 'button'}
+    <div class="things-fab-group" class:is-hidden={hideFabs}>
+      {#if aiMode === 'button'}
+        <button
+          class="things-fab__btn things-fab__btn--ai"
+          bind:this={aiFabBtnEl}
+          title="AI 智能创建（可拖到侧边栏或列表）"
+          on:mousedown={handleAIFabMouseDown}
+        >
+          <svg><use xlink:href="#iconThingsSparkles" /></svg>
+        </button>
+      {/if}
+      <button
+        class="things-fab__btn things-fab__btn--add"
+        bind:this={fabBtnEl}
+        title="新建任务（可拖到侧边栏或列表）"
+        on:mousedown={handleFabMouseDown}
+      >
+        <svg><use xlink:href="#iconThingsAdd" /></svg>
+      </button>
+    </div>
+  {/if}
 </div>
 
 <style lang="scss">
@@ -1235,6 +1303,37 @@
     overflow: hidden;
     position: relative;
     padding: 0 72px;
+
+    // COMPACT 状态：间距/文字压缩、次要信息隐藏（设计文档 §十）
+    &.is-compact {
+      padding: 0 16px;
+
+      .task-list__header {
+        padding-top: 24px;
+      }
+
+      .task-list__title {
+        font-size: 16px;
+      }
+
+      .task-list__description {
+        display: none;
+      }
+
+      .task-list__items {
+        padding: 12px 0 32px;
+      }
+
+      .task-list__day,
+      .task-list__month,
+      .task-list__group {
+        margin-top: 24px;
+      }
+
+      .task-list__day-num {
+        font-size: 24px;
+      }
+    }
 
     &__header {
       display: flex;
@@ -1467,6 +1566,47 @@
       line-height: 1.2;
     }
 
+    // Header 操作区（AI_HEADER / COMPACT 状态）
+    &__header-actions {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    &__header-btn {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 6px 12px;
+      border: 1px solid var(--b3-theme-primary);
+      border-radius: 7px;
+      background: var(--b3-theme-surface);
+      color: var(--b3-theme-primary);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+
+      svg {
+        width: 14px;
+        height: 14px;
+      }
+
+      &:hover {
+        background: var(--b3-theme-primary);
+        color: var(--b3-theme-on-primary);
+      }
+
+      &--mini {
+        padding: 5px;
+        border-color: var(--b3-border-color);
+        color: var(--b3-theme-on-surface-light);
+        background: transparent;
+      }
+    }
+
     &__description {
       font-size: 13px;
       color: var(--b3-theme-on-surface-light);
@@ -1550,42 +1690,84 @@
     }
   }
 
-  .things-fab {
+  .things-fab-group {
     position: absolute;
     bottom: 24px;
     right: 24px;
-    z-index: 100;
+    z-index: 20;
+    display: flex;
+    gap: 12px;
+    transition: all 0.3s ease;
 
-    &__btn {
-      width: 56px;
-      height: 56px;
-      border-radius: 50%;
+    // AI 浮窗打开时整组隐藏（对齐 demo .fab-group.hidden）
+    &.is-hidden {
+      opacity: 0;
+      pointer-events: none;
+      transform: scale(0.8);
+    }
+  }
+
+  .things-fab__btn {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    transition: transform 0.2s, box-shadow 0.2s;
+
+    svg {
+      width: 24px;
+      height: 24px;
+    }
+
+    &:hover {
+      transform: scale(1.05);
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+    }
+
+    // "+" 按钮：主题色
+    &--add {
       background: var(--b3-theme-primary);
       color: var(--b3-theme-on-primary);
-      border: none;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    // "✨" AI 按钮：扁平化现代风格；从宽屏切换回中屏时弹出（morph 时序）
+    &--ai {
+      background: var(--b3-theme-surface);
+      color: var(--b3-theme-primary);
+      border: 1.5px solid var(--b3-theme-primary);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+      animation: fab-pop-in 0.3s cubic-bezier(0.2, 0.75, 0.25, 1);
 
       &:hover {
-        transform: scale(1.05);
-        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
-      }
-
-      svg {
-        width: 24px;
-        height: 24px;
+        background: var(--b3-theme-primary);
+        color: var(--b3-theme-on-primary);
       }
     }
 
-    // 拖拽状态：本体跟随光标，抬起放大（位置由内联样式驱动，见 handleFabMouseDown）
-    &__btn.is-dragging {
+    @keyframes fab-pop-in {
+      from {
+        transform: scale(0);
+      }
+      to {
+        transform: scale(1);
+      }
+    }
+
+    // 拖拽状态：本体跟随光标，抬起放大（位置由内联样式驱动，见 handleFabDragDown）
+    &.is-dragging {
       transform: scale(1.08);
       box-shadow: 0 14px 36px rgba(0, 0, 0, 0.35);
       cursor: grabbing;
     }
+  }
+
+  .task-list__ai-creator-wrapper {
+    padding: 0 72px;
+    margin-bottom: 8px;
   }
 </style>

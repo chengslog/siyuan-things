@@ -4,10 +4,11 @@ import {
   Dialog,
   openTab,
   getFrontend,
+  saveLayout,
 } from "siyuan";
 
 import "./index.scss";
-import TaskList from "@/components/TaskList.svelte";
+import App from "@/components/App.svelte";
 import { StoreManager } from "@/stores";
 import { TaskStoreDB } from "@/stores/taskStoreDB";
 import type { ViewType, PluginConfig } from "@/types";
@@ -25,6 +26,7 @@ export default class ThingsPlugin extends Plugin {
   private reminderService: ReminderService;
   private settingUtils: SettingUtils;
   private dockElement: HTMLElement | null = null;
+  private dockWidthSaved: number | null = null;
   private unsubTaskChange: (() => void) | null = null;
   private thingsApp: any = null; // 当前标签页的 Svelte 组件实例
   private thingsTab: any = null; // 当前标签页的 Tab 实例
@@ -55,13 +57,15 @@ export default class ThingsPlugin extends Plugin {
         container.style.overflow = "hidden";
         this.element.appendChild(container);
 
-        const app = new TaskList({
+        // 挂载 App 外壳：rail + sidebar + main + AI 面板
+        const app = new App({
           target: container,
           props: {
             view: view,
             viewId: viewId,
             searchQuery: "",
             store: pluginInstance.store,
+            plugin: pluginInstance,
           },
         });
 
@@ -88,7 +92,7 @@ export default class ThingsPlugin extends Plugin {
       },
     });
 
-    // 注册左侧面板
+    // 注册左侧面板（停靠栏展开后显示导航面板，保持原样）
     this.addDock({
       config: {
         position: "LeftTop",
@@ -125,8 +129,17 @@ export default class ThingsPlugin extends Plugin {
       const detail = e.detail || {};
       if (detail.view) {
         this.openThingsTab(detail.view, detail.viewId);
-        if (this.dockElement) this.setActive(this.dockElement, detail.view);
+        if (this.dockElement) this.setActive(this.dockElement, detail.view, detail.viewId);
       }
+    }) as EventListener);
+
+    // 二级模式（任务列表收起）→ 侧边栏扩宽覆盖任务区域；离开 → 恢复宽度
+    window.addEventListener("things-secondary-enter", ((e: CustomEvent) => {
+      const thingsWidth = e.detail?.thingsWidth || 0;
+      this.expandDockToCoverTasks(thingsWidth);
+    }) as EventListener);
+    window.addEventListener("things-secondary-leave", (() => {
+      this.restoreDockWidth();
     }) as EventListener);
 
     // 项目/区域变更 → 侧边栏实时刷新（改名、删除、完成、暂停都同步）
@@ -165,6 +178,43 @@ export default class ThingsPlugin extends Plugin {
       },
     });
 
+    // AI 服务配置
+    this.settingUtils.addItem({
+      key: "aiMode",
+      value: "siyuan",
+      type: "select",
+      title: "AI 服务来源",
+      description: "选择复用思源内置 AI 设置，或自定义 API 配置",
+      options: {
+        siyuan: "复用思源设置",
+        custom: "自定义 AI 设置",
+      },
+    });
+
+    this.settingUtils.addItem({
+      key: "aiApiEndpoint",
+      value: "https://api.openai.com/v1/chat/completions",
+      type: "textinput",
+      title: "AI API 端点",
+      description: "OpenAI 兼容的 API 端点地址（仅在「自定义 AI 设置」时生效）",
+    });
+
+    this.settingUtils.addItem({
+      key: "aiApiKey",
+      value: "",
+      type: "textinput",
+      title: "AI API Key",
+      description: "AI 服务的 API 密钥（仅在「自定义 AI 设置」时生效）",
+    });
+
+    this.settingUtils.addItem({
+      key: "aiModel",
+      value: "gpt-4o-mini",
+      type: "textinput",
+      title: "AI 模型",
+      description: "使用的 AI 模型名称（仅在「自定义 AI 设置」时生效）",
+    });
+
     // 监听任务变化，自动更新侧边栏计数
     this.unsubTaskChange = this.store.tasks.on(() => {
       if (this.dockElement) {
@@ -182,7 +232,9 @@ export default class ThingsPlugin extends Plugin {
 
     if (this.dockElement) {
       this.updateCounts(this.dockElement);
+    }
 
+    {
       // 获取默认视图设置
       const defaultView = this.settingUtils.get("defaultView") || "today";
 
@@ -198,7 +250,7 @@ export default class ThingsPlugin extends Plugin {
           this.thingsApp.$set({ view: defaultView, viewId: undefined, searchQuery: "" });
           this.updateTabTitle(this.getViewTitle(defaultView as ViewType));
           this.updateTabIcon(this.getViewIcon(defaultView as ViewType));
-          this.setActive(this.dockElement!, defaultView as ViewType);
+          if (this.dockElement) this.setActive(this.dockElement, defaultView as ViewType);
         }
       };
 
@@ -209,7 +261,7 @@ export default class ThingsPlugin extends Plugin {
           applyDefaultView();
         } else {
           this.openThingsTab(defaultView as ViewType);
-          this.setActive(this.dockElement!, defaultView as ViewType);
+          if (this.dockElement) this.setActive(this.dockElement, defaultView as ViewType);
         }
       }, 300);
 
@@ -222,6 +274,9 @@ export default class ThingsPlugin extends Plugin {
 
   async onunload() {
     console.log("[Things] Plugin unloaded");
+
+    // 若停靠栏被扩宽过，恢复原宽度
+    this.restoreDockWidth();
 
     // 停止提醒服务
     this.reminderService?.stop();
@@ -240,6 +295,78 @@ export default class ThingsPlugin extends Plugin {
         (closeBtn as HTMLElement).click();
       }
     });
+  }
+
+  /**
+   * 二级模式：把左侧停靠栏扩宽，覆盖任务列表让出的区域
+   * 通过修改思源 uiLayout.left 中 things_nav 面板的尺寸配置实现
+   */
+  private expandDockToCoverTasks(thingsWidth: number) {
+    try {
+      const siyuan = (window as any).siyuan;
+      const layout = siyuan?.layout;
+      const uiLayoutLeft = siyuan?.config?.uiLayout?.left;
+      if (!layout?.leftDock || !uiLayoutLeft?.data) return;
+
+      const dock = layout.leftDock;
+      // 思源注册的 dock 面板 type = 插件名 + 类型（如 siyuan-thingsthings_nav）
+      const fullType = `${this.name}things_nav`;
+
+      // 确保停靠栏面板展开可见
+      try { dock.showDock?.(); } catch { /* 忽略 */ }
+      try { dock.toggleModel?.(fullType, true); } catch { /* 忽略 */ }
+
+      for (const row of uiLayoutLeft.data) {
+        for (const tab of row) {
+          if (tab.type === fullType || tab.type === 'things_nav') {
+            if (this.dockWidthSaved === null) {
+              this.dockWidthSaved = tab.size?.width || 200;
+            }
+            tab.size = {
+              ...(tab.size || {}),
+              width: (this.dockWidthSaved || 200) + Math.max(0, Math.round(thingsWidth)),
+            };
+          }
+        }
+      }
+      dock.setSize?.();
+      saveLayout(() => {});
+      console.log('[Things] Dock expanded to cover task area, type:', fullType);
+    } catch (e) {
+      console.warn('[Things] expand dock failed:', e);
+    }
+  }
+
+  /**
+   * 离开二级模式：恢复停靠栏原来的宽度
+   */
+  private restoreDockWidth() {
+    if (this.dockWidthSaved === null) return;
+    try {
+      const siyuan = (window as any).siyuan;
+      const layout = siyuan?.layout;
+      const uiLayoutLeft = siyuan?.config?.uiLayout?.left;
+      if (!layout?.leftDock || !uiLayoutLeft?.data) return;
+
+      const fullType = `${this.name}things_nav`;
+
+      for (const row of uiLayoutLeft.data) {
+        for (const tab of row) {
+          if (tab.type === fullType || tab.type === 'things_nav') {
+            tab.size = {
+              ...(tab.size || {}),
+              width: this.dockWidthSaved,
+            };
+          }
+        }
+      }
+      layout.leftDock.setSize?.();
+      saveLayout(() => {});
+      console.log('[Things] Dock width restored to', this.dockWidthSaved);
+    } catch (e) {
+      console.warn('[Things] restore dock failed:', e);
+    }
+    this.dockWidthSaved = null;
   }
 
   /**
@@ -1281,25 +1408,23 @@ export default class ThingsPlugin extends Plugin {
     const dialog = new Dialog({
       title: "Things 设置",
       content: '<div id="things-settings" style="padding: 16px;"></div>',
-      width: "500px",
+      width: "600px",
     });
 
     const settingsEl = dialog.element.querySelector("#things-settings");
     if (settingsEl) {
-      // 添加设置项
-      const key = "defaultView";
-      const el = this.settingUtils.getElement(key);
-      if (el) {
-        // 更新元素值为当前设置值
-        const item = this.settingUtils.settings.get(key);
+      // 添加默认视图设置
+      const defaultViewKey = "defaultView";
+      const defaultViewEl = this.settingUtils.getElement(defaultViewKey);
+      if (defaultViewEl) {
+        const item = this.settingUtils.settings.get(defaultViewKey);
         if (item && item.setEleVal) {
-          item.setEleVal(el, item.value);
+          item.setEleVal(defaultViewEl, item.value);
         }
 
         const wrapper = document.createElement("div");
         wrapper.style.marginBottom = "16px";
 
-        // 添加标签
         const label = document.createElement("label");
         label.style.display = "block";
         label.style.marginBottom = "4px";
@@ -1307,7 +1432,6 @@ export default class ThingsPlugin extends Plugin {
         label.textContent = "启动时默认显示";
         wrapper.appendChild(label);
 
-        // 添加描述
         const desc = document.createElement("div");
         desc.style.fontSize = "12px";
         desc.style.color = "#666";
@@ -1315,15 +1439,107 @@ export default class ThingsPlugin extends Plugin {
         desc.textContent = "每次打开思源时默认显示的视图";
         wrapper.appendChild(desc);
 
-        // 添加变化事件监听
-        el.addEventListener('change', async () => {
-          const value = (el as HTMLSelectElement).value;
-          await this.settingUtils.setAndSave(key, value);
-          console.log(`[Things] Setting ${key} saved:`, value);
+        defaultViewEl.addEventListener('change', async () => {
+          const value = (defaultViewEl as HTMLSelectElement).value;
+          await this.settingUtils.setAndSave(defaultViewKey, value);
+          console.log(`[Things] Setting ${defaultViewKey} saved:`, value);
         });
 
-        wrapper.appendChild(el);
+        wrapper.appendChild(defaultViewEl);
         settingsEl.appendChild(wrapper);
+      }
+
+      // 添加 AI 模式选择
+      const aiModeKey = "aiMode";
+      const aiModeEl = this.settingUtils.getElement(aiModeKey);
+      if (aiModeEl) {
+        const item = this.settingUtils.settings.get(aiModeKey);
+        if (item && item.setEleVal) {
+          item.setEleVal(aiModeEl, item.value);
+        }
+
+        const wrapper = document.createElement("div");
+        wrapper.style.marginBottom = "16px";
+
+        const label = document.createElement("label");
+        label.style.display = "block";
+        label.style.marginBottom = "4px";
+        label.style.fontWeight = "500";
+        label.textContent = "AI 服务来源";
+        wrapper.appendChild(label);
+
+        const desc = document.createElement("div");
+        desc.style.fontSize = "12px";
+        desc.style.color = "#666";
+        desc.style.marginBottom = "8px";
+        desc.textContent = "选择复用思源内置 AI 设置，或自定义 API 配置";
+        wrapper.appendChild(desc);
+
+        wrapper.appendChild(aiModeEl);
+        settingsEl.appendChild(wrapper);
+
+        // 自定义配置容器
+        const customConfigContainer = document.createElement("div");
+        customConfigContainer.id = "custom-ai-config";
+        customConfigContainer.style.marginTop = "16px";
+        customConfigContainer.style.padding = "16px";
+        customConfigContainer.style.border = "1px solid var(--b3-border-color)";
+        customConfigContainer.style.borderRadius = "6px";
+        customConfigContainer.style.display = (aiModeEl as HTMLSelectElement).value === "custom" ? "block" : "none";
+
+        // 添加自定义配置项
+        const customKeys = ["aiApiEndpoint", "aiApiKey", "aiModel"];
+        for (const key of customKeys) {
+          const el = this.settingUtils.getElement(key);
+          if (el) {
+            const item = this.settingUtils.settings.get(key);
+            if (item && item.setEleVal) {
+              item.setEleVal(el, item.value);
+            }
+
+            const itemWrapper = document.createElement("div");
+            itemWrapper.style.marginBottom = "12px";
+
+            const itemLabel = document.createElement("label");
+            itemLabel.style.display = "block";
+            itemLabel.style.marginBottom = "4px";
+            itemLabel.style.fontWeight = "500";
+            itemLabel.style.fontSize = "13px";
+            itemLabel.textContent = item?.title || key;
+            itemWrapper.appendChild(itemLabel);
+
+            if (item?.description) {
+              const itemDesc = document.createElement("div");
+              itemDesc.style.fontSize = "12px";
+              itemDesc.style.color = "#666";
+              itemDesc.style.marginBottom = "6px";
+              itemDesc.textContent = item.description;
+              itemWrapper.appendChild(itemDesc);
+            }
+
+            const eventType = (el instanceof HTMLSelectElement) ? 'change' : 'input';
+            el.addEventListener(eventType, async () => {
+              const value = (el as HTMLInputElement | HTMLSelectElement).value;
+              await this.settingUtils.setAndSave(key, value);
+              console.log(`[Things] Setting ${key} saved:`, value);
+            });
+
+            itemWrapper.appendChild(el);
+            customConfigContainer.appendChild(itemWrapper);
+          }
+        }
+
+        settingsEl.appendChild(customConfigContainer);
+
+        // 监听 AI 模式变化
+        aiModeEl.addEventListener('change', async () => {
+          const value = (aiModeEl as HTMLSelectElement).value;
+          await this.settingUtils.setAndSave(aiModeKey, value);
+          console.log(`[Things] Setting ${aiModeKey} saved:`, value);
+          
+          // 显示/隐藏自定义配置
+          customConfigContainer.style.display = value === "custom" ? "block" : "none";
+        });
       }
     }
   }

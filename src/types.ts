@@ -123,3 +123,14 @@ export interface StoreEvent {
   type: StoreEventType;
   ids: string[];
 }
+
+// ===== AI 解析结果 =====
+export interface ParsedTask {
+  title: string;
+  checklist?: string[];
+  startDate?: string;    // YYYY-MM-DD
+  startTime?: string;    // HH:mm
+  deadline?: string;     // YYYY-MM-DD
+  tags?: string[];
+  priority?: Priority;
+}
