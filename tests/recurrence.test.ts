@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { nextRepeatTimestamp, normalizeRepeatRule } from "../src/utils/recurrence.ts";
+import { initialRepeatStartDate, nextRepeatTimestamp, normalizeRepeatRule } from "../src/utils/recurrence.ts";
 
 function localDate(year: number, month: number, day: number, hour = 9, minute = 30) {
   return new Date(year, month - 1, day, hour, minute, 0, 0).getTime();
@@ -12,6 +12,13 @@ test("normalizes AI and Chinese repeat values", () => {
   assert.equal(normalizeRepeatRule("每周"), "weekly");
   assert.equal(normalizeRepeatRule(null), undefined);
   assert.equal(normalizeRepeatRule("sometimes"), undefined);
+});
+
+test("anchors a newly recurring undated task to today", () => {
+  const now = localDate(2026, 8, 20, 16, 45);
+  assert.equal(initialRepeatStartDate("daily", undefined, undefined, now), localDate(2026, 8, 20, 0, 0));
+  assert.equal(initialRepeatStartDate("daily", localDate(2026, 8, 25), undefined, now), localDate(2026, 8, 25));
+  assert.equal(initialRepeatStartDate("daily", undefined, localDate(2026, 8, 25), now), undefined);
 });
 
 test("weekdays skips Saturday and Sunday and preserves time", () => {

@@ -2,7 +2,7 @@ import type { Plugin } from 'siyuan';
 import type { Task, TaskStatus, RepeatRule } from '@/types';
 import { BaseStore } from './base';
 import { genUUID } from '@/utils/id';
-import { nextRepeatTimestamp } from '@/utils/recurrence';
+import { initialRepeatStartDate, nextRepeatTimestamp } from '@/utils/recurrence';
 
 export class TaskStore extends BaseStore<Task> {
   private archiveFileName: string;
@@ -20,6 +20,16 @@ export class TaskStore extends BaseStore<Task> {
    */
   async load(): Promise<void> {
     await super.load();
+    let migratedRepeatAnchors = false;
+    const now = Date.now();
+    for (const task of this.items.values()) {
+      if (task.status === 'todo' && !task.parentId && task.repeatRule && !task.startDate && !task.deadline) {
+        task.startDate = initialRepeatStartDate(task.repeatRule, undefined, undefined, now);
+        task.updated = now;
+        migratedRepeatAnchors = true;
+      }
+    }
+    if (migratedRepeatAnchors) await this.save();
     await this.loadArchive();
     const trash = await this.plugin.loadData(this.trashFileName);
     this.trashBatches = Array.isArray(trash) ? trash : [];
@@ -182,7 +192,7 @@ export class TaskStore extends BaseStore<Task> {
       priority: partial.priority || 'none',
       created: now,
       updated: now,
-      startDate: partial.startDate,
+      startDate: initialRepeatStartDate(partial.repeatRule, partial.startDate, partial.deadline, now),
       deadline: partial.deadline,
       someday: partial.someday,
       repeatRule: partial.repeatRule,
@@ -213,6 +223,11 @@ export class TaskStore extends BaseStore<Task> {
       created: task.created, // 保持创建时间不变
       updated: Date.now(),
     };
+
+    // 首次为无日期任务启用重复时，以今天作为第一次；已有日期保持不变。
+    if (changes.repeatRule && !task.repeatRule && !updated.startDate && !updated.deadline) {
+      updated.startDate = initialRepeatStartDate(changes.repeatRule, undefined, undefined, updated.updated);
+    }
 
     // 如果标记完成，设置完成时间
     if (changes.status === 'done' && task.status !== 'done') {
@@ -299,7 +314,6 @@ export class TaskStore extends BaseStore<Task> {
    * 满足以下任一条件：
    * 1. 开始日期 <= 今天
    * 2. 截止日期 = 今天（即使没有开始日期）
-   * 3. (预留) 重复规则命中今天
    * 且非 someday
    */
   getTodayTasks(): Task[] {

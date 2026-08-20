@@ -21,6 +21,19 @@ export function normalizeRepeatRule(value: unknown): RepeatRule | undefined {
   return aliases[normalized];
 }
 
+/** Give an undated repeating task a concrete first occurrence. */
+export function initialRepeatStartDate(
+  rule: RepeatRule | undefined,
+  startDate: number | undefined,
+  deadline: number | undefined,
+  now = Date.now(),
+): number | undefined {
+  if (startDate || deadline || !rule) return startDate;
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  return today.getTime();
+}
+
 export function nextRepeatTimestamp(timestamp: number, rule: RepeatRule): number {
   const source = new Date(timestamp);
   const next = new Date(timestamp);
