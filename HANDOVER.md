@@ -5,14 +5,26 @@
 
 ---
 
-## 📍 当前进度快照（2026-08-20：0.2.1）
+## 📍 当前进度快照（2026-08-20：0.2.9）
+
+- **AI 界面**：右侧 AI 面板已统一为单层标题、对齐的对话/结果/输入区域和悬浮输入卡片；处理过程采用“已处理 N 秒 + 当前阶段”的思考模型样式，成功与失败提示均位于同一状态区域。
+- **任务结果卡**：查询结果与 AI 新建结果统一状态文字和字号，使用“未完成 / 已完成 / 待添加 / 已添加”弱化标签；收缩卡片保留边界辨识，只有展开态使用悬浮阴影。
+- **查询作用域**：修复全新会话查询“计划”“随时”返回 0、历史会话范围污染及范围名称被误作关键词的问题；支持计划与随时联合查询，并按任务 ID 去重。
+- **模型异常**：错误信息显示在处理状态下方；未配置模型时不再臆测 `gpt-4o-mini`，而是提示选择或配置可用模型。
+- **文档与发布**：中英文 README、更新日志、集市发布清单和交接文档已同步；本版本准备通过 `v0.2.9` 标签生成 `package.zip` 并首次提交思源插件集市。
+- **测试与构建**：统一使用 `pnpm test` 与 `pnpm run build`。
+- **本机部署位置**：当前工作空间为 `C:\siyuan`，插件目录为 `C:\siyuan\data\plugins\siyuan-things`。
+
+---
+
+## 📍 历史进度快照（2026-08-20：0.2.1）
 
 - **启动稳定性**：`src/index.ts` 将默认页签恢复收敛为单一路径，并用 `openingThingsTab` 复用正在创建的页签；设置默认启动视图时会说明需启用思源“启动时关闭所有页签”，插件可通过官方设置接口协助开启。
 - **重复任务**：任务支持每天、工作日、每周、每月、每年。完成重复任务后生成下一次实例，继承备注、项目/区域/标题分组、标签和检查项；日期计算集中在 `src/utils/recurrence.ts`。
 - **AI 重复能力**：AI 路由与草稿均支持 `repeatRule`，可创建、查询、修改或清除重复规则；查询“重复任务”按是否配置重复规则过滤，而“重复内容”仍走疑似重复分析。
-- **测试**：`npm test` 使用 Node test runner，当前覆盖重复规则标准化、工作日跨周、月末与闰年边界。
+- **测试**：`pnpm test` 使用 Node test runner，当前覆盖重复规则标准化、工作日跨周、月末与闰年边界。
 - **清理与主题**：删除未引用的旧任务组件及 `taskStoreDB.ts`，主要 AI 界面和任务卡片中性色改用思源主题变量，改善深色主题。
-- **部署位置**：当前本机工作空间插件目录为 `C:\Users\Administrator\SiYuan\data\plugins\siyuan-things`。
+- **当时部署位置**：历史记录曾使用 `C:\Users\Administrator\SiYuan\data\plugins\siyuan-things`；当前路径见上方 0.2.9 快照。
 
 ---
 
@@ -228,7 +240,7 @@
 **功能定位**：类似 Things 3 应用的任务管理工具
 **开发语言**：TypeScript + Svelte 3
 **Git 仓库**：https://github.com/chengslog/siyuan-things
-**部署路径**：`D:\siyuan\data\plugins\siyuan-things\`
+**当前部署路径**：`C:\siyuan\data\plugins\siyuan-things\`
 
 ---
 
@@ -244,9 +256,9 @@
 
 **环境注意**：
 - 用户 shell 是 Windows PowerShell v1，**不支持 `&&`，用 `;` 分隔命令**
-- 构建：`npm run build`（会依次执行 build:app + build:kernel，并打包 package.zip）
+- 测试与构建：`pnpm test`、`pnpm run build`（构建会依次执行 build:app + build:kernel，并打包 package.zip）
 - 部署：思源工作空间路径**因机器而异**——如 `D:\siyuan\data\plugins\siyuan-things\` 或 `C:\siyuan\data\plugins\siyuan-things\`，先确认本机工作空间位置；`xcopy /E /Y /I "dist\*" "<工作空间>\data\plugins\siyuan-things\"`，然后重启思源或重新加载插件验证
-- 本机（2026-07-29 接手环境）无 pnpm，用 `npm install` 即可
+- 依赖管理以仓库中的 `pnpm-lock.yaml` 为准，优先使用 pnpm；GitHub Release 工作流使用 npm 并由 `package-lock.json` 锁定依赖。
 
 ---
 
@@ -408,9 +420,10 @@ interface Task {
 ## 七、构建部署流程
 
 ```powershell
-cd d:\project\siyuan_Things_plugin
-npm run build
-xcopy /E /Y /I "dist\*" "C:\Users\Administrator\SiYuan\data\plugins\siyuan-things\"
+cd C:\projects\siyuan-things
+pnpm test
+pnpm run build
+xcopy /E /Y /I "dist\*" "C:\siyuan\data\plugins\siyuan-things\"
 # 然后重启思源验证
 ```
 
@@ -495,9 +508,9 @@ xcopy /E /Y /I "dist\*" "C:\Users\Administrator\SiYuan\data\plugins\siyuan-thing
 
 ### 11.5 构建与部署
 
-- 当前思源安装/工作空间位置：`C:\Users\Administrator\SiYuan`。
-- 插件部署目录：`C:\Users\Administrator\SiYuan\data\plugins\siyuan-things`。
-- 本轮已多次执行 `npm run build` 通过。已知警告为 Sass legacy API、无用 CSS/导出属性和 idb 混合导入，不影响构建。
+- 当前思源工作空间位置：`C:\siyuan`。
+- 插件部署目录：`C:\siyuan\data\plugins\siyuan-things`。
+- 发布前执行 `pnpm test` 与 `pnpm run build`；构建产物和 `package.zip` 均由 Vite 构建流程生成。
 
 ### 11.6 后续建议
 

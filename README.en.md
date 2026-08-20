@@ -6,16 +6,30 @@
 
 A Things-inspired GTD task manager for SiYuan Note. It provides Inbox, Today, Upcoming, Anytime, Someday, Log, projects, areas, headings, tags, checklists, dates, deadlines, reminders, and an AI task assistant.
 
-## Features
+## Feature overview
 
-- Organize tasks with GTD-style views, projects, areas, headings, and tags.
-- Schedule start dates and times, deadlines, reminders, and Someday tasks.
-- Repeat tasks daily, on weekdays, weekly, monthly, or yearly; the next occurrence is created after completion.
-- Add notes and checklists while keeping checklist items out of top-level task lists.
-- Create, search, summarize, update, and delete tasks through a conversational AI assistant.
-- Continue a conversation to refine drafts or operate on previously found tasks.
-- Detect possible duplicate tasks and preview destructive operations before confirmation.
-- Store plugin data through SiYuan's plugin data APIs so it can follow the workspace sync configuration.
+| Capability | Description |
+| --- | --- |
+| **GTD workflow** | Manage the task lifecycle with Inbox, Today, Upcoming, Anytime, Someday, and Log. |
+| **Projects and organization** | Organize work with projects, areas, headings, and tags. |
+| **Dates and reminders** | Set start dates and times, deadlines, reminders, and Someday tasks. |
+| **Recurring tasks** | Repeat daily, on weekdays, weekly, monthly, or yearly; completing a task creates its next occurrence. |
+| **Task details** | Add notes and checklists without exposing checklist items as top-level tasks. |
+| **AI task assistant** | Create, search, summarize, update, and delete tasks through a continuous conversation. |
+| **Safer operations** | Preview destructive operations such as deletion before confirmation. |
+| **Workspace data** | Store data through SiYuan's plugin APIs so it can follow workspace sync settings. |
+
+## AI task assistant
+
+Use natural language such as:
+
+> Schedule a product review for 9:00 tomorrow morning and break down the preparation tasks.
+
+> What tasks are in Upcoming?
+
+> Find possible duplicate tasks and suggest which ones to keep.
+
+The AI assistant supports follow-up conversations, so you can refine the current draft or operate on tasks found in the previous response. AI is optional and requires an OpenAI-compatible service.
 
 ## Requirements
 
@@ -42,9 +56,9 @@ Download `package.zip` from GitHub Releases, extract it to `<SiYuan workspace>/d
 ## Local development
 
 ```bash
-npm install
-npm test
-npm run build
+pnpm install
+pnpm test
+pnpm run build
 ```
 
 Copy the contents of `dist/` to `<SiYuan workspace>/data/plugins/siyuan-things/`, then restart SiYuan or reload the plugin.
