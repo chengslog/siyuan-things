@@ -74,7 +74,7 @@
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 16px 18px 12px;
+      padding: 32px 24px 18px;
       flex-shrink: 0;
     }
 
@@ -95,14 +95,15 @@
     }
 
     &__title {
-      font-size: 14px;
+      font-size: 20px;
       font-weight: 600;
       color: var(--b3-theme-on-background);
       line-height: 1.3;
     }
 
     &__subtitle {
-      font-size: 10px;
+      margin-top: 3px;
+      font-size: 12px;
       color: var(--b3-theme-on-surface-light);
     }
 

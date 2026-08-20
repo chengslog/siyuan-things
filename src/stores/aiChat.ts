@@ -28,6 +28,9 @@ export interface ChatRound {
   createdTaskIds: Record<number, string>;
   errorMsg: string;
   mode?: 'organize' | 'search' | 'action' | 'answer';
+  intentResolved?: boolean;
+  startedAt?: number;
+  completedAt?: number;
   searchResults?: Task[];
   assistantMessage?: string;
   pendingOperation?: PendingOperation;
@@ -36,6 +39,7 @@ export interface ChatRound {
 
 export interface AIResolvedScope {
   view: 'all' | 'inbox' | 'today' | 'upcoming' | 'anytime' | 'someday' | 'log' | 'projects' | 'areas' | 'tags' | 'project' | 'area' | 'tag';
+  views?: Array<'upcoming' | 'anytime'>;
   viewId?: string;
   headingId?: string;
   label: string;
@@ -114,7 +118,11 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
     id: `round-${Date.now()}-${roundSeq++}`,
     userText: text,
     reasoning: '', content: '', phase: 'thinking', parsedTasks: [],
-    adopted: new Set(), createdTaskIds: {}, errorMsg: '', mode: 'action',
+    adopted: new Set(), createdTaskIds: {}, errorMsg: '',
+    // 查询意图先做轻量预判，避免模型路由完成前错误显示“生成任务卡”。
+    mode: isTaskSearchRequest(text) ? 'search' : 'action',
+    intentResolved: false,
+    startedAt: Date.now(),
   };
   aiInputText.set('');
   aiIsSending.set(true);
@@ -182,6 +190,17 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
       }
     }
 
+    // 路由一旦确定，只向现有时间线追加对应执行步骤，不替换前面的公共步骤。
+    round.mode = route.intent === 'search'
+      ? 'search'
+      : (route.intent === 'create' || (route.intent === 'update' && !!route.tasks?.length))
+        ? 'organize'
+        : ['update', 'delete', 'confirm'].includes(route.intent)
+          ? 'action'
+          : 'answer';
+    round.intentResolved = true;
+    bump(round);
+
     // Product view names are deterministic constraints, not semantic guesses.
     // Preserve them across short clarification replies such as "查看全部".
     if (route.intent === 'search') {
@@ -199,7 +218,11 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
         : text;
       const result = await queryTasksWithAI(contextualQuestion, summaries, { ...config, model: get(aiSelectedModel) || config.model }, get(aiThinkingLevel), updateStream);
       const byId = new Map(candidates.map((task) => [task.id, task]));
-      const scopeEnumeration = !route.query?.duplicate && !(route.query?.keywords?.length) && /(所有|全部|有几个|哪些任务|都有)/.test(contextualQuestion);
+      const directViewEnumeration = /(?:收件箱|今天|计划|随时|某天|日志)(?:列表|页|视图)?(?:中|里|下)?(?:有|都)?(?:哪些|什么|几个|所有|全部)(?:的)?任务/.test(text);
+      const scopeEnumeration = !route.query?.duplicate && (
+        directViewEnumeration ||
+        (!(route.query?.keywords?.length) && /(所有|全部|有几个|哪些任务|有哪些|有什么任务|都有)/.test(contextualQuestion))
+      );
       round.searchResults = scopeEnumeration
         ? candidates
         : result.taskIds.map((id) => byId.get(id)).filter((task): task is Task => !!task);
@@ -293,6 +316,7 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
     round.phase = 'error';
     round.errorMsg = error?.message || 'AI 处理失败，请重试';
   } finally {
+    round.completedAt = Date.now();
     aiIsSending.set(false);
     bump(round);
   }
@@ -350,16 +374,21 @@ function resolveNamedId(kind: 'project' | 'area' | 'tag', name?: string): string
 
 function resolveQueryScope(plan: any, text: string, recent: Array<{ user: string }>, inherited?: AIResolvedScope, page?: AIPageContext): AIResolvedScope {
   if (!taskStore) return { view: 'all', label: '所有任务' };
-  const combined = [...recent.map((item) => item.user), text].slice(-4).join('\n');
   let view = plan.view as AIResolvedScope['view'] | undefined;
   const genericFollowup = /^(?:查看)?(?:全部|所有|都有哪些|有几个|继续)(?:任务)?[?？。\s]*$/.test(text.trim());
   if (genericFollowup && inherited) return inherited;
-  if (/(?:收件箱)/.test(combined)) view = 'inbox';
-  else if (/(?:计划列表|计划页|计划视图|计划下)/.test(combined)) view = 'upcoming';
-  else if (/(?:随时列表|随时页|随时视图|随时下)/.test(combined)) view = 'anytime';
-  else if (/(?:某天列表|某天页|某天视图|某天下)/.test(combined)) view = 'someday';
-  else if (/(?:日志列表|日志页|日志视图|日志下)/.test(combined)) view = 'log';
-  else if (/(?:今天列表|今天页|今天视图|今天下)/.test(combined)) view = 'today';
+  const mentionsUpcoming = /计划(?:列表|页|视图|下|里)?/.test(text);
+  const mentionsAnytime = /随时(?:列表|页|视图|下|里)?/.test(text);
+  if (mentionsUpcoming && mentionsAnytime) {
+    return { view: 'all', views: ['anytime', 'upcoming'], label: '随时和计划' };
+  }
+  // 当前问题里的明确视图优先，不能让最近对话中的旧视图污染本轮查询。
+  if (/收件箱/.test(text)) view = 'inbox';
+  else if (mentionsUpcoming) view = 'upcoming';
+  else if (mentionsAnytime) view = 'anytime';
+  else if (/某天(?:列表|页|视图|下|里)?/.test(text)) view = 'someday';
+  else if (/(?:日志|已完成)(?:列表|页|视图|下|里)?/.test(text)) view = 'log';
+  else if (/今天(?:列表|页|视图|下|里)?/.test(text)) view = 'today';
   if (/(当前|这里|这个列表|本页)/.test(text) && page && page.view !== 'search') {
     view = page.view === 'projects' || page.view === 'areas' || page.view === 'tags' ? page.view : page.view as AIResolvedScope['view'];
     plan.viewId = page.viewId;
@@ -388,7 +417,14 @@ function resolveQueryScope(plan: any, text: string, recent: Array<{ user: string
 function filterTaskCandidates(plan: any, scope: AIResolvedScope): Task[] {
   if (!taskStore) return [];
   let tasks: Task[];
-  switch (scope.view) {
+  if (scope.views?.length) {
+    const union = new Map<string, Task>();
+    for (const view of scope.views) {
+      const scopedTasks = view === 'upcoming' ? taskStore.tasks.getUpcomingTasks() : taskStore.tasks.getAnytimeTasks();
+      for (const task of scopedTasks) union.set(task.id, task);
+    }
+    tasks = [...union.values()];
+  } else switch (scope.view) {
     case 'inbox': tasks = taskStore.tasks.getInboxTasks(); break;
     case 'today': tasks = taskStore.tasks.getTodayTasks(); break;
     case 'upcoming': tasks = taskStore.tasks.getUpcomingTasks(); break;
@@ -413,21 +449,21 @@ function filterTaskCandidates(plan: any, scope: AIResolvedScope): Task[] {
   }
   if (scope.headingId) tasks = tasks.filter((task) => task.headingId === scope.headingId);
   if (plan.status && plan.status !== 'any') tasks = tasks.filter((task) => task.status === plan.status);
-  if (plan.dateScope === 'today' && plan.status === 'done') {
+  if (!scope.views?.length && plan.dateScope === 'today' && plan.status === 'done') {
     const start = new Date(); start.setHours(0, 0, 0, 0);
     const end = new Date(); end.setHours(23, 59, 59, 999);
     tasks = tasks.filter((task) => task.status === 'done' && !!task.completedDate && task.completedDate >= start.getTime() && task.completedDate <= end.getTime());
-  } else if (plan.dateScope === 'today') {
+  } else if (!scope.views?.length && plan.dateScope === 'today') {
     const ids = new Set(taskStore.tasks.getTodayTasks().map((task) => task.id));
     tasks = tasks.filter((task) => ids.has(task.id));
   }
-  if (plan.dateScope === 'tomorrow') {
+  if (!scope.views?.length && plan.dateScope === 'tomorrow') {
     const start = new Date(); start.setDate(start.getDate() + 1); start.setHours(0, 0, 0, 0);
     const end = new Date(start); end.setHours(23, 59, 59, 999);
     tasks = tasks.filter((task) => !!task.startDate && task.startDate >= start.getTime() && task.startDate <= end.getTime());
   }
-  if (plan.dateScope === 'upcoming') tasks = tasks.filter((task) => taskStore!.tasks.getUpcomingTasks().some((item) => item.id === task.id));
-  if (plan.dateScope === 'someday') tasks = tasks.filter((task) => task.someday === true);
+  if (!scope.views?.length && plan.dateScope === 'upcoming') tasks = tasks.filter((task) => taskStore!.tasks.getUpcomingTasks().some((item) => item.id === task.id));
+  if (!scope.views?.length && plan.dateScope === 'someday') tasks = tasks.filter((task) => task.someday === true);
   if (plan.recurring) tasks = tasks.filter((task) => !!task.repeatRule);
   if (plan.project) tasks = tasks.filter((task) => task.projectId && taskStore!.projects.get(task.projectId)?.name.toLowerCase().includes(String(plan.project).toLowerCase()));
   if (plan.area) tasks = tasks.filter((task) => task.areaId && taskStore!.areas.get(task.areaId)?.name.toLowerCase().includes(String(plan.area).toLowerCase()));
@@ -711,7 +747,7 @@ async function legacySendAiMessage(text: string, config: AIConfig) {
 }
 
 function isTaskSearchRequest(text: string): boolean {
-  return /(在哪里|在哪儿|查找|搜索|找一下|找到|有哪些任务|哪些任务|已完成的?任务|已添加的?任务|完成了什么)/.test(text);
+  return /(在哪里|在哪儿|查找|搜索|找一下|找出|找到|查询|有哪些任务|哪些任务|有几个任务|所有任务|全部任务|已完成的?任务|已添加的?任务|完成了什么)/.test(text);
 }
 
 /** ParsedTask → TaskCard 预填充数据（与创建转换共用日期/标签逻辑） */

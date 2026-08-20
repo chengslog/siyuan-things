@@ -1127,8 +1127,14 @@
       </button>
     {:else}
       {#if aiPreview}
-        <span class="task-card__ai-marker" title="AI 整理结果">
-          <Icon name="iconThingsSparkles" size={12} />
+        <span
+          class="task-card__ai-marker"
+          class:is-added={collapsedPreview}
+          class:is-pending={!collapsedPreview}
+          title={collapsedPreview ? '已添加' : '未添加'}
+          aria-label={collapsedPreview ? '已添加' : '未添加'}
+        >
+          {collapsedPreview ? '已添加' : '待添加'}
         </span>
       {:else}
         <span class="task-card__check-placeholder"></span>
@@ -1872,15 +1878,26 @@
 
     &__ai-marker {
       flex-shrink: 0;
-      width: 18px;
-      height: 18px;
+      width: auto;
+      height: 20px;
+      padding: 0 6px;
       margin-top: 2px;
-      border-radius: 6px;
+      border-radius: 999px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      background: rgba(74, 138, 244, 0.11);
+      border: 1px solid rgba(74, 138, 244, 0.32);
+      background: rgba(74, 138, 244, 0.08);
       color: #4a8af4;
+      font-size: 9px;
+      font-weight: 400;
+      line-height: 1;
+
+      &.is-added {
+        border-color: rgba(82, 165, 110, 0.24);
+        background: rgba(82, 165, 110, 0.08);
+        color: #4f9566;
+      }
     }
 
     &__title {

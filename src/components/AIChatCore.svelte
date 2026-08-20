@@ -37,6 +37,8 @@
   let showModelPicker = false;
   let showThinkingPicker = false;
   let closingTaskKeys = new Set<string>();
+  let clockNow = Date.now();
+  let clockTimer: ReturnType<typeof setInterval> | undefined;
 
   function getAvailableModels(): Array<{ value: string; label: string }> {
     if (aiConfig.mode === 'custom') {
@@ -200,9 +202,34 @@
     if (round.phase === 'thinking' && !round.reasoning) return '正在连接模型...';
     if (round.phase === 'thinking') return '正在理解任务...';
     if (round.phase === 'organizing') return '正在生成任务卡...';
-    if (round.phase === 'done') return `✓ 已为你整理好 ${round.parsedTasks.length} 个任务`;
+    if (round.phase === 'done') return `已为你整理好 ${round.parsedTasks.length} 个任务`;
     if (round.phase === 'error') return '整理失败';
     return '';
+  }
+
+  function assistantLeadText(round: any): string {
+    if (round.phase === 'error') return '';
+    if (round.mode === 'search') {
+      if (round.phase === 'done') return '查询完成，我把结果整理在下面了。';
+      return '好的，我来检索并整理相关任务。';
+    }
+    return round.assistantMessage || '可以，我会帮你整理成清晰的任务。';
+  }
+
+  function friendlyErrorText(round: any): string {
+    const message = String(round.errorMsg || 'AI 服务调用失败，请稍后重试。');
+    if (!availableModels?.length && aiConfig.mode === 'siyuan') {
+      return '当前没有可用模型，请先在思源 AI 设置中启用并配置模型后重试。';
+    }
+    const modelMatch = message.match(/model['“\s]*([^'”\s]+)['”\s]* does not exist/i);
+    if (/model_not_found|does not exist or you do not have access/i.test(message)) {
+      const configuredModel = modelMatch?.[1] || $aiSelectedModel || availableModels?.[0]?.value;
+      return configuredModel
+        ? `模型“${configuredModel}”不存在或当前账号无权访问，请选择一个可用模型后重试。`
+        : '当前没有可用模型，请先配置模型后重试。';
+    }
+    if (/\b404\b/.test(message)) return 'AI 服务地址或模型配置无效（404），请检查模型设置后重试。';
+    return message.replace(/^AI\s*服务调用失败[:：]?\s*/i, '');
   }
 
   function taskLocation(task: any): string {
@@ -239,13 +266,19 @@
     window.setTimeout(() => { if (!focus()) window.setTimeout(focus, 700); }, 250);
   }
 
-  const progressSteps = ['连接模型', '理解任务', '生成任务卡'];
+  function elapsedSeconds(round: any): number {
+    if (!round.startedAt) return 0;
+    return Math.max(1, Math.ceil(((round.completedAt || clockNow) - round.startedAt) / 1000));
+  }
 
-  function progressStage(round: any): number {
-    if (round.phase === 'done') return progressSteps.length;
-    if (round.phase === 'organizing') return 2;
-    if (round.phase === 'thinking' && round.reasoning) return 1;
-    return 0;
+  function thinkingStatusText(round: any): string {
+    if (round.phase === 'error') return roundStatusText(round);
+    if (round.phase === 'done') return roundStatusText(round);
+    if (!round.intentResolved) return '正在思考';
+    if (round.mode === 'search') return '正在检索任务';
+    if (round.mode === 'organize') return '正在生成任务卡';
+    if (round.mode === 'action') return '正在准备任务操作';
+    return '正在整理回复';
   }
 
   // 点击外部关闭下拉选择器
@@ -263,10 +296,12 @@
 
   onMount(() => {
     autoGrow();
+    clockTimer = setInterval(() => { clockNow = Date.now(); }, 1000);
     document.addEventListener('click', handleDocClick, true);
   });
 
   onDestroy(() => {
+    if (clockTimer) clearInterval(clockTimer);
     document.removeEventListener('click', handleDocClick, true);
   });
 </script>
@@ -291,6 +326,7 @@
     {/if}
 
     {#each rounds as round (round.id)}
+      <div class="ai-chat__thread">
       <!-- 用户输入卡片 -->
       <div class="ai-chat__card ai-chat__user-card">
         <div class="ai-chat__card-label">
@@ -303,41 +339,32 @@
       <!-- AI 思考卡片 -->
       {#if round.id === latestRoundId}
       <div class="ai-chat__card ai-chat__think-card">
-        <div class="ai-chat__card-label">
-          <Icon name="iconThingsSparkles" size={12} />
-          <span>{round.mode === 'search' ? '任务查询' : 'AI 思考与整理'}</span>
-          <span class="ai-chat__badge" class:is-done={round.phase === 'done'} class:is-error={round.phase === 'error'}>
-            {roundStatusText(round)}
-          </span>
-        </div>
-
-        {#if round.phase !== 'error' && round.mode !== 'search'}
-          <div class="ai-chat__progress" aria-label="AI 处理进度">
-            {#each progressSteps as step, stepIndex}
-              <div
-                class="ai-chat__progress-step"
-                class:is-complete={stepIndex < progressStage(round)}
-                class:is-current={stepIndex === progressStage(round) && round.phase !== 'done'}
-                class:is-pending={stepIndex > progressStage(round)}
-              >
-                <span class="ai-chat__progress-dot">
-                  {#if stepIndex < progressStage(round)}✓{/if}
-                </span>
-                <span>{step}</span>
-                {#if stepIndex === progressStage(round) && round.phase !== 'done'}
-                  <span class="ai-chat__progress-live">进行中</span>
-                {/if}
+        <div class="ai-chat__assistant-row">
+          <div class="ai-chat__assistant-avatar"><Icon name="iconThingsSparkles" size={12} color="#ffffff" /></div>
+          <div class="ai-chat__assistant-content">
+            <div class="ai-chat__thinking-state" class:is-error={round.phase === 'error'} aria-live="polite">
+              <div class="ai-chat__thinking-time">
+                {round.phase === 'error' ? '处理了' : '已处理'} {elapsedSeconds(round)}秒
               </div>
-            {/each}
+              <div class="ai-chat__thinking-divider"></div>
+              <div class="ai-chat__thinking-current" class:is-active={round.phase !== 'done' && round.phase !== 'error'}>
+                {thinkingStatusText(round)}
+              </div>
+            </div>
+            {#if assistantLeadText(round)}
+              <div class="ai-chat__assistant-copy ai-chat__assistant-copy--after">{assistantLeadText(round)}</div>
+            {/if}
+            {#if round.phase === 'error'}
+              <div class="ai-chat__error-text">{friendlyErrorText(round)}</div>
+            {/if}
           </div>
+        </div>
+        {#if round.phase !== 'error'}
           {#if round.reasoning && (round.phase === 'thinking' || round.phase === 'organizing')}
             <div class="ai-chat__reasoning">{round.reasoning}</div>
           {/if}
         {/if}
 
-        {#if round.phase === 'error'}
-          <div class="ai-chat__error-text">{round.errorMsg}</div>
-        {/if}
       </div>
       {/if}
 
@@ -349,7 +376,14 @@
             <div class="ai-chat__search-list">
               {#each round.searchResults as task (task.id)}
                 <button class="ai-chat__search-item" on:click={() => jumpToTask(task)}>
-                  <span class="ai-chat__search-status" class:is-done={task.status === 'done'}>{task.status === 'done' ? '✓' : '•'}</span>
+                  <span
+                    class="ai-chat__search-status"
+                    class:is-done={task.status === 'done'}
+                    title={task.status === 'done' ? '已勾选' : '未勾选'}
+                    aria-label={task.status === 'done' ? '已勾选' : '未勾选'}
+                  >
+                    {task.status === 'done' ? '已完成' : '未完成'}
+                  </span>
                   <span class="ai-chat__search-main"><span class="ai-chat__search-title">{task.title}</span><span class="ai-chat__search-location">{taskLocation(task)}</span></span>
                 </button>
               {/each}
@@ -402,7 +436,6 @@
                     currentView="inbox"
                     aiPreview={true}
                     collapsedPreview={true}
-                    collapsedStatusLabel="已添加"
                     prefilledData={parsedToPrefill(task)}
                   />
                 </div>
@@ -431,6 +464,18 @@
           </div>
         </section>
       {/if}
+
+      {#if round.phase === 'done' && round.parsedTasks.length > 0 && round.id === latestRoundId}
+        <div class="ai-chat__followup">
+          还需要我继续调整吗？
+          <div class="ai-chat__quick-row">
+            <button on:click={() => fillExample('把准备材料提前到今晚')}>提前准备材料</button>
+            <button on:click={() => fillExample('给会议加一个提前15分钟提醒')}>添加提醒</button>
+            <button on:click={() => fillExample('把三个任务都加入产品项目')}>加入项目</button>
+          </div>
+        </div>
+      {/if}
+      </div>
     {/each}
   </div>
 
@@ -546,20 +591,58 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
+    overflow: hidden;
+    background: transparent;
+    font-size: 11px;
+
+  &__header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 13px 16px 8px;
+  }
+
+  &__brand-icon {
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    border-radius: 9px;
+    background: linear-gradient(145deg, #4d85f6, #6f58ef);
+    box-shadow: 0 7px 16px rgba(81, 91, 238, 0.18);
+  }
+
+  &__brand-copy { min-width: 0; }
+  &__title { font-size: 12px; line-height: 1.25; font-weight: 700; color: var(--b3-theme-on-background); }
+  &__subtitle { margin-top: 2px; font-size: 9px; line-height: 1.2; color: #a1a7b2; }
+
+  &__new-session {
+    margin-left: auto;
+    height: 28px;
+    padding: 0 10px;
+    border: 1px solid #e6e9ee;
+    border-radius: 9px;
+    background: rgba(255, 255, 255, 0.65);
+    color: #666;
+    font-size: 10px;
+    cursor: pointer;
+    &:hover { background: #f7f8fa; }
+  }
 
   // ===== 内容区 =====
   &__content {
     flex: 1;
     overflow-y: auto;
-    padding: 20px 20px 12px;
+    overflow-x: hidden;
+    padding: 16px 36px 22px;
     display: flex;
     flex-direction: column;
     gap: 14px;
     min-height: 0;
-    background:
-      radial-gradient(circle at 12% 2%, rgba(104, 141, 226, 0.10), transparent 34%),
-      radial-gradient(circle at 92% 18%, rgba(139, 112, 208, 0.08), transparent 30%),
-      color-mix(in srgb, var(--b3-theme-background) 96%, #eef3ff 4%);
+    background: transparent;
   }
 
   // ===== 引导区 =====
@@ -568,31 +651,29 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 12px;
-    width: min(100%, 520px);
+    gap: 8px;
+    width: 100%;
+    max-width: none;
     margin: auto;
-    padding: 30px 28px 26px;
+    padding: 24px 20px 30px;
     text-align: center;
-    border: 1px solid color-mix(in srgb, var(--b3-border-color) 72%, #8da8e8 28%);
-    border-radius: 22px;
-    background: color-mix(in srgb, var(--b3-theme-background) 94%, #f4f6ff 6%);
-    box-shadow: 0 18px 48px rgba(39, 57, 91, 0.08), 0 2px 8px rgba(39, 57, 91, 0.04);
+    background: transparent;
   }
 
   &__guide-icon {
-    width: 56px;
-    height: 56px;
-    border-radius: 16px;
+    width: 38px;
+    height: 38px;
+    border-radius: 11px;
     background: linear-gradient(135deg, #4a8af4, #6c5ce7);
     display: flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 8px 24px rgba(74, 138, 244, 0.3);
+    box-shadow: 0 7px 16px rgba(81, 91, 238, 0.18);
   }
 
   &__guide-title {
-    margin-top: 2px;
-    font-size: 16px;
+    margin-top: 6px;
+    font-size: 15px;
     font-weight: 700;
     color: var(--b3-theme-on-background);
   }
@@ -602,27 +683,29 @@
     color: var(--b3-theme-on-surface-light);
     text-align: center;
     line-height: 1.7;
-    max-width: 390px;
+    max-width: 360px;
   }
 
   &__guide-examples {
     display: flex;
-    flex-direction: column;
-    gap: 10px;
-    margin-top: 14px;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 10px;
     width: 100%;
-    max-width: 480px;
+    max-width: 470px;
   }
 
   &__example-chip {
     position: relative;
-    padding: 13px 38px 13px 15px;
-    border: 1px solid color-mix(in srgb, var(--b3-border-color) 80%, #91a9dd 20%);
-    border-radius: 13px;
-    background: color-mix(in srgb, var(--b3-theme-background) 97%, #edf2ff 3%);
-    font-size: 12px;
-    line-height: 1.5;
-    color: var(--b3-theme-on-surface);
+    padding: 8px 12px;
+    border: 1px solid #e7eaf0;
+    border-radius: 999px;
+    background: #fafbfc;
+    font-size: 10px;
+    line-height: 1.35;
+    color: #757d88;
     cursor: pointer;
     text-align: left;
     transition: all 0.15s;
@@ -632,20 +715,19 @@
       content: '›';
       position: absolute;
       top: 50%;
-      right: 15px;
+      right: 8px;
       transform: translateY(-52%);
-      font-size: 19px;
+      font-size: 14px;
       line-height: 1;
-      color: color-mix(in srgb, var(--b3-theme-primary) 72%, var(--b3-theme-on-surface-light));
+      color: #9aa1ac;
       transition: transform 0.18s ease;
     }
 
     &:hover {
-      border-color: var(--b3-theme-primary);
-      color: var(--b3-theme-primary);
-      background: color-mix(in srgb, var(--b3-theme-primary-light) 60%, var(--b3-theme-background));
-      box-shadow: 0 8px 22px rgba(60, 96, 168, 0.12);
-      transform: translateY(-1px);
+      border-color: #d7e1fb;
+      color: #476fd0;
+      background: #f0f5ff;
+      box-shadow: none;
 
       &::after { transform: translate(3px, -52%); }
     }
@@ -653,8 +735,8 @@
 
   // ===== 卡片 =====
   &__card {
-    background: var(--b3-theme-background);
-    border: 1px solid var(--b3-border-color);
+    background: rgba(255, 255, 255, 0.72);
+    border: 1px solid #edf0f4;
     border-radius: 13px;
     padding: 14px 16px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.024);
@@ -690,6 +772,92 @@
     word-break: break-word;
   }
 
+  &__thread {
+    width: 100%;
+    max-width: none;
+    margin: 0 auto;
+  }
+
+  &__assistant-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  &__assistant-avatar {
+    width: 24px;
+    height: 24px;
+    display: grid;
+    place-items: center;
+    flex: 0 0 auto;
+    border-radius: 8px;
+    background: linear-gradient(145deg, #598cf6, #775df1);
+  }
+
+  &__assistant-copy {
+    padding-top: 2px;
+    font-size: 11px;
+    line-height: 1.65;
+    color: #555e69;
+
+    &--after {
+      margin-top: 12px;
+    }
+  }
+
+  &__assistant-content {
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__user-card {
+    width: fit-content;
+    max-width: 88%;
+    margin-left: auto;
+    border-color: #dbe7ff;
+    border-radius: 12px;
+    background: #eef4ff;
+    box-shadow: none;
+    padding: 10px 12px;
+  }
+
+  &__user-card &__card-label { display: none; }
+  &__user-card &__user-text { font-size: 11px; line-height: 1.55; color: #3d4652; }
+
+  &__think-card {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  &__followup {
+    margin: 15px 0 0 32px;
+    font-size: 10px;
+    color: #808894;
+  }
+
+  &__quick-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+
+    button {
+      padding: 6px 9px;
+      border: 1px solid #e7eaf0;
+      border-radius: 999px;
+      background: #fafbfc;
+      color: #757d88;
+      font-size: 9px;
+      cursor: pointer;
+
+      &:hover { border-color: #d7e1fb; background: #f0f5ff; color: #476fd0; }
+    }
+  }
+
   // ===== 思考卡片 =====
   &__badge {
     margin-left: auto;
@@ -711,7 +879,7 @@
   }
 
   &__reasoning {
-    font-size: 13px;
+    font-size: 11px;
     line-height: 1.7;
     color: var(--b3-theme-on-surface-light);
     white-space: pre-wrap;
@@ -728,19 +896,65 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+    margin-left: 32px;
     margin-bottom: 10px;
+    padding: 2px 0;
+  }
+
+  &__thinking-state {
+    margin: 0;
+    color: #747b85;
+  }
+
+  &__thinking-time {
+    padding: 0 2px 9px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: #6f7680;
+  }
+
+  &__thinking-divider {
+    height: 1px;
+    background: #e8ebf0;
+  }
+
+  &__thinking-current {
+    padding: 10px 2px 2px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: #7b838d;
+
+    &.is-active {
+      color: #a0a6ae;
+      animation: ai-thinking-fade 1.6s ease-in-out infinite;
+    }
+
+    .is-error & { color: #dc2626; }
   }
 
   &__progress-step {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 8px;
     min-height: 24px;
     padding: 3px 7px;
     border-radius: 7px;
-    font-size: 12px;
+    font-size: 10px;
     color: #a1a7b0;
     transition: color 180ms ease, background 180ms ease;
+
+    &:not(:last-child)::after {
+      content: '';
+      position: absolute;
+      z-index: 0;
+      top: 19px;
+      bottom: -9px;
+      left: 14px;
+      width: 2px;
+      border-radius: 2px;
+      background: #dfe6f7;
+    }
 
     &.is-complete {
       color: #6f7884;
@@ -751,9 +965,24 @@
       background: rgba(59, 127, 240, 0.08);
       animation: ai-progress-glow 1.5s ease-in-out infinite;
     }
+
+    &.is-error {
+      color: #dc2626;
+      background: rgba(220, 38, 38, 0.06);
+
+      .ai-chat__progress-dot {
+        border-color: #dc2626;
+        background: rgba(220, 38, 38, 0.1);
+        color: #dc2626;
+      }
+    }
   }
 
+  &__progress-summary { margin-top: 2px; }
+
   &__progress-dot {
+    position: relative;
+    z-index: 1;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -785,24 +1014,49 @@
   }
 
   &__error-text {
-    font-size: 13px;
-    color: #dc2626;
+    margin-top: 12px;
+    padding: 10px 12px;
+    border: 1px solid rgba(220, 38, 38, 0.14);
+    border-radius: 10px;
+    background: rgba(220, 38, 38, 0.045);
+    font-size: 11px;
+    line-height: 1.55;
+    color: #b42318;
   }
 
   // ===== 结果卡片 =====
   &__result-section {
     padding-top: 4px;
+    margin-left: 32px;
   }
 
-  &__search-section { padding-top: 4px; }
+  &__search-section { margin: 12px 0 0 32px; padding-top: 4px; }
   &__search-list { display: flex; flex-direction: column; gap: 6px; }
   &__search-answer { margin-bottom: 9px; font-size: 12px; line-height: 1.6; color: var(--b3-theme-on-surface); }
   &__search-item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 10px; border: 1px solid var(--b3-border-color); border-radius: 9px; background: var(--b3-theme-background); color: inherit; cursor: pointer; text-align: left; }
   &__search-item:hover { border-color: var(--b3-theme-primary); background: var(--b3-list-hover); }
-  &__search-status { color: #3b7ff0; font-size: 16px; }
-  &__search-status.is-done { color: #62a879; }
+  &__search-status {
+    width: auto;
+    height: 20px;
+    padding: 0 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    border: 1px solid #e4e7eb;
+    border-radius: 999px;
+    background: #f7f8fa;
+    color: #8a929d;
+    font-size: 9px;
+    font-weight: 400;
+  }
+  &__search-status.is-done {
+    border-color: rgba(82, 165, 110, 0.24);
+    background: rgba(82, 165, 110, 0.08);
+    color: #4f9566;
+  }
   &__search-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-  &__search-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+  &__search-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; }
   &__search-location { color: var(--b3-theme-on-surface-light); font-size: 10px; }
   &__search-empty { padding: 14px; border-radius: 9px; background: var(--b3-theme-surface-light); color: var(--b3-theme-on-surface-light); font-size: 12px; text-align: center; }
   &__answer-card { padding: 12px 14px; border-radius: 10px; background: var(--b3-theme-background); border: 1px solid var(--b3-border-color); }
@@ -820,6 +1074,44 @@
     font-size: 10px;
     padding: 1px 7px;
     border-radius: 9px;
+  }
+
+  :global(.task-card.is-collapsed-preview) {
+    background: rgba(255, 255, 255, 0.58) !important;
+    border: 1px solid #e8ebf0 !important;
+    box-shadow: none !important;
+    border-radius: 10px !important;
+    margin: 4px 0 !important;
+    padding: 9px 11px !important;
+  }
+
+  :global(.task-card.is-create.is-collapsible-create:not(.is-expanded)) {
+    background: rgba(255, 255, 255, 0.58) !important;
+    border: 1px solid #e8ebf0 !important;
+    box-shadow: none !important;
+    border-radius: 10px !important;
+    margin: 4px 0 !important;
+    padding: 9px 11px !important;
+  }
+
+  :global(.ai-chat__task-list .task-card:not(.is-expanded) .task-card__title) {
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    line-height: 20px !important;
+  }
+
+  :global(.ai-chat__task-list .task-card:not(.is-expanded) .task-card__header) {
+    align-items: center !important;
+  }
+
+  :global(.ai-chat__task-list .task-card:not(.is-expanded) .task-card__ai-marker) {
+    margin-top: 0 !important;
+  }
+
+  :global(.ai-chat__task-list .task-card:not(.is-expanded) .task-card__subtitle),
+  :global(.ai-chat__task-list .task-card:not(.is-expanded) .task-card__aux),
+  :global(.ai-chat__task-list .task-card:not(.is-expanded) .task-card__collapsed-status) {
+    font-size: 10px !important;
   }
 
   &__task-list {
@@ -875,22 +1167,21 @@
 
   // ===== 底部输入栏 =====
   &__input-bar {
-    padding: 12px 16px 16px;
-    background:
-      linear-gradient(to bottom, transparent, color-mix(in srgb, var(--b3-theme-background) 92%, #eef2ff 8%) 28%);
+    padding: 0 36px 11px;
+    background: transparent;
     flex-shrink: 0;
   }
 
   &__input-container {
-    background: color-mix(in srgb, var(--b3-theme-background) 97%, #f5f7ff 3%);
-    border: 1px solid color-mix(in srgb, var(--b3-border-color) 76%, #9eb1df 24%);
-    border-radius: 17px;
-    box-shadow: 0 12px 34px rgba(39, 57, 91, 0.10), 0 2px 8px rgba(39, 57, 91, 0.05);
+    background: rgba(255, 255, 255, 0.72);
+    border: 1px solid #e8ebf0;
+    border-radius: 14px;
+    box-shadow: 0 2px 8px rgba(39, 57, 91, 0.04);
     transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
 
     &:focus-within {
-      border-color: color-mix(in srgb, var(--b3-theme-primary) 72%, #8c80e8 28%);
-      box-shadow: 0 15px 38px rgba(54, 88, 158, 0.14), 0 0 0 3px rgba(82, 119, 218, 0.08);
+      border-color: #b8c9fb;
+      box-shadow: 0 0 0 3px rgba(82, 119, 218, 0.08);
     }
   }
 
@@ -904,8 +1195,8 @@
     line-height: 1.6;
     font-family: inherit;
     color: var(--b3-theme-on-background);
-    padding: 15px 16px 9px;
-    min-height: 68px;
+    padding: 14px 14px 8px;
+    min-height: 72px;
     max-height: 132px;
 
     &::placeholder {
@@ -918,8 +1209,9 @@
     align-items: center;
     justify-content: space-between;
     gap: 7px;
-    padding: 7px 10px 10px;
-    border-top: none;
+    padding: 10px 0 0;
+    margin: 8px 12px 12px;
+    border-top: 1px solid #f0f1f4;
   }
 
   &__input-toolbar-left,
@@ -937,12 +1229,12 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 5px 10px;
-    border: 1px solid transparent;
-    border-radius: 9px;
-    background: color-mix(in srgb, var(--b3-theme-surface-light) 88%, #edf1fb 12%);
-    color: var(--b3-theme-on-surface);
-    font-size: 11px;
+    padding: 6px 9px;
+    border: none;
+    border-radius: 10px;
+    background: #f4f5f7;
+    color: #6f7680;
+    font-size: 9px;
     cursor: pointer;
     transition: all 0.15s;
 
@@ -1019,16 +1311,19 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 7px 15px;
+    width: 34px;
+    height: 34px;
+    justify-content: center;
+    padding: 0;
     border: none;
-    border-radius: 9px;
+    border-radius: 10px;
     background: linear-gradient(135deg, #5689f5, #7167e8);
     color: #ffffff;
-    font-size: 12px;
+    font-size: 0;
     font-weight: 500;
     cursor: pointer;
     white-space: nowrap;
-    box-shadow: 0 5px 14px rgba(83, 102, 224, 0.25);
+    box-shadow: none;
     transition: transform 0.15s, box-shadow 0.15s, filter 0.15s;
 
     &:hover:not(:disabled) {
@@ -1047,6 +1342,11 @@
   @keyframes ai-pulse {
     0%, 100% { opacity: 1; transform: scale(1); }
     50% { opacity: 0.35; transform: scale(0.8); }
+  }
+
+  @keyframes ai-thinking-fade {
+    0%, 100% { opacity: 0.52; }
+    50% { opacity: 1; }
   }
 
   @keyframes ai-progress-spin {
