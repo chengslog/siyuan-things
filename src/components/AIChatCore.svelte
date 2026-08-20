@@ -556,6 +556,10 @@
     flex-direction: column;
     gap: 14px;
     min-height: 0;
+    background:
+      radial-gradient(circle at 12% 2%, rgba(104, 141, 226, 0.10), transparent 34%),
+      radial-gradient(circle at 92% 18%, rgba(139, 112, 208, 0.08), transparent 30%),
+      color-mix(in srgb, var(--b3-theme-background) 96%, #eef3ff 4%);
   }
 
   // ===== 引导区 =====
@@ -565,8 +569,14 @@
     align-items: center;
     justify-content: center;
     gap: 12px;
-    padding: 48px 24px;
+    width: min(100%, 520px);
+    margin: auto;
+    padding: 30px 28px 26px;
     text-align: center;
+    border: 1px solid color-mix(in srgb, var(--b3-border-color) 72%, #8da8e8 28%);
+    border-radius: 22px;
+    background: color-mix(in srgb, var(--b3-theme-background) 94%, #f4f6ff 6%);
+    box-shadow: 0 18px 48px rgba(39, 57, 91, 0.08), 0 2px 8px rgba(39, 57, 91, 0.04);
   }
 
   &__guide-icon {
@@ -581,44 +591,63 @@
   }
 
   &__guide-title {
-    font-size: 14px;
+    margin-top: 2px;
+    font-size: 16px;
     font-weight: 700;
     color: var(--b3-theme-on-background);
   }
 
   &__guide-desc {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--b3-theme-on-surface-light);
     text-align: center;
     line-height: 1.7;
-    max-width: 320px;
+    max-width: 390px;
   }
 
   &__guide-examples {
     display: flex;
     flex-direction: column;
-    gap: 7px;
-    margin-top: 12px;
+    gap: 10px;
+    margin-top: 14px;
     width: 100%;
     max-width: 480px;
   }
 
   &__example-chip {
-    padding: 7px 12px;
-    border: 1px solid var(--b3-border-color);
-    border-radius: 9px;
-    background: var(--b3-theme-background);
-    font-size: 11px;
+    position: relative;
+    padding: 13px 38px 13px 15px;
+    border: 1px solid color-mix(in srgb, var(--b3-border-color) 80%, #91a9dd 20%);
+    border-radius: 13px;
+    background: color-mix(in srgb, var(--b3-theme-background) 97%, #edf2ff 3%);
+    font-size: 12px;
+    line-height: 1.5;
     color: var(--b3-theme-on-surface);
     cursor: pointer;
     text-align: left;
     transition: all 0.15s;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.024);
+    box-shadow: 0 4px 14px rgba(42, 61, 96, 0.055);
+
+    &::after {
+      content: '›';
+      position: absolute;
+      top: 50%;
+      right: 15px;
+      transform: translateY(-52%);
+      font-size: 19px;
+      line-height: 1;
+      color: color-mix(in srgb, var(--b3-theme-primary) 72%, var(--b3-theme-on-surface-light));
+      transition: transform 0.18s ease;
+    }
 
     &:hover {
       border-color: var(--b3-theme-primary);
       color: var(--b3-theme-primary);
-      background: var(--b3-theme-primary-light);
+      background: color-mix(in srgb, var(--b3-theme-primary-light) 60%, var(--b3-theme-background));
+      box-shadow: 0 8px 22px rgba(60, 96, 168, 0.12);
+      transform: translateY(-1px);
+
+      &::after { transform: translate(3px, -52%); }
     }
   }
 
@@ -846,21 +875,22 @@
 
   // ===== 底部输入栏 =====
   &__input-bar {
-    border-top: 1px solid var(--b3-border-color);
-    padding: 10px 16px;
-    background: var(--b3-theme-surface);
+    padding: 12px 16px 16px;
+    background:
+      linear-gradient(to bottom, transparent, color-mix(in srgb, var(--b3-theme-background) 92%, #eef2ff 8%) 28%);
     flex-shrink: 0;
   }
 
   &__input-container {
-    background: var(--b3-theme-background);
-    border: 1px solid var(--b3-border-color);
-    border-radius: 13px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.024);
-    transition: border-color 0.2s;
+    background: color-mix(in srgb, var(--b3-theme-background) 97%, #f5f7ff 3%);
+    border: 1px solid color-mix(in srgb, var(--b3-border-color) 76%, #9eb1df 24%);
+    border-radius: 17px;
+    box-shadow: 0 12px 34px rgba(39, 57, 91, 0.10), 0 2px 8px rgba(39, 57, 91, 0.05);
+    transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
 
     &:focus-within {
-      border-color: #3b7ff0;
+      border-color: color-mix(in srgb, var(--b3-theme-primary) 72%, #8c80e8 28%);
+      box-shadow: 0 15px 38px rgba(54, 88, 158, 0.14), 0 0 0 3px rgba(82, 119, 218, 0.08);
     }
   }
 
@@ -874,9 +904,9 @@
     line-height: 1.6;
     font-family: inherit;
     color: var(--b3-theme-on-background);
-    padding: 12px 14px 6px;
-    min-height: 40px;
-    max-height: 100px;
+    padding: 15px 16px 9px;
+    min-height: 68px;
+    max-height: 132px;
 
     &::placeholder {
       color: var(--b3-theme-on-surface-light);
@@ -888,8 +918,8 @@
     align-items: center;
     justify-content: space-between;
     gap: 7px;
-    padding: 6px 10px 10px;
-    border-top: 1px solid var(--b3-border-color);
+    padding: 7px 10px 10px;
+    border-top: none;
   }
 
   &__input-toolbar-left,
@@ -907,18 +937,18 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 4px 9px;
-    border: 1px solid var(--b3-border-color);
-    border-radius: 7px;
-    background: var(--b3-theme-surface-light);
+    padding: 5px 10px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--b3-theme-surface-light) 88%, #edf1fb 12%);
     color: var(--b3-theme-on-surface);
     font-size: 11px;
     cursor: pointer;
     transition: all 0.15s;
 
     &:hover {
-      border-color: #c8d0d8;
-      background: #f0f2f5;
+      border-color: color-mix(in srgb, var(--b3-border-color) 78%, #9eb1df 22%);
+      background: color-mix(in srgb, var(--b3-theme-primary-light) 45%, var(--b3-theme-background));
     }
 
     &.is-disabled {
@@ -926,8 +956,8 @@
       cursor: not-allowed;
 
       &:hover {
-        border-color: #e4e8ec;
-        background: #fafbfc;
+        border-color: transparent;
+        background: var(--b3-theme-surface-light);
       }
     }
   }
@@ -989,23 +1019,27 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 6px 14px;
+    padding: 7px 15px;
     border: none;
-    border-radius: 7px;
-    background: #3b7ff0;
+    border-radius: 9px;
+    background: linear-gradient(135deg, #5689f5, #7167e8);
     color: #ffffff;
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
     white-space: nowrap;
-    transition: background 0.15s;
+    box-shadow: 0 5px 14px rgba(83, 102, 224, 0.25);
+    transition: transform 0.15s, box-shadow 0.15s, filter 0.15s;
 
     &:hover:not(:disabled) {
-      background: #2e6bd6;
+      filter: brightness(1.04);
+      transform: translateY(-1px);
+      box-shadow: 0 7px 18px rgba(83, 102, 224, 0.32);
     }
 
     &:disabled {
-      background: #c8d6f0;
+      background: color-mix(in srgb, var(--b3-theme-on-surface-light) 22%, var(--b3-theme-background));
+      box-shadow: none;
       cursor: not-allowed;
     }
   }

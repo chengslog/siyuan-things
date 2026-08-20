@@ -75,7 +75,7 @@
     flex-direction: column;
     width: 100%;
     height: min(920px, 100%);
-    background: var(--b3-theme-surface);
+    background: color-mix(in srgb, var(--b3-theme-background) 96%, #eef2fb 4%);
     border-radius: 20px;
     box-shadow: 0 24px 65px rgba(30, 43, 62, 0.2);
     overflow: hidden;
