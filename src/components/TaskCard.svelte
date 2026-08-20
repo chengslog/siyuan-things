@@ -449,6 +449,10 @@
   // 点击外部关闭
   function handleOutsideClick(e: MouseEvent) {
     const target = e.target as HTMLElement;
+    // Dropdowns are portaled to document.body by smartPosition, so they are no
+    // longer descendants of cardEl. Treat interaction inside a portaled picker
+    // as card interaction; the picker change/close handler owns its lifecycle.
+    if (target.closest('.task-card__dropdown')) return;
     if (!cardEl?.contains(target)) {
       showDatePicker = false;
       showDeadlinePicker = false;
@@ -787,6 +791,17 @@
   // 判断给定变更是否会使任务移出当前视图（基于当前任务与变更的合并结果）
   function willChangeCauseMove(changes: Partial<Task>): boolean {
     if (!task) return false;
+
+    // In Upcoming, changing the scheduled date can keep the task in the same
+    // view while moving it to another day/month group or sort position. Treat
+    // that as a move too, so the user sees the same collapse/fade transition
+    // before the list is reordered.
+    if (currentView === 'upcoming' && (
+      ('startDate' in changes && changes.startDate !== task.startDate) ||
+      ('someday' in changes && changes.someday !== task.someday)
+    )) {
+      return true;
+    }
 
     // 项目/区域/标签视图：任务按归属分类，不会因日期/标签变化而迁出
     if (currentView === 'project' || currentView === 'area' || currentView === 'tag') {

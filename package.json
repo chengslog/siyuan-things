@@ -1,10 +1,13 @@
 {
   "name": "siyuan-things",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "A GTD task management plugin inspired by Things for SiYuan Note",
-  "repository": "",
-  "homepage": "",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chengslog/siyuan-things.git"
+  },
+  "homepage": "https://github.com/chengslog/siyuan-things",
   "author": "ccriss",
   "license": "MIT",
   "scripts": {
@@ -17,6 +20,9 @@
     "make-link": "node --no-warnings ./scripts/make_dev_link.js",
     "make-link-win": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/elevate.ps1 -scriptPath ./scripts/make_dev_link.js",
     "update-version": "node --no-warnings ./scripts/update_version.js",
+    "version:patch": "node --no-warnings ./scripts/update_version.js patch",
+    "version:minor": "node --no-warnings ./scripts/update_version.js minor",
+    "version:major": "node --no-warnings ./scripts/update_version.js major",
     "make-install": "pnpm run build && node --no-warnings ./scripts/make_install.js"
   },
   "devDependencies": {

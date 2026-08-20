@@ -1,4 +1,5 @@
 import { resolve } from "path";
+import { readFileSync } from "fs";
 import { defineConfig } from "vite";
 import { viteStaticCopy } from "vite-plugin-static-copy";
 import livereload from "rollup-plugin-livereload";
@@ -14,6 +15,8 @@ const isDev = env.NODE_ENV === "development";
 const buildTarget = env.VITE_BUILD_TARGET === "kernel" ? "kernel" : "app";
 
 const outputDir = isDev ? "dev" : "dist";
+const pluginVersion = JSON.parse(readFileSync(resolve(__dirname, "plugin.json"), "utf8")).version;
+const pluginChangelog = readFileSync(resolve(__dirname, "CHANGELOG.md"), "utf8");
 
 console.log("isDev=>", isDev);
 console.log("isSrcmap=>", isSrcmap);
@@ -82,6 +85,8 @@ export default defineConfig(buildTarget === "kernel" ? {
     ],
 
     define: {
+        "__PLUGIN_VERSION__": JSON.stringify(pluginVersion),
+        "__PLUGIN_CHANGELOG__": JSON.stringify(pluginChangelog),
         "process.env.DEV_MODE": JSON.stringify(isDev),
         "process.env.NODE_ENV": JSON.stringify(env.NODE_ENV)
     },

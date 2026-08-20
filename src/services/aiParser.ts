@@ -76,6 +76,7 @@ export interface AIQueryPlan {
 
 export interface AIRouteResult {
   intent: 'create' | 'search' | 'update' | 'delete' | 'confirm' | 'cancel' | 'clarify' | 'answer';
+  structure?: 'single_task' | 'single_with_checklist' | 'multiple_tasks';
   message?: string;
   tasks?: any[];
   query?: AIQueryPlan;
@@ -303,6 +304,7 @@ intent 只能是 create/search/update/confirm/cancel/clarify/answer。
       { role: 'system', content: 'Intent 还支持 delete。用户明确要删除真实任务时返回 {"intent":"delete","targetIds":["ID"],"message":"删除预览说明"}。targetIds 只能取自 lastSearchResults 或 focusedTasks；目标不明确时先 search 或 clarify，不得猜 ID。删除只生成待确认计划，不得声称已执行。查询重复任务时使用 search，并在 query 设置 duplicate=true。confirm/cancel 同时适用于修改和删除操作。' },
       { role: 'system', content: '视图名是精确产品术语：“计划”或“计划列表”必须映射为 search query.dateScope="upcoming"，不是所有待办；“今天”映射 today；“某天”映射 someday。对“全部”、“都有哪些”等追问，必须从 recentConversation 继承上一轮已明确的视图和筛选范围，不得重置为 any。' },
       { role: 'system', content: '查询计划必须优先返回结构化 query.view：all/inbox/today/upcoming/anytime/someday/log/projects/areas/tags/project/area/tag。产品术语映射：收件箱=inbox，今天=today，计划=upcoming，随时=anytime，某天=someday，日志或已完成=log。指定项目/区域/标签时返回 view=project/area/tag 并在 project/area/keywords 中给出名称；项目标题分组另返回 heading。用户说“当前、这里、这个列表”时使用 currentViewContext；说“全部”时继承 lastQueryScope，只移除关键词等内容限制，不得移除视图作用域。dateScope 只表示额外日期条件，不再用它表示侧边栏视图。' },
+      { role: 'system', content: '创建任务时必须根据用户完整语义判断任务结构，并返回 structure：single_task（一个独立任务）、single_with_checklist（一个目标及其步骤/准备事项）、multiple_tasks（多个可独立完成和分别管理的结果）。不要仅凭“拆分、步骤、清单”等关键词决定数量：一个目标的准备事项或执行步骤应放入同一 task.checklist；多个独立目标应生成多个 tasks；多个目标分别要求步骤时，应生成多个 tasks，并在各自 checklist 中写步骤。用户明确指定任务数量、说“分别/各自/每个任务”时必须遵守。例如“明天上午 9 点开产品评审会，帮我拆分准备事项”是 single_with_checklist；“创建产品发布和季度复盘两个任务，分别拆分步骤”是 multiple_tasks。若无法判断事项是独立任务还是检查项，返回 clarify 追问，不得猜测。不得凭空增加日期、责任人、项目归属或用户未表达的具体要求。' },
       { role: 'user', content: `会话上下文：${JSON.stringify(sessionContext)}\n\n用户消息：${text}` },
     ],
     temperature: Math.min(thinkingLevel.temperature, 0.4),
@@ -314,6 +316,9 @@ intent 只能是 create/search/update/confirm/cancel/clarify/answer。
   const parsed = JSON.parse((fenced ? fenced[1] : content).trim());
   return {
     intent: parsed.intent,
+    structure: ['single_task', 'single_with_checklist', 'multiple_tasks'].includes(parsed.structure)
+      ? parsed.structure
+      : undefined,
     message: parsed.message,
     tasks: Array.isArray(parsed.tasks) ? parsed.tasks : undefined,
     query: parsed.query,

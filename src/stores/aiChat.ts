@@ -143,13 +143,43 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
   };
 
   try {
-    const route = await routeAiMessage(
+    let route = await routeAiMessage(
       text,
       sessionContext,
       { ...config, model: get(aiSelectedModel) || config.model },
       get(aiThinkingLevel),
       updateStream,
     );
+
+    // The model decides task structure from the whole utterance. Local validation
+    // only catches contradictions between that decision (or an explicit user count)
+    // and the number of returned cards.
+    const expectedStructure = route.intent === 'create'
+      ? resolveExpectedTaskStructure(text, route.structure)
+      : undefined;
+    if (route.intent === 'create' && taskStructureMismatch(expectedStructure, route.tasks?.length || 0)) {
+      round.reasoning = '';
+      round.content = '';
+      round.phase = 'thinking';
+      bump(round);
+      const structureValidation = expectedStructure === 'multiple_tasks'
+        ? '上一次结果没有遵守用户要求的多个独立任务结构。请重新理解完整语义，返回多个独立 tasks；若每个任务还要求步骤，请写入各自 checklist。'
+        : '上一次结果与已判断的单任务结构冲突。请只返回 1 个主任务；若 structure 是 single_with_checklist，请把步骤或准备事项放入该任务的 checklist。';
+      route = await routeAiMessage(
+        text,
+        {
+          ...sessionContext,
+          structureValidation,
+        },
+        { ...config, model: get(aiSelectedModel) || config.model },
+        get(aiThinkingLevel),
+        updateStream,
+      );
+      const repairedStructure = resolveExpectedTaskStructure(text, route.structure || expectedStructure);
+      if (route.intent !== 'create' || taskStructureMismatch(repairedStructure, route.tasks?.length || 0)) {
+        throw new Error('AI 返回的任务结构与用户要求不一致，请换一种说法后重试');
+      }
+    }
 
     // Product view names are deterministic constraints, not semantic guesses.
     // Preserve them across short clarification replies such as "查看全部".
@@ -264,6 +294,20 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
     aiIsSending.set(false);
     bump(round);
   }
+}
+
+type TaskStructure = 'single_task' | 'single_with_checklist' | 'multiple_tasks';
+
+function resolveExpectedTaskStructure(text: string, aiStructure?: TaskStructure): TaskStructure | undefined {
+  // These phrases are explicit cardinality constraints, not a semantic parser.
+  // They only prevent a model from collapsing a clearly requested multi-task result.
+  const explicitMultiple = /(?:[二两三四五六七八九十\d]+个(?:独立)?任务|多个(?:独立)?任务)/.test(text);
+  return explicitMultiple ? 'multiple_tasks' : aiStructure;
+}
+
+function taskStructureMismatch(structure: TaskStructure | undefined, taskCount: number): boolean {
+  if (!structure || taskCount === 0) return false;
+  return structure === 'multiple_tasks' ? taskCount < 2 : taskCount !== 1;
 }
 
 function taskSummary(task: Task) {

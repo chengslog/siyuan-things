@@ -58,6 +58,10 @@ export function smartPosition(node: HTMLElement) {
       cancelAnimationFrame(frame);
       window.removeEventListener('resize', place);
       document.removeEventListener('scroll', place, true);
+      // The action portals this element outside its original Svelte block.
+      // Remove it explicitly so a conditional/card teardown cannot leave an
+      // orphaned picker attached to document.body.
+      node.remove();
     },
   };
 }

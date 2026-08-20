@@ -16,9 +16,12 @@ import { SettingUtils } from "./libs/setting-utils";
 import { ICON_SPRITE, getViewIconId } from "@/icons";
 import { ReminderService } from "@/reminder";
 import { TAG_PALETTE, nextTagColor } from "@/utils/colors";
+import { renderMarkdown } from "@/utils/markdown";
 
 const STORAGE_NAME = "things-config";
 const TAB_TYPE = "things_tab";
+declare const __PLUGIN_VERSION__: string;
+declare const __PLUGIN_CHANGELOG__: string;
 
 export default class ThingsPlugin extends Plugin {
   private store: StoreManager;
@@ -96,7 +99,7 @@ export default class ThingsPlugin extends Plugin {
         position: "LeftTop",
         size: { width: 232, height: 0 },
         icon: "iconThings",
-        title: "Things",
+        title: `Things v${__PLUGIN_VERSION__}`,
         hotkey: "⌥⌘T",
       },
       data: {},
@@ -1455,6 +1458,37 @@ export default class ThingsPlugin extends Plugin {
           customConfigContainer.style.display = value === "custom" ? "block" : "none";
         });
       }
+
+      const footer = document.createElement("div");
+      footer.style.marginTop = "24px";
+      footer.style.paddingTop = "14px";
+      footer.style.borderTop = "1px solid var(--b3-border-color)";
+      footer.style.display = "flex";
+      footer.style.alignItems = "center";
+      footer.style.justifyContent = "space-between";
+      footer.style.fontSize = "12px";
+      footer.style.color = "var(--b3-theme-on-surface-light)";
+
+      const version = document.createElement("span");
+      version.textContent = `Things v${__PLUGIN_VERSION__}`;
+      footer.appendChild(version);
+
+      const changelog = document.createElement("a");
+      changelog.textContent = "更新日志";
+      changelog.href = "#";
+      changelog.style.color = "var(--b3-theme-primary)";
+      changelog.style.textDecoration = "none";
+      changelog.addEventListener("click", (event) => {
+        event.preventDefault();
+        new Dialog({
+          title: `Things v${__PLUGIN_VERSION__} 更新日志`,
+          content: `<div class="b3-typography" style="padding: 20px; max-height: 70vh; overflow: auto;">${renderMarkdown(__PLUGIN_CHANGELOG__)}</div>`,
+          width: "680px",
+        });
+      });
+      footer.appendChild(changelog);
+
+      settingsEl.appendChild(footer);
     }
   }
 }

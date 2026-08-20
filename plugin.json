@@ -1,22 +1,23 @@
 {
   "name": "siyuan-things",
   "author": "ccriss",
-  "url": "https://github.com/user/siyuan-things",
-  "version": "0.1.0",
-  "minAppVersion": "3.0.0",
+  "url": "https://github.com/chengslog/siyuan-things",
+  "version": "0.2.0",
+  "minAppVersion": "3.7.0",
+  "kernels": ["windows", "linux", "darwin", "docker"],
   "backends": ["windows", "linux", "darwin", "docker"],
   "frontends": ["desktop", "mobile", "browser-desktop", "browser-mobile"],
   "displayName": {
     "default": "Things",
-    "zh_CN": "Things 任务管理"
+    "zh-CN": "Things 任务管理"
   },
   "description": {
     "default": "A GTD task management plugin inspired by Things, for SiYuan Note",
-    "zh_CN": "灵感来自 Things 的 GTD 任务管理插件"
+    "zh-CN": "灵感来自 Things 的 GTD 任务管理插件"
   },
   "readme": {
     "default": "README.md",
-    "zh_CN": "README.md"
+    "zh-CN": "README.zh-CN.md"
   },
   "funding": {
     "custom": []

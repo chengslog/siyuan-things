@@ -77,10 +77,12 @@ function incrementVersion(version, type) {
     try {
         const pluginJsonPath = path.join(process.cwd(), 'plugin.json');
         const packageJsonPath = path.join(process.cwd(), 'package.json');
+        const packageLockPath = path.join(process.cwd(), 'package-lock.json');
 
         // Read both JSON files
         const pluginData = await readJsonFile(pluginJsonPath);
         const packageData = await readJsonFile(packageJsonPath);
+        const packageLockData = fs.existsSync(packageLockPath) ? await readJsonFile(packageLockPath) : null;
 
         // Get the current version from both files (assuming both have the same version)
         const currentVersion = pluginData.version || packageData.version;
@@ -100,18 +102,22 @@ function incrementVersion(version, type) {
         // Press 0 to skip version update
         console.log('   0️⃣  Quit without updating\n');
 
-        const updateChoice = await promptUser('👉  Please choose (1/2/3/4): ');
+        const cliChoice = process.argv[2]?.trim();
+        const updateChoice = cliChoice || await promptUser('👉  Please choose (1/2/3/4): ');
 
         let newVersion;
 
         switch (updateChoice.trim()) {
             case '1':
+            case 'patch':
                 newVersion = newPatchVersion;
                 break;
             case '2':
+            case 'minor':
                 newVersion = newMinorVersion;
                 break;
             case '3':
+            case 'major':
                 newVersion = newMajorVersion;
                 break;
             case '4':
@@ -121,17 +127,27 @@ function incrementVersion(version, type) {
                 console.log('\n🛑  Skipping version update.');
                 return;
             default:
-                console.log('\n❌  Invalid option, no version update.');
+                if (/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(updateChoice.trim())) {
+                    newVersion = updateChoice.trim();
+                    break;
+                }
+                console.log('\n❌  Invalid option or version, no version update.');
+                process.exitCode = 1;
                 return;
         }
 
         // Update the version in both plugin.json and package.json
         pluginData.version = newVersion;
         packageData.version = newVersion;
+        if (packageLockData) {
+            packageLockData.version = newVersion;
+            if (packageLockData.packages?.['']) packageLockData.packages[''].version = newVersion;
+        }
 
         // Write the updated JSON back to files
         await writeJsonFile(pluginJsonPath, pluginData);
         await writeJsonFile(packageJsonPath, packageData);
+        if (packageLockData) await writeJsonFile(packageLockPath, packageLockData);
 
         console.log(`\n✅  Version successfully updated to: \x1b[32m${newVersion}\x1b[0m\n`);
 
