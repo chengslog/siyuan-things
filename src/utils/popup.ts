@@ -6,34 +6,58 @@
  * 用法：<div class="task-card__dropdown" use:smartPosition>
  */
 export function smartPosition(node: HTMLElement) {
-  requestAnimationFrame(() => {
-    const trigger = node.parentElement;
-    if (!trigger) return;
+  const trigger = node.parentElement;
+  if (!trigger) return {};
 
-    const triggerRect = trigger.getBoundingClientRect();
-    const dropdownHeight = node.offsetHeight;
-    const dropdownWidth = node.offsetWidth;
-    const margin = 4;
-    const viewportH = window.innerHeight;
-    const viewportW = window.innerWidth;
+  const alignRight = node.classList.contains('task-card__dropdown--right');
+  const margin = 6;
+  let frame = 0;
 
-    // 垂直：下方空间不足且上方更宽裕则向上翻
-    const spaceBelow = viewportH - triggerRect.bottom;
-    const spaceAbove = triggerRect.top;
-    if (spaceBelow < dropdownHeight + margin && spaceAbove > spaceBelow) {
-      node.style.top = 'auto';
-      node.style.bottom = '100%';
-      node.style.marginTop = '0';
-      node.style.marginBottom = margin + 'px';
-    }
+  // Escape card/list overflow clipping while preserving the mounted Svelte component.
+  document.body.appendChild(node);
+  node.style.position = 'fixed';
+  node.style.zIndex = '100000';
+  node.style.margin = '0';
 
-    // 水平：溢出右边界则切换为右对齐
-    const leftEdge = triggerRect.left;
-    if (leftEdge + dropdownWidth > viewportW) {
-      node.style.left = 'auto';
-      node.style.right = '0';
-    }
-  });
+  function place() {
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => {
+      if (!node.isConnected || !trigger.isConnected) return;
+      node.style.left = '0';
+      node.style.right = 'auto';
+      node.style.top = '0';
+      node.style.bottom = 'auto';
 
-  return {};
+      const triggerRect = trigger.getBoundingClientRect();
+      const popupRect = node.getBoundingClientRect();
+      const viewportWidth = document.documentElement.clientWidth;
+      const viewportHeight = document.documentElement.clientHeight;
+
+      let left = alignRight ? triggerRect.right - popupRect.width : triggerRect.left;
+      left = Math.max(margin, Math.min(left, viewportWidth - popupRect.width - margin));
+
+      const spaceBelow = viewportHeight - triggerRect.bottom;
+      const spaceAbove = triggerRect.top;
+      let top = triggerRect.bottom + margin;
+      if (spaceBelow < popupRect.height + margin && spaceAbove > spaceBelow) {
+        top = triggerRect.top - popupRect.height - margin;
+      }
+      top = Math.max(margin, Math.min(top, viewportHeight - popupRect.height - margin));
+
+      node.style.left = `${Math.round(left)}px`;
+      node.style.top = `${Math.round(top)}px`;
+    });
+  }
+
+  place();
+  window.addEventListener('resize', place);
+  document.addEventListener('scroll', place, true);
+
+  return {
+    destroy() {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', place);
+      document.removeEventListener('scroll', place, true);
+    },
+  };
 }

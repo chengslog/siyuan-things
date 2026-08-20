@@ -6,6 +6,7 @@
   import type { AIConfig } from "@/services/aiParser";
   import Icon from "@/icons/Icon.svelte";
   import AIChatCore from "./AIChatCore.svelte";
+  import { aiIsSending, startNewAiChat } from "@/stores/aiChat";
 
   export let store: StoreManager;
   export let currentView: ViewType = "inbox";
@@ -21,6 +22,7 @@
   const dispatch = createEventDispatcher();
 
   function handleClose() {
+    if ($aiIsSending) return;
     dispatch("cancel");
   }
 </script>
@@ -38,7 +40,8 @@
         <div class="ai-window__title">AI 任务整理</div>
         <div class="ai-window__subtitle">自然语言 → 结构化任务卡片</div>
       </div>
-      <button class="ai-window__close" on:click={handleClose} title="关闭">×</button>
+      <button class="ai-window__new-chat" disabled={$aiIsSending} on:click={startNewAiChat} title="开始新会话">新会话</button>
+      <button class="ai-window__close" disabled={$aiIsSending} on:click={handleClose} title={$aiIsSending ? '请等待本次整理完成' : '关闭'}>×</button>
     </div>
 
     <!-- 内容 + 底部输入栏（由 AIChatCore 内部管理滚动与固定输入栏） -->
@@ -49,6 +52,7 @@
         {currentViewId}
         {presetStartDate}
         {aiConfig}
+        on:navigate={() => dispatch('cancel')}
       />
     </div>
   </div>
@@ -65,14 +69,14 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 25px 30px;
+    padding: 10px 30px;
   }
 
   .ai-window {
     display: flex;
     flex-direction: column;
-    width: min(720px, 100%);
-    height: min(780px, 100%);
+    width: 100%;
+    height: min(920px, 100%);
     background: #f6f7f9;
     border-radius: 20px;
     box-shadow: 0 24px 65px rgba(30, 43, 62, 0.2);
@@ -135,6 +139,20 @@
         background: rgba(0, 0, 0, 0.05);
         color: var(--b3-theme-on-surface);
       }
+    }
+
+    &__new-chat {
+      padding: 5px 9px;
+      border: 1px solid var(--b3-border-color);
+      border-radius: 7px;
+      background: var(--b3-theme-background);
+      color: var(--b3-theme-on-surface);
+      font-size: 11px;
+      cursor: pointer;
+      flex-shrink: 0;
+
+      &:hover { background: var(--b3-theme-surface-lighter); }
+      &:disabled { opacity: 0.5; cursor: default; }
     }
 
     &__body {

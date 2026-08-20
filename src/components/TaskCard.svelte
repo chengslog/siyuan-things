@@ -40,8 +40,18 @@
   // 创建卡显式携带的目标视图上下文（拖 + 切视图与挂载有时序差，优先于 currentView）
   export let presetView: string | undefined = undefined;
   export let presetViewId: string | undefined = undefined;
-  // AI 预览模式：禁用失焦自动保存和回车自动创建，由外部控制保存时机
-  export let noAutoSave: boolean = false;
+  // 创建触发方式分开控制：手动新建默认都启用，AI 结果只保留显式按钮。
+  export let createOnBlur: boolean = true;
+  export let createOnEnter: boolean = true;
+  // 新建卡片工具栏中的显式提交按钮（AI 整理结果使用）
+  export let showCreateButton: boolean = false;
+  export let createButtonLabel: string = "添加";
+  // AI 预览卡允许像任务列表卡片一样收缩；普通手动新建卡保持原有固定展开行为。
+  export let collapsibleCreate: boolean = false;
+  // 已添加的 AI 结果复用任务卡收缩态，仅展示摘要，不允许再次展开或编辑。
+  export let collapsedPreview: boolean = false;
+  export let collapsedStatusLabel: string = "";
+  export let aiPreview: boolean = false;
   // AI 预填充数据：create 模式下用这些数据初始化本地状态
   export let prefilledData: {
     title?: string;
@@ -49,8 +59,13 @@
     checklist?: string[];
     startDate?: number;
     deadline?: number;
+    someday?: boolean;
     tags?: string[];
     priority?: string;
+    projectId?: string;
+    areaId?: string;
+    headingId?: string;
+    unresolved?: string[];
   } | undefined = undefined;
 
   const dispatch = createEventDispatcher();
@@ -62,23 +77,41 @@
   let notes = prefilledData?.notes || "";
   let startDate: number | undefined = prefilledData?.startDate;
   let deadline: number | undefined = prefilledData?.deadline;
-  let someday: boolean = false;
+  let someday: boolean = prefilledData?.someday || false;
   let selectedTags: string[] = prefilledData?.tags || [];
-  let projectId: string | undefined = undefined;
-  let areaId: string | undefined = undefined;
-  let headingId: string | undefined = undefined;
+  let projectId: string | undefined = prefilledData?.projectId;
+  let areaId: string | undefined = prefilledData?.areaId;
+  let headingId: string | undefined = prefilledData?.headingId;
   let priority: Priority = (prefilledData?.priority as Priority) || 'none';
   let checklist: Array<{ id: string; title: string; completed: boolean }> = prefilledData?.checklist && prefilledData.checklist.length > 0
     ? prefilledData.checklist.map((t, i) => ({ id: `ck-${Date.now()}-${i}`, title: t, completed: false }))
     : [{ id: "empty", title: "", completed: false }];
 
+  // AI 卡片用此事件把用户直接编辑后的草稿同步回会话上下文。
+  $: if (mode === 'create' && prefilledData) {
+    dispatch('draftchange', {
+      draft: {
+        title,
+        notes,
+        checklist: checklist.filter(i => i.title.trim()).map(i => i.title.trim()),
+        startDate,
+        deadline,
+        someday,
+        tags: selectedTags,
+        priority,
+        projectId,
+        areaId,
+        headingId,
+      }
+    });
+  }
+
   // UI 状态
-  let expanded = mode === 'create'; // 新建模式默认展开
+  let expanded = mode === 'create' && !collapsedPreview; // 普通新建默认展开；已添加预览固定收缩
   let showDatePicker = false;
   let showDeadlinePicker = false;
   let showTagPicker = false;
   let showProjectAreaPicker = false;
-  let showPriorityPicker = false;
   let showChecklist = true;
   let isInteracting = false;
   let isMovingOut = false;
@@ -111,6 +144,7 @@
   onMount(() => {
     // 监听其他卡片的展开事件，实现卡片互斥（展开一个时其他自动收起）
     window.addEventListener('card-expanded', handleCardExpanded as EventListener);
+    document.addEventListener('mousedown', handleDropdownOutside, true);
     if (mode === 'edit' && task) {
       title = task.title;
       notes = task.notes || "";
@@ -153,12 +187,16 @@
       // 项目视图：继承插入落点的标题分组（此前缺这步，分组下新建的任务全掉进未分组）
       if (destView === 'project' && presetHeadingId) headingId = presetHeadingId;
       if (destView === 'someday') someday = true;
-      setTimeout(() => titleInput?.focus(), 100);
+      if (!collapsedPreview) setTimeout(() => titleInput?.focus(), 100);
+      if (collapsibleCreate) {
+        setTimeout(() => document.addEventListener('click', handleOutsideClick), 10);
+      }
     }
   });
 
   onDestroy(() => {
     window.removeEventListener('card-expanded', handleCardExpanded as EventListener);
+    document.removeEventListener('mousedown', handleDropdownOutside, true);
     if (mode === 'edit' && task) {
       unregisterItem(task.id);
       // 组件销毁前保存待处理的变更（如切换视图时）
@@ -351,19 +389,19 @@
 
   // 卡片点击
   function handleCardClick(e?: Event) {
-    if (mode === 'create') return; // 新建模式不需要展开/折叠
+    if (collapsedPreview) return;
+    if (mode === 'create' && !collapsibleCreate) return;
 
     const target = e?.target as HTMLElement | undefined;
 
     // 弹窗打开时：卡片内任何点击（弹窗自身除外，其内部已 stopPropagation）先关弹窗，
     // 不触发展开/折叠。修复"打开日期选择器后点卡片空白处弹窗不消失"。
-    const hasOpenDropdown = showDatePicker || showDeadlinePicker || showTagPicker || showProjectAreaPicker || showPriorityPicker;
+    const hasOpenDropdown = showDatePicker || showDeadlinePicker || showTagPicker || showProjectAreaPicker;
     if (hasOpenDropdown && (!target || !target.closest('.task-card__dropdown'))) {
       showDatePicker = false;
       showDeadlinePicker = false;
       showTagPicker = false;
       showProjectAreaPicker = false;
-      showPriorityPicker = false;
       return;
     }
 
@@ -380,9 +418,21 @@
     }
 
     expanded = !expanded;
-    if (expanded && task) {
+    if (expanded && mode === 'create' && collapsibleCreate) {
+      setTimeout(() => document.addEventListener('click', handleOutsideClick), 10);
+    } else if (expanded && task) {
       title = task.title;
       notes = task.notes || "";
+      // 主任务创建会先触发列表渲染，检查项随后才逐条写入。
+      // 每次展开都从 store 重载，避免首次挂载时读到空清单后一直不更新。
+      const subTasks = store.tasks.getSubTasks(task.id);
+      localChecklist = subTasks.length > 0
+        ? subTasks.map(t => ({
+            id: t.id,
+            title: t.title,
+            completed: t.status === 'done'
+          }))
+        : [{ id: "empty", title: "", completed: false }];
       // 重新加载归属状态，防止外部更新后本地状态不同步
       projectId = task.projectId;
       areaId = task.areaId;
@@ -399,12 +449,17 @@
   // 点击外部关闭
   function handleOutsideClick(e: MouseEvent) {
     const target = e.target as HTMLElement;
-    const card = target.closest('.task-card');
-    if (!card || (task && card.dataset.taskId !== task.id)) {
+    if (!cardEl?.contains(target)) {
       showDatePicker = false;
       showDeadlinePicker = false;
       showTagPicker = false;
-      saveAndCollapse();
+      if (mode === 'create' && collapsibleCreate) {
+        expanded = false;
+        notesExpanded = false;
+        document.removeEventListener('click', handleOutsideClick);
+      } else {
+        saveAndCollapse();
+      }
     }
   }
 
@@ -657,34 +712,16 @@
     }
   }
 
-  // ========== 优先级 ==========
-  function priorityLabel(p?: Priority): string {
-    if (p === 'high') return '高';
-    if (p === 'medium') return '中';
-    if (p === 'low') return '低';
-    return '';
-  }
-
-  function priorityColor(p?: Priority): string {
-    if (p === 'high') return '#dc2626';
-    if (p === 'medium') return '#f59e0b';
-    if (p === 'low') return '#6b7280';
-    return '';
-  }
-
-  function handlePriorityChange(e: CustomEvent) {
-    const p = e.detail.priority as Priority;
-    priority = p;
-    showPriorityPicker = false;
-  }
-
-  function clearPriority() {
-    priority = 'none';
-    showPriorityPicker = false;
-  }
-
-  function togglePriorityPicker() {
-    showPriorityPicker = !showPriorityPicker;
+  function handleDropdownOutside(e: MouseEvent) {
+    if (!showDatePicker && !showDeadlinePicker && !showTagPicker && !showProjectAreaPicker) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('.task-card__dropdown')) return;
+    // 入口按钮自身负责切换，捕获阶段不要抢先关闭。
+    if (cardEl?.contains(target) && (
+      target.closest('.task-card__tool-btn') ||
+      target.closest('.task-card__tag-btn') ||
+      target.closest('.task-card__tag-remove')
+    )) return;
     showDatePicker = false;
     showDeadlinePicker = false;
     showTagPicker = false;
@@ -807,13 +844,15 @@
 
   // 拖拽处理
   function handleMouseDown(e: MouseEvent) {
-    if (mode === 'create') return;
+    if (collapsedPreview) return;
+    if (mode === 'create' && !collapsibleCreate) return;
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
     if (target.closest('button') || target.closest('input') || target.closest('textarea')) return;
 
     pointerDownHere = true;
     isClick = true;
+    if (mode === 'create') return;
     dragTimer = setTimeout(() => {
       if (isClick) {
         isClick = false;
@@ -823,7 +862,8 @@
   }
 
   function handleMouseUp(e: MouseEvent) {
-    if (mode === 'create') return;
+    if (collapsedPreview) return;
+    if (mode === 'create' && !collapsibleCreate) return;
     if (dragTimer) {
       clearTimeout(dragTimer);
       dragTimer = null;
@@ -935,7 +975,7 @@
     if (e.key === "Enter" && (e.isComposing || e.keyCode === 229)) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (noAutoSave) return;
+      if (!createOnEnter) return;
       if (mode === 'create') {
         handleCreate();
       } else {
@@ -955,7 +995,7 @@
 
   // 焦点丢失
   function handleBlur(e: FocusEvent) {
-    if (mode !== 'create' || isInteracting || noAutoSave) return;
+    if (mode !== 'create' || isInteracting || !createOnBlur) return;
     setTimeout(() => {
       const activeElement = document.activeElement;
       if (cardEl && !cardEl.contains(activeElement)) {
@@ -974,6 +1014,8 @@
 <div
   class="task-card"
   class:is-create={mode === 'create'}
+  class:is-collapsible-create={mode === 'create' && collapsibleCreate}
+  class:is-collapsed-preview={collapsedPreview}
   class:is-edit={mode === 'edit'}
   class:is-done={task?.status === "done"}
   class:is-expanded={expanded}
@@ -1012,7 +1054,13 @@
         </button>
       {/if}
     {:else}
-      <span class="task-card__check-placeholder"></span>
+      {#if aiPreview}
+        <span class="task-card__ai-marker" title="AI 整理结果">
+          <Icon name="iconThingsSparkles" size={12} />
+        </span>
+      {:else}
+        <span class="task-card__check-placeholder"></span>
+      {/if}
     {/if}
 
     <!-- 日期/图标（有日期或今天图标时显示，无日期不渲染） -->
@@ -1029,7 +1077,7 @@
     {/if}
 
     <!-- 标题 -->
-    {#if mode === 'create' || expanded}
+    {#if expanded}
       <textarea
         bind:this={titleInput}
         class="task-card__title-input"
@@ -1044,7 +1092,7 @@
     {:else}
       <div class="task-card__info">
         <div class="task-card__title" class:is-done={task?.status === "done" || pendingDone}>
-          {task?.title}
+          {mode === 'create' ? title : task?.title}
         </div>
         {#if subtitleDisplay && !scheduleMode}
           <span class="task-card__subtitle">
@@ -1063,16 +1111,16 @@
               <span>{formatTime(resolvedStartDate)}</span>
             </span>
           {/if}
-          {#if task?.deadline}
-            <span class="task-card__aux-item task-card__aux-deadline" class:is-overdue={isDeadlineOverdue} title={hasTimeOfDay(task.deadline) ? `截止提醒 ${formatTime(task.deadline)}（到点通知）` : "截止日期"}>
+          {#if resolvedDeadline}
+            <span class="task-card__aux-item task-card__aux-deadline" class:is-overdue={isDeadlineOverdue} title={hasTimeOfDay(resolvedDeadline) ? `截止提醒 ${formatTime(resolvedDeadline)}（到点通知）` : "截止日期"}>
               <Icon name="iconThingsFlag" size={12} />
-              <span>{formatRelativeDate(task.deadline)}{hasTimeOfDay(task.deadline) ? ` ${formatTime(task.deadline)}` : ""}</span>
+              <span>{formatRelativeDate(resolvedDeadline)}{hasTimeOfDay(resolvedDeadline) ? ` ${formatTime(resolvedDeadline)}` : ""}</span>
             </span>
           {/if}
           {#if checklistCount > 0}
             <span class="task-card__aux-item" title="检查清单"><Icon name="iconThingsChecklist" size={12} />{checklistCount}</span>
           {/if}
-          {#if task?.notes}
+          {#if mode === 'create' ? notes.trim() : task?.notes}
             <span class="task-card__aux-item" title="备注"><Icon name="iconThingsNote" size={12} /></span>
           {/if}
           {#if selectedTags.length > 0}
@@ -1086,11 +1134,19 @@
         </div>
       {/if}
     {/if}
+    {#if collapsedPreview && collapsedStatusLabel}
+      <span class="task-card__collapsed-status">{collapsedStatusLabel}</span>
+    {/if}
   </div>
 
   <!-- 展开详情 -->
   {#if expanded}
     <div class="task-card__details" on:click|stopPropagation transition:fade={{ duration: 150 }}>
+      {#if mode === 'create' && prefilledData?.unresolved?.length}
+        <div class="task-card__ai-warning">
+          未找到{prefilledData.unresolved.join('、')}，添加前可手动选择已有项。
+        </div>
+      {/if}
       <!-- 备注：展示态（渲染 Markdown + 编辑按钮）↔ 编辑态（textarea + 完成按钮） -->
       {#if mode === 'edit'}
         {#if editingNotes}
@@ -1170,7 +1226,7 @@
               {#if showDatePicker}
                 <div class="task-card__dropdown" use:smartPosition>
                   <DatePicker
-                    timestamp={mode === 'edit' && task ? task.startDate : startDate}
+                    timestamp={startDate}
                     on:change={handleDateChange}
                     on:close={() => showDatePicker = false}
                   />
@@ -1188,7 +1244,7 @@
           {/if}
 
           <!-- 标签 -->
-          {#if mode === 'edit' && tags.length > 0}
+          {#if tags.length > 0}
             <div class="task-card__tag-item">
               <button
                 class="task-card__tag-btn"
@@ -1229,7 +1285,7 @@
               {#if showDeadlinePicker}
                 <div class="task-card__dropdown" use:smartPosition>
                   <DeadlinePicker
-                    timestamp={mode === 'edit' && task ? task.deadline : deadline}
+                    timestamp={deadline}
                     on:change={handleDeadlineChange}
                     on:close={() => showDeadlinePicker = false}
                   />
@@ -1272,39 +1328,6 @@
             </div>
           {/if}
 
-          <!-- 优先级（已设置时） -->
-          {#if priority !== 'none'}
-            <div class="task-card__tag-item">
-              <button
-                class="task-card__tag-btn"
-                on:click|stopPropagation={togglePriorityPicker}
-              >
-                <Icon name="iconThingsFlag" size={12} color={priorityColor(priority)} />
-                <span style="color: {priorityColor(priority)}">{priorityLabel(priority)}</span>
-              </button>
-              <button class="task-card__tag-remove" on:click|stopPropagation={clearPriority}>×</button>
-
-              {#if showPriorityPicker}
-                <div class="task-card__dropdown task-card__priority-dropdown" use:smartPosition>
-                  <button class="task-card__priority-option" class:is-active={priority === 'high'} on:click|stopPropagation={() => { priority = 'high'; showPriorityPicker = false; }}>
-                    <Icon name="iconThingsFlag" size={12} color="#dc2626" />
-                    <span>高</span>
-                  </button>
-                  <button class="task-card__priority-option" class:is-active={priority === 'medium'} on:click|stopPropagation={() => { priority = 'medium'; showPriorityPicker = false; }}>
-                    <Icon name="iconThingsFlag" size={12} color="#f59e0b" />
-                    <span>中</span>
-                  </button>
-                  <button class="task-card__priority-option" class:is-active={priority === 'low'} on:click|stopPropagation={() => { priority = 'low'; showPriorityPicker = false; }}>
-                    <Icon name="iconThingsFlag" size={12} color="#6b7280" />
-                    <span>低</span>
-                  </button>
-                  <button class="task-card__priority-option" class:is-active={priority === 'none'} on:click|stopPropagation={() => { priority = 'none'; showPriorityPicker = false; }}>
-                    <span>无优先级</span>
-                  </button>
-                </div>
-              {/if}
-            </div>
-          {/if}
         </div>
 
         <!-- 右侧：功能按钮 -->
@@ -1323,7 +1346,7 @@
               {#if showDatePicker}
                 <div class="task-card__dropdown task-card__dropdown--right" use:smartPosition>
                   <DatePicker
-                    timestamp={mode === 'edit' && task ? task.startDate : startDate}
+                    timestamp={startDate}
                     on:change={handleDateChange}
                     on:close={() => showDatePicker = false}
                   />
@@ -1346,7 +1369,7 @@
               {#if showDeadlinePicker}
                 <div class="task-card__dropdown task-card__dropdown--right" use:smartPosition>
                   <DeadlinePicker
-                    timestamp={mode === 'edit' && task ? task.deadline : deadline}
+                    timestamp={deadline}
                     on:change={handleDeadlineChange}
                     on:close={() => showDeadlinePicker = false}
                   />
@@ -1391,7 +1414,7 @@
                 </div>
               {/if}
             </div>
-          {:else if mode === 'create'}
+          {:else if mode === 'create' && selectedTags.length === 0}
             <div class="task-card__action-group">
               <button
                 class="task-card__tool-btn"
@@ -1409,36 +1432,6 @@
                     selectedTags={selectedTags}
                     on:change={handleTagChange}
                   />
-                </div>
-              {/if}
-            </div>
-          {/if}
-
-          <!-- 优先级（未设置时） -->
-          {#if priority === 'none'}
-            <div class="task-card__action-group">
-              <button
-                class="task-card__tool-btn"
-                title="设置优先级"
-                on:click|stopPropagation={togglePriorityPicker}
-              >
-                <Icon name="iconThingsFlag" size={16} />
-              </button>
-
-              {#if showPriorityPicker}
-                <div class="task-card__dropdown task-card__dropdown--right task-card__priority-dropdown" use:smartPosition>
-                  <button class="task-card__priority-option" class:is-active={priority === 'high'} on:click|stopPropagation={() => { priority = 'high'; showPriorityPicker = false; }}>
-                    <Icon name="iconThingsFlag" size={12} color="#dc2626" />
-                    <span>高</span>
-                  </button>
-                  <button class="task-card__priority-option" class:is-active={priority === 'medium'} on:click|stopPropagation={() => { priority = 'medium'; showPriorityPicker = false; }}>
-                    <Icon name="iconThingsFlag" size={12} color="#f59e0b" />
-                    <span>中</span>
-                  </button>
-                  <button class="task-card__priority-option" class:is-active={priority === 'low'} on:click|stopPropagation={() => { priority = 'low'; showPriorityPicker = false; }}>
-                    <Icon name="iconThingsFlag" size={12} color="#6b7280" />
-                    <span>低</span>
-                  </button>
                 </div>
               {/if}
             </div>
@@ -1475,6 +1468,17 @@
               <Icon name="iconThingsX" size={14} />
             </button>
           {/if}
+
+          {#if mode === 'create' && showCreateButton}
+            <button
+              class="task-card__create-btn"
+              disabled={isCreating}
+              on:mousedown|preventDefault|stopPropagation
+              on:click|stopPropagation={handleCreate}
+            >
+              {isCreating ? "添加中…" : createButtonLabel}
+            </button>
+          {/if}
         </div>
 
       </div>
@@ -1506,6 +1510,36 @@
       cursor: default;
       position: relative;
       z-index: 10;
+    }
+
+    &.is-collapsible-create:not(.is-expanded) {
+      padding: 10px 12px;
+      margin: 4px 8px;
+      border-radius: 10px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.07);
+      cursor: pointer;
+    }
+
+    &.is-collapsed-preview {
+      padding: 10px 12px;
+      margin: 4px 8px;
+      border-radius: 10px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+      opacity: 0.58;
+      filter: grayscale(0.85);
+      pointer-events: none;
+
+      .task-card__title {
+        text-decoration: line-through;
+      }
+    }
+
+    &__collapsed-status {
+      flex-shrink: 0;
+      margin-top: 2px;
+      font-size: 11px;
+      color: #7b8490;
+      white-space: nowrap;
     }
 
     &.is-done {
@@ -1707,6 +1741,23 @@
       margin-top: 2px;
       border: 1.5px solid #d1d5db;
       border-radius: 5px;
+    }
+
+    &:global(.is-ai-focused) {
+      animation: task-ai-focus 1.8s ease-out;
+    }
+
+    &__ai-marker {
+      flex-shrink: 0;
+      width: 18px;
+      height: 18px;
+      margin-top: 2px;
+      border-radius: 6px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(74, 138, 244, 0.11);
+      color: #4a8af4;
     }
 
     &__title {
@@ -2026,6 +2077,33 @@
       flex-shrink: 0;
     }
 
+    &__ai-warning {
+      margin-bottom: 8px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      background: var(--b3-card-warning-background, #fff7e6);
+      color: var(--b3-card-warning-color, #8a5a00);
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    &__create-btn {
+      min-width: 56px;
+      height: 28px;
+      margin-left: 4px;
+      padding: 0 12px;
+      border: 0;
+      border-radius: 7px;
+      background: var(--b3-theme-primary);
+      color: var(--b3-theme-on-primary);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+
+      &:hover { filter: brightness(0.94); }
+      &:disabled { opacity: 0.6; cursor: default; }
+    }
+
     &__tag-item {
       display: flex;
       align-items: center;
@@ -2158,37 +2236,10 @@
       }
     }
 
-    &__priority-dropdown {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      padding: 4px;
-    }
+  }
 
-    &__priority-option {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      width: 100%;
-      padding: 6px 10px;
-      border: none;
-      background: transparent;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 12px;
-      color: var(--b3-theme-on-surface, #374151);
-      transition: background 0.15s;
-      white-space: nowrap;
-
-      &:hover {
-        background: var(--b3-theme-surface-light, #f3f4f6);
-      }
-
-      &.is-active {
-        background: var(--b3-theme-primary-light, rgba(59, 127, 240, 0.1));
-        color: var(--b3-theme-primary, #3b7ff0);
-        font-weight: 500;
-      }
-    }
+  @keyframes task-ai-focus {
+    0%, 35% { background: rgba(59, 127, 240, 0.18); box-shadow: 0 0 0 3px rgba(59, 127, 240, 0.16); }
+    100% { background: transparent; box-shadow: none; }
   }
 </style>

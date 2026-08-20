@@ -27,11 +27,11 @@
 - **三态**：`full`（TaskList + AI 面板两列）/ `button`（面板退出，右下角 ✧＋ FAB）/ `secondary`（任务列表隐藏，侧边栏为一级）
 - **动态阈值**：任务列表最小宽 = **页面宽 2/5**、AI 面板最小宽 = **页面宽 1/5**（随窗口缩放动态）；FULL 条件 = 容器 ≥ 2/5 + 1/5 + 分隔条。**挤占优先级**：网格里 TaskList 是 1fr 先吸收收缩 → 到 2/5 后由面板宽度钳制保证不再缩 → 面板缩到 1/5 → FULL 条件破，面板消失变按钮
 - **分隔条 2**（TaskList↔AI 面板）：6px 可拖，钳制 [1/5 页面宽, 容器-2/5-分隔条]，松手持久化 `aiPanelWidth` 到设置，双击未做（可选）
-- **二级页面**：容器 < 页面 2/5 时任务列表隐藏（占位提示"请在左侧停靠栏选择视图"），点侧边栏导航（things-navigate）展示任务列表 + 顶部「← 收起」返回条；进入/离开边沿触发 `things-secondary-enter/leave` 窗口事件
-- **侧边栏扩宽覆盖任务区**（index.ts）：二级模式时修改思源 `uiLayout.left.data` 中 things_nav 面板的 `size.width`（原宽 + 任务区宽）+ `leftDock.setSize()` + `saveLayout()`；点导航/离开二级恢复原宽；onunload 兜底恢复。⚠️ 思源注册的 dock type = **插件名+类型**（`siyuan-thingsthings_nav`），不是注册时写的 `things_nav`（查 conf/conf.json 实锤）
+- **二级页面**：容器 < 页面 2/5 时任务列表隐藏（占位提示"请在左侧停靠栏选择视图"），点侧边栏导航（things-navigate）展示任务列表 + 顶部「← 收起」返回条
+- ~~侧边栏扩宽覆盖任务区~~ **已取消**（2026-08-19）：该功能通过修改思源 `uiLayout.left` + `setSize()` + `saveLayout()` 程序化改 dock 宽度，导致思源整体卡死；已整体移除（`expandDockToCoverTasks`/`restoreDockWidth` 方法、`things-secondary-enter/leave` 事件、`dockWidthSaved` 字段、onunload 兜底恢复）。二级模式只保留任务列表的收起/展示 UI，不再触碰思源 dock 布局
 
 ### 4. 其他
-- index.ts：dock 面板保持 renderDock 原样；监听 `things-open-ai`（弹浮窗）/`things-secondary-enter/leave`（扩宽/恢复 dock）
+- index.ts：dock 面板保持 renderDock 原样；监听 `things-open-ai`（弹浮窗）
 - 设置项：`aiMode`（复用思源/自定义）+ `aiApiEndpoint`/`aiApiKey`/`aiModel`（自定义模式展开显示）；`openSetting` 手绘对话框已支持多配置项渲染
 - 图标：`iconThingsSparkles`/`iconThingsSend` 已入 sprite
 
@@ -42,7 +42,6 @@
 4. **思源 dock tab type = 插件名 + 注册类型**：`addDock({ type: "things_nav" })` 实际注册为 `siyuan-thingsthings_nav`，匹配配置时用 `this.name + "things_nav"`
 5. **forwardProxy 会触发思源全局 requesting 进度条** → AI 调用一律原生 fetch
 6. **思源没有暴露 AI 对话 API 给插件**（曾试 `/api/ai/chat`/`chatCompletion` 报错）：复用思源配置 = 读 `window.siyuan.config.ai.providers` 拿 apiKey/baseURL 后自己 fetch 供应商端点
-7. dock 面板宽度修改后必须 `setSize()` + `saveLayout()` 双调用才生效
 
 **建议的下一步**：
 - 验证/打磨：dock 扩宽在思源最大宽度限制下的表现、深色主题适配（AI 卡片硬编码 #f6f7f9/#e4e8ec）
@@ -400,7 +399,7 @@ interface Task {
 ```powershell
 cd d:\project\siyuan_Things_plugin
 npm run build
-xcopy /E /Y /I "dist\*" "D:\siyuan\data\plugins\siyuan-things\"
+xcopy /E /Y /I "dist\*" "C:\Users\Administrator\SiYuan\data\plugins\siyuan-things\"
 # 然后重启思源验证
 ```
 
@@ -445,3 +444,52 @@ xcopy /E /Y /I "dist\*" "D:\siyuan\data\plugins\siyuan-things\"
 - 检查清单（`Checklist.svelte`）：**新行只由回车创建**（`handleKeydown` + `pendingFocusId` 聚焦）；响应式块只保证"清单至少有一行输入行"。⚠️ 曾有"末项非空就自动追加空行"的逻辑，导致用户一打字就凭空多一行，已废除，不要加回来
 - SearchReplace 编辑 TaskCard 时注意函数完整性（曾因 original_text 截断损坏过 `saveAndCollapse`）
 - 每次改完：build → xcopy 部署 → 提醒用户重启思源验证
+
+---
+
+## 十一、2026-08-20 AI 任务助手与交互改造
+
+### 11.1 AI 会话与稳定性
+
+- AI 发送改为原生 `fetch` + SSE 流式读取，并对响应式 store 更新和自动滚动做节流，修复点击发送导致思源整体卡死。
+- AI 面板和浮窗共用 `src/stores/aiChat.ts` 会话状态；关闭浮窗保留会话，只有点击“新会话”才清空。
+- 支持连续追问、草稿修改、已入库任务修改，草稿通过 `clientId` 稳定匹配，避免修改时重复创建任务。
+- 思考过程只展示最新一轮，处理阶段使用完整动态进度；自动滚动保证连续修改后可见最新结果。
+- 新会话引导改为“创建 / 查询 / 分析整理”三类示例。
+
+### 11.2 AI 创建与任务卡
+
+- AI 结果复用 `TaskCard.svelte` 的完整功能，支持标题、备注、检查项、开始日期/时间、截止日期/时间、某天、项目、区域、项目标题分组和标签。
+- AI 卡片不使用勾选框，改为 AI 标识；点击卡片外部自动收缩，点击卡片展开，与普通任务卡交互一致。
+- AI 生成后不自动入库，需用户显式添加。已添加项使用收缩任务卡 + 删除线 + “已添加”状态，不提供误导性取消入库。
+- 手动创建的“根据当前页面自动设置日期/归属”与 AI 创建上下文已隔离；AI 日期只由 AI 结果决定。
+- 检查项以子任务存储，主列表统一过滤 `parentId`，重新打开任务时可恢复检查项。
+
+### 11.3 统一 AI Agent 查询、修改和删除
+
+- `src/services/aiParser.ts` 新增第一阶段 AI 意图路由：`create/search/update/delete/confirm/cancel/clarify/answer`。AI 负责理解用户意图，本地执行器只执行受限、结构化操作。
+- 查询使用结构化视图作用域，覆盖：所有任务、收件箱、今天、计划、随时、某天、日志、项目/区域/标签总览、具体项目/区域/标签及项目标题分组。
+- AI 获得当前页面上下文、最近 8 轮对话和上次结构化查询作用域。“这里”使用当前页面，“查看全部/继续”继承上次作用域。
+- 视图最终由本地按 `TaskList.svelte` 同源规则取数；“有几个/查看全部”的数量和列表不由模型自由生成，避免少报、多报和 20 条限制。
+- 查询结果整行可点击跳转并高亮真实任务；去掉了行尾“跳转”文字和重复数量说明。只有重复识别、原因、差异、总结、建议等查询保留 AI 文字分析。
+- 重复任务查询结合标题语义、备注、日期、项目、区域和检查项，给出重复分组、差异和保留建议。
+- 真实任务修改/删除先生成预览，必须明确确认才执行；包含字段白名单、稳定 ID、更新时间并发检查和操作 ID 幂等保护。
+- AI 删除父任务会同时处理检查项，并将快照按批次写入 `tasks-trash.json`；`TaskStore.restoreLastTrashedBatch()` 已预留恢复能力，目前尚无可视化回收站入口。
+
+### 11.4 任务卡弹层与布局
+
+- AI 浮窗增加高度，去除面板/对话区不必要的宽度上限，窗口放大时内容可继续扩展。
+- `src/utils/popup.ts` 的 `smartPosition` 将日期、截止日期、标签、项目/区域菜单移到 `document.body` 顶层渲染，避免被任务列表和 AI 滚动容器的 `overflow` 裁剪。
+- 弹层使用视口坐标，支持上下自动翻转、左右边界限制、滚动/窗口缩放跟随和点击外部关闭。
+
+### 11.5 构建与部署
+
+- 当前思源安装/工作空间位置：`C:\Users\Administrator\SiYuan`。
+- 插件部署目录：`C:\Users\Administrator\SiYuan\data\plugins\siyuan-things`。
+- 本轮已多次执行 `npm run build` 通过。已知警告为 Sass legacy API、无用 CSS/导出属性和 idb 混合导入，不影响构建。
+
+### 11.6 后续建议
+
+- AI 创建已能对简短说明做结构化整理，但提示词尚未明确“默认轻度润色、不改变原意、不凭空补充”的边界，建议下一轮加固。
+- `src/stores/aiChat.ts` 仍保留 `legacySendAiMessage` 旧流程，已无 UI 调用，稳定后可删除并缩减死代码。
+- 回收记录已落盘但暂无 UI；如需完整可恢复体验，应增加回收站列表、恢复指定批次和清理策略。

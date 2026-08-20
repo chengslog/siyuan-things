@@ -5,6 +5,7 @@
   import type { AIConfig } from "@/services/aiParser";
   import Icon from "@/icons/Icon.svelte";
   import AIChatCore from "./AIChatCore.svelte";
+  import { aiIsSending, startNewAiChat } from "@/stores/aiChat";
 
   export let store: StoreManager;
   export let currentView: ViewType = "inbox";
@@ -32,6 +33,9 @@
         <div class="ai-panel__title">AI 任务整理</div>
         <div class="ai-panel__subtitle">自然语言 → 结构化任务卡片</div>
       </div>
+      <button class="ai-panel__new-chat" disabled={$aiIsSending} on:click={startNewAiChat} title="开始新会话">
+        新会话
+      </button>
     </div>
 
     <!-- 内容 + 底部输入栏 -->
@@ -65,8 +69,7 @@
       display: flex;
       flex-direction: column;
       width: 100%;
-      max-width: 620px;
-      margin: 0 auto;
+      margin: 0;
     }
 
     &__header {
@@ -103,6 +106,20 @@
     &__subtitle {
       font-size: 10px;
       color: var(--b3-theme-on-surface-light);
+    }
+
+    &__new-chat {
+      padding: 5px 9px;
+      border: 1px solid var(--b3-border-color);
+      border-radius: 7px;
+      background: var(--b3-theme-background);
+      color: var(--b3-theme-on-surface);
+      font-size: 11px;
+      cursor: pointer;
+      flex-shrink: 0;
+
+      &:hover { background: var(--b3-theme-surface-lighter); }
+      &:disabled { opacity: 0.5; cursor: default; }
     }
 
     &__body {

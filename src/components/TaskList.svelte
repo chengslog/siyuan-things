@@ -188,7 +188,7 @@
         const projectIds = new Set(areaProjects.map((p) => p.id));
         return sortByAnytimeRules(store.tasks
           .getAll()
-          .filter((t) => t.status === "todo" && (t.areaId === viewId || (t.projectId && projectIds.has(t.projectId)))));
+          .filter((t) => t.status === "todo" && !t.parentId && (t.areaId === viewId || (t.projectId && projectIds.has(t.projectId)))));
       case "tag":
         return viewId ? sortByAnytimeRules(store.tasks.getTagTasks(viewId)) : [];
       default:

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher } from "svelte";
-  import type { Task, TaskStatus, Priority } from "@/types";
+  import type { Task, TaskStatus } from "@/types";
   import type { StoreManager } from "@/stores";
   import { formatDate, parseDate, toDateInputValue } from "@/utils/date";
 
@@ -13,7 +13,6 @@
   let title = task.title;
   let notes = task.notes;
   let status: TaskStatus = task.status;
-  let priority: Priority = task.priority;
   let startDate = toDateInputValue(task.startDate);
   let deadline = toDateInputValue(task.deadline);
   let projectId = task.projectId || "";
@@ -32,7 +31,6 @@
       title,
       notes,
       status,
-      priority,
       startDate: parseDate(startDate),
       deadline: parseDate(deadline),
       projectId: projectId || undefined,
@@ -77,26 +75,14 @@
 </script>
 
 <div class="task-detail">
-  <!-- 状态和优先级 -->
-  <div class="task-detail__row">
-    <div class="task-detail__field">
+  <!-- 状态 -->
+  <div class="task-detail__field">
       <label>状态</label>
       <select class="b3-select" bind:value={status}>
         <option value="todo">待办</option>
         <option value="done">已完成</option>
         <option value="canceled">已取消</option>
       </select>
-    </div>
-
-    <div class="task-detail__field">
-      <label>优先级</label>
-      <select class="b3-select" bind:value={priority}>
-        <option value="none">无</option>
-        <option value="low">低</option>
-        <option value="medium">中</option>
-        <option value="high">高</option>
-      </select>
-    </div>
   </div>
 
   <!-- 标题 -->

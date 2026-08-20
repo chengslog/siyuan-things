@@ -19,15 +19,15 @@ function pad2(n: number): string {
 /**
  * 开始日期胶囊：某天→与侧边栏同款图标；今晚(18:00)→蓝月；今天→黄星；
  * 明天→计划日历+"明天"；其他→计划日历+完整日期。
- * 今天视图特判：视图内的任务都是"日期已到"的（含逾期），胶囊一律显示今天（黄星），
- * 不再显示设置的那个日期。
+ * 今天视图特判：视图内任务统一以今天语义展示。
  */
 export function getStartDateDisplay(startDate?: number, someday?: boolean, view?: string): IconLabel | null {
   if (someday) return { icon: "iconThingsSomeday", text: "" };
   if (!startDate) return null;
 
   const d = new Date(startDate);
-  const isTonight = isTodayDate(startDate) && d.getHours() === 18 && d.getMinutes() === 0;
+  // “今晚”不应只认 18:00 整；AI 或用户指定 19:30、20:00 等晚间时刻时也显示月亮语义。
+  const isTonight = isTodayDate(startDate) && d.getHours() >= 18;
 
   if (isTonight) return { icon: "iconThingsMoonFilled", text: "", color: ICON_COLORS.tonight };
   if (isTodayDate(startDate)) return { icon: "iconThingsStarFilled", text: "", color: ICON_COLORS.today };

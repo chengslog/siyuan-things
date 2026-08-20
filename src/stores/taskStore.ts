@@ -15,6 +15,8 @@ function isRecurringMatchToday(_task: Task, _todayStartTs: number, _todayEndTs: 
 export class TaskStore extends BaseStore<Task> {
   private archiveFileName: string;
   private archivedItems: Map<string, Task> = new Map();
+  private trashFileName = 'tasks-trash.json';
+  private trashBatches: Array<{ id: string; deletedAt: number; tasks: Task[] }> = [];
 
   constructor(plugin: Plugin) {
     super(plugin, 'tasks.json');
@@ -27,6 +29,39 @@ export class TaskStore extends BaseStore<Task> {
   async load(): Promise<void> {
     await super.load();
     await this.loadArchive();
+    const trash = await this.plugin.loadData(this.trashFileName);
+    this.trashBatches = Array.isArray(trash) ? trash : [];
+  }
+
+  /** Move tasks (including checklist children) to a recoverable trash file. */
+  async trashTasks(ids: string[]): Promise<number> {
+    const selected = new Set(ids);
+    for (const task of this.items.values()) {
+      if (task.parentId && selected.has(task.parentId)) selected.add(task.id);
+    }
+    const tasks = Array.from(selected).map((id) => this.items.get(id)).filter((task): task is Task => !!task);
+    if (!tasks.length) return 0;
+    this.trashBatches.push({ id: `trash-${Date.now()}`, deletedAt: Date.now(), tasks });
+    for (const task of tasks) this.items.delete(task.id);
+    await Promise.all([
+      this.save(),
+      this.plugin.saveData(this.trashFileName, this.trashBatches),
+    ]);
+    this.emit({ type: 'delete', ids: tasks.map((task) => task.id) });
+    return tasks.filter((task) => !task.parentId).length;
+  }
+
+  /** Restore the most recently deleted AI/user batch. */
+  async restoreLastTrashedBatch(): Promise<number> {
+    const batch = this.trashBatches.pop();
+    if (!batch) return 0;
+    for (const task of batch.tasks) this.items.set(task.id, task);
+    await Promise.all([
+      this.save(),
+      this.plugin.saveData(this.trashFileName, this.trashBatches),
+    ]);
+    this.emit({ type: 'change', ids: batch.tasks.map((task) => task.id) });
+    return batch.tasks.filter((task) => !task.parentId).length;
   }
 
   /**
@@ -249,6 +284,7 @@ export class TaskStore extends BaseStore<Task> {
 
     return this.getAll().filter(t =>
       t.status === 'todo' &&
+      !t.parentId &&
       !t.someday &&
       (
         // 条件1：开始日期 <= 今天
@@ -272,6 +308,7 @@ export class TaskStore extends BaseStore<Task> {
 
     return this.getAll().filter(t =>
       t.status === 'todo' &&
+      !t.parentId &&
       !t.someday && (
         (t.startDate && t.startDate > todayEndTs) ||
         (t.deadline && t.deadline > todayEndTs && !t.startDate)
@@ -319,6 +356,7 @@ export class TaskStore extends BaseStore<Task> {
   getSomedayTasks(): Task[] {
     return this.getAll().filter(t =>
       t.status === 'todo' &&
+      !t.parentId &&
       t.someday === true
     );
   }
@@ -339,6 +377,7 @@ export class TaskStore extends BaseStore<Task> {
   getAreaTasks(areaId: string): Task[] {
     return this.getAll().filter(t =>
       t.status === 'todo' &&
+      !t.parentId &&
       (t.areaId === areaId || t.projectId) // 需要结合 project 的 areaId
     );
   }
@@ -349,6 +388,7 @@ export class TaskStore extends BaseStore<Task> {
   getTagTasks(tagId: string): Task[] {
     return this.getAll().filter(t =>
       t.status === 'todo' &&
+      !t.parentId &&
       t.tags.includes(tagId)
     );
   }
@@ -359,8 +399,10 @@ export class TaskStore extends BaseStore<Task> {
   search(query: string): Task[] {
     const q = query.toLowerCase();
     return this.getAll().filter(t =>
-      t.title.toLowerCase().includes(q) ||
-      t.notes.toLowerCase().includes(q)
+      !t.parentId && (
+        t.title.toLowerCase().includes(q) ||
+        t.notes.toLowerCase().includes(q)
+      )
     );
   }
 

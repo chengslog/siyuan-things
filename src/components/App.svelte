@@ -20,7 +20,7 @@
 
   // ========== 空间计算 ==========
   // ThingsAvailableWidth = 标签页容器实际宽度（思源两侧 dock 开合都会反映到这里）
-  const TASK_RATIO = 0.4;            // 任务列表最小宽度 = 整个页面宽度的 2/5
+  const TASK_RATIO = 0.25;           // 任务列表最小宽度 = 整个页面宽度的 1/4
   const AI_RATIO = 0.2;              // AI 面板最小宽度 = 整个页面宽度的 1/5
   const DIVIDER_WIDTH = 6;           // 分隔条 2 宽度
 
@@ -65,24 +65,8 @@
     navOpened = false;
   }
 
-  // 进入/离开二级模式（边沿触发）：通知插件扩宽/恢复停靠栏
-  let secondaryActive = false;
-  $: {
-    const target = aiState === 'secondary' && !navOpened;
-    if (target !== secondaryActive) {
-      secondaryActive = target;
-      if (target) {
-        window.dispatchEvent(new CustomEvent("things-secondary-enter", {
-          detail: { thingsWidth },
-        }));
-      } else {
-        window.dispatchEvent(new CustomEvent("things-secondary-leave"));
-      }
-    }
-  }
-
   // ========== 分隔条 2（TaskList ↔ AIChatCore）拖动 ==========
-  let aiPanelWidth = 520; // 默认，进入 FULL 时按设置/钳制值修正
+  let aiPanelWidth = 0; // 0 = 未初始化，首次进入 FULL 时按设置/平分初始化
   let dividerStartX = 0;
   let dividerStartWidth = 0;
   let isDraggingDivider = false;
@@ -118,6 +102,13 @@
     document.body.style.userSelect = '';
     document.removeEventListener('mousemove', onDividerMove);
     document.removeEventListener('mouseup', onDividerUp);
+    plugin?.settingUtils?.setAndSave?.('aiPanelWidth', Math.round(aiPanelWidth));
+  }
+
+  // 双击分隔条：任务列表和 AI 面板平分标签页宽度
+  function onDividerDblClick() {
+    if (aiState !== 'full') return;
+    aiPanelWidth = Math.round((thingsWidth - DIVIDER_WIDTH) / 2);
     plugin?.settingUtils?.setAndSave?.('aiPanelWidth', Math.round(aiPanelWidth));
   }
 
@@ -203,11 +194,15 @@
   }
   $: aiConfig = getAIConfig();
 
-  // 恢复上次拖出的 AI 面板宽度
+  // 首次进入 FULL 时初始化 AI 面板宽度：有保存值则用保存值，否则平分
   $: {
-    const saved = plugin?.settingUtils?.get?.('aiPanelWidth');
-    if (typeof saved === 'number' && saved > 0 && aiPanelWidth === 520) {
-      aiPanelWidth = saved;
+    if (aiPanelWidth === 0 && thingsWidth > 0) {
+      const saved = plugin?.settingUtils?.get?.('aiPanelWidth');
+      if (typeof saved === 'number' && saved > 0) {
+        aiPanelWidth = saved;
+      } else {
+        aiPanelWidth = Math.round((thingsWidth - DIVIDER_WIDTH) / 2);
+      }
     }
   }
 </script>
@@ -248,7 +243,8 @@
       class="app-shell__divider"
       class:is-dragging={isDraggingDivider}
       on:mousedown={onDividerDown}
-      title="拖动调整 AI 面板宽度"
+      on:dblclick={onDividerDblClick}
+      title="拖动调整 AI 面板宽度，双击平分"
     ></div>
   {/if}
 

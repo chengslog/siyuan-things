@@ -4,7 +4,6 @@ import {
   Dialog,
   openTab,
   getFrontend,
-  saveLayout,
 } from "siyuan";
 
 import "./index.scss";
@@ -26,7 +25,6 @@ export default class ThingsPlugin extends Plugin {
   private reminderService: ReminderService;
   private settingUtils: SettingUtils;
   private dockElement: HTMLElement | null = null;
-  private dockWidthSaved: number | null = null;
   private unsubTaskChange: (() => void) | null = null;
   private thingsApp: any = null; // 当前标签页的 Svelte 组件实例
   private thingsTab: any = null; // 当前标签页的 Tab 实例
@@ -96,7 +94,7 @@ export default class ThingsPlugin extends Plugin {
     this.addDock({
       config: {
         position: "LeftTop",
-        size: { width: 180, height: 0 },
+        size: { width: 232, height: 0 },
         icon: "iconThings",
         title: "Things",
         hotkey: "⌥⌘T",
@@ -131,15 +129,6 @@ export default class ThingsPlugin extends Plugin {
         this.openThingsTab(detail.view, detail.viewId);
         if (this.dockElement) this.setActive(this.dockElement, detail.view, detail.viewId);
       }
-    }) as EventListener);
-
-    // 二级模式（任务列表收起）→ 侧边栏扩宽覆盖任务区域；离开 → 恢复宽度
-    window.addEventListener("things-secondary-enter", ((e: CustomEvent) => {
-      const thingsWidth = e.detail?.thingsWidth || 0;
-      this.expandDockToCoverTasks(thingsWidth);
-    }) as EventListener);
-    window.addEventListener("things-secondary-leave", (() => {
-      this.restoreDockWidth();
     }) as EventListener);
 
     // 项目/区域变更 → 侧边栏实时刷新（改名、删除、完成、暂停都同步）
@@ -275,9 +264,6 @@ export default class ThingsPlugin extends Plugin {
   async onunload() {
     console.log("[Things] Plugin unloaded");
 
-    // 若停靠栏被扩宽过，恢复原宽度
-    this.restoreDockWidth();
-
     // 停止提醒服务
     this.reminderService?.stop();
 
@@ -295,78 +281,6 @@ export default class ThingsPlugin extends Plugin {
         (closeBtn as HTMLElement).click();
       }
     });
-  }
-
-  /**
-   * 二级模式：把左侧停靠栏扩宽，覆盖任务列表让出的区域
-   * 通过修改思源 uiLayout.left 中 things_nav 面板的尺寸配置实现
-   */
-  private expandDockToCoverTasks(thingsWidth: number) {
-    try {
-      const siyuan = (window as any).siyuan;
-      const layout = siyuan?.layout;
-      const uiLayoutLeft = siyuan?.config?.uiLayout?.left;
-      if (!layout?.leftDock || !uiLayoutLeft?.data) return;
-
-      const dock = layout.leftDock;
-      // 思源注册的 dock 面板 type = 插件名 + 类型（如 siyuan-thingsthings_nav）
-      const fullType = `${this.name}things_nav`;
-
-      // 确保停靠栏面板展开可见
-      try { dock.showDock?.(); } catch { /* 忽略 */ }
-      try { dock.toggleModel?.(fullType, true); } catch { /* 忽略 */ }
-
-      for (const row of uiLayoutLeft.data) {
-        for (const tab of row) {
-          if (tab.type === fullType || tab.type === 'things_nav') {
-            if (this.dockWidthSaved === null) {
-              this.dockWidthSaved = tab.size?.width || 200;
-            }
-            tab.size = {
-              ...(tab.size || {}),
-              width: (this.dockWidthSaved || 200) + Math.max(0, Math.round(thingsWidth)),
-            };
-          }
-        }
-      }
-      dock.setSize?.();
-      saveLayout(() => {});
-      console.log('[Things] Dock expanded to cover task area, type:', fullType);
-    } catch (e) {
-      console.warn('[Things] expand dock failed:', e);
-    }
-  }
-
-  /**
-   * 离开二级模式：恢复停靠栏原来的宽度
-   */
-  private restoreDockWidth() {
-    if (this.dockWidthSaved === null) return;
-    try {
-      const siyuan = (window as any).siyuan;
-      const layout = siyuan?.layout;
-      const uiLayoutLeft = siyuan?.config?.uiLayout?.left;
-      if (!layout?.leftDock || !uiLayoutLeft?.data) return;
-
-      const fullType = `${this.name}things_nav`;
-
-      for (const row of uiLayoutLeft.data) {
-        for (const tab of row) {
-          if (tab.type === fullType || tab.type === 'things_nav') {
-            tab.size = {
-              ...(tab.size || {}),
-              width: this.dockWidthSaved,
-            };
-          }
-        }
-      }
-      layout.leftDock.setSize?.();
-      saveLayout(() => {});
-      console.log('[Things] Dock width restored to', this.dockWidthSaved);
-    } catch (e) {
-      console.warn('[Things] restore dock failed:', e);
-    }
-    this.dockWidthSaved = null;
   }
 
   /**

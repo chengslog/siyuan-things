@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { createEventDispatcher, onMount, onDestroy, tick } from "svelte";
   import { showMessage } from "siyuan";
   import type { ViewType } from "@/types";
   import type { StoreManager } from "@/stores";
@@ -11,9 +11,11 @@
     aiThinkingLevel,
     aiIsSending,
     sendAiMessage,
-    adoptAiTask,
+    markAiTaskAdopted,
+    updateAiTaskDraft,
     parsedToPrefill,
-    adoptLabel,
+    confirmAiOperation,
+    cancelAiOperation,
   } from "@/stores/aiChat";
   import Icon from "@/icons/Icon.svelte";
   import TaskCard from "./TaskCard.svelte";
@@ -28,43 +30,46 @@
     apiKey: "",
     model: "gpt-4o-mini"
   };
+  const dispatch = createEventDispatcher();
 
   // ========== 本地 UI 状态（会话数据在共享 store 中） ==========
   let textareaEl: HTMLTextAreaElement;
   let contentEl: HTMLElement;
   let showModelPicker = false;
   let showThinkingPicker = false;
-  let lastRoundsLen = 0;
+  let closingTaskKeys = new Set<string>();
 
   function getAvailableModels(): Array<{ value: string; label: string }> {
-    if (aiConfig.mode === 'siyuan') {
-      try {
-        const siyuanConfig = (window as any).siyuan?.config;
-        if (siyuanConfig?.ai?.providers) {
-          const models: Array<{ value: string; label: string }> = [];
-          for (const provider of siyuanConfig.ai.providers) {
-            if (provider.enabled && provider.models) {
-              for (const model of provider.models) {
-                if (model.enabled) {
-                  models.push({
-                    value: model.name,
-                    label: model.displayName || model.name
-                  });
-                }
+    if (aiConfig.mode === 'custom') {
+      // 自定义模式：只用用户配置的模型
+      if (aiConfig.model) {
+        return [{ value: aiConfig.model, label: aiConfig.model }];
+      }
+      return [];
+    }
+    // siyuan 模式：从思源配置读取
+    try {
+      const siyuanConfig = (window as any).siyuan?.config;
+      if (siyuanConfig?.ai?.providers) {
+        const models: Array<{ value: string; label: string }> = [];
+        for (const provider of siyuanConfig.ai.providers) {
+          if (provider.enabled && provider.models) {
+            for (const model of provider.models) {
+              if (model.enabled) {
+                models.push({
+                  value: model.name,
+                  label: model.displayName || model.name
+                });
               }
             }
           }
-          if (models.length > 0) return models;
         }
-      } catch (e) {
-        console.error('[AIChatCore] Failed to get models:', e);
+        return models;
       }
+    } catch (e) {
+      console.error('[AIChatCore] Failed to get models:', e);
     }
-    return [
-      { value: 'gpt-4o-mini', label: 'GPT-4o Mini' },
-      { value: 'gpt-4o', label: 'GPT-4o' },
-      { value: 'gpt-4-turbo', label: 'GPT-4 Turbo' }
-    ];
+    return [];
   }
 
   // 注意：availableModels 必须声明在使用它的响应式语句之前（响应式按声明顺序执行）
@@ -72,6 +77,11 @@
 
   $: rounds = $aiRounds;
   $: hasAnyRound = $aiRounds.length > 0;
+  // 同一会话只展示最新的有效任务集；前面的用户输入和思考记录仍保留。
+  $: latestSearchRoundId = [...rounds].reverse().find(
+    (round) => round.mode === 'search'
+  )?.id;
+  $: latestRoundId = rounds[rounds.length - 1]?.id;
   $: inputText = $aiInputText;
   $: selectedModel = $aiSelectedModel || aiConfig.model;
   $: thinkingLevel = $aiThinkingLevel;
@@ -84,9 +94,9 @@
 
   // ========== 示例 prompts ==========
   const examplePrompts = [
-    '明天上午9点开产品评审会，需要准备竞品分析数据和用户反馈汇总，本周五截止',
-    '整理本周会议记录中的待办事项，重要事项优先',
-    '下周一前完成季度报告：收集各部门数据、整理财务数据、撰写总结',
+    '明天上午 9 点开产品评审会，帮我拆分准备事项',
+    '我今天有哪些任务？',
+    '帮我找出重复任务，并建议保留哪些',
   ];
 
   function fillExample(p: string) {
@@ -104,41 +114,160 @@
     textareaEl.style.height = Math.min(textareaEl.scrollHeight, 100) + 'px';
   }
 
-  // 滚动跟随最新内容（仅在发送中自动滚，避免打断用户回看）
-  $: if ($aiIsSending || rounds.length > lastRoundsLen) {
-    lastRoundsLen = rounds.length;
-    tick().then(() => {
-      if (contentEl) contentEl.scrollTop = contentEl.scrollHeight;
+  async function scrollToLatest(behavior: ScrollBehavior = 'smooth') {
+    await tick();
+    requestAnimationFrame(() => {
+      contentEl?.scrollTo({ top: contentEl.scrollHeight, behavior });
     });
   }
 
   // ========== 发送 ==========
   async function handleSend() {
     const text = $aiInputText.trim();
-    if (!text || $aiIsSending) return;
-    await sendAiMessage(text, aiConfig);
+    if (!text || $aiIsSending) {
+      return;
+    }
+    // 命令式地在发送开始/完成各滚动一次，不订阅流式 store，避免此前的响应式滚动死循环。
+    const sending = sendAiMessage(text, aiConfig, { view: currentView, viewId: currentViewId });
+    await scrollToLatest('smooth');
+    await sending;
+    await scrollToLatest('smooth');
     tick().then(() => {
       autoGrow();
       textareaEl?.focus();
     });
   }
 
-  // ========== 采纳 ==========
-  async function handleAdopt(round: any, index: number) {
-    await adoptAiTask(round, index, { currentView, currentViewId, presetStartDate });
+  // TaskCard 已按手动新建的完整流程保存，这里只更新 AI 会话展示状态。
+  function handleTaskCreated(round: any, index: number, e: CustomEvent) {
+    const key = `${round.id}:${index}`;
+    closingTaskKeys = new Set(closingTaskKeys).add(key);
     showMessage(`✓ 已添加：${round.parsedTasks[index]?.title || ''}`, 2000);
+    window.setTimeout(() => {
+      markAiTaskAdopted(round, index, e.detail?.task?.id);
+      const next = new Set(closingTaskKeys);
+      next.delete(key);
+      closingTaskKeys = next;
+    }, 420);
+  }
+
+  function timestampParts(timestamp?: number): { date?: string; time?: string } {
+    if (!timestamp) return {};
+    const d = new Date(timestamp);
+    const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const hasTime = d.getHours() !== 0 || d.getMinutes() !== 0;
+    return {
+      date,
+      time: hasTime ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : undefined,
+    };
+  }
+
+  function handleDraftChange(round: any, index: number, e: CustomEvent) {
+    // 创建成功后 TaskCard 会清空自身表单；收缩动画期间不能让这次内部重置覆盖 AI 结果标题。
+    if (closingTaskKeys.has(`${round.id}:${index}`) || round.adopted.has(index)) return;
+    const draft = e.detail?.draft || {};
+    const start = timestampParts(draft.startDate);
+    const deadline = timestampParts(draft.deadline);
+    const project = draft.projectId ? store.projects.get(draft.projectId) : undefined;
+    const area = draft.areaId ? store.areas.get(draft.areaId) : undefined;
+    const heading = project?.headings.find((h) => h.id === draft.headingId);
+    updateAiTaskDraft(round, index, {
+      title: draft.title || '',
+      notes: draft.notes || undefined,
+      checklist: draft.checklist || [],
+      startDate: start.date,
+      startTime: start.time,
+      deadline: deadline.date,
+      deadlineTime: deadline.time,
+      someday: draft.someday === true,
+      project: project?.name,
+      area: area?.name,
+      heading: heading?.title,
+      tags: (draft.tags || []).map((id: string) => store.tags.get(id)?.name).filter(Boolean),
+    });
   }
 
   function roundStatusText(round: any): string {
-    if (round.phase === 'thinking') return 'AI 正在思考...';
-    if (round.phase === 'organizing') return '正在整理任务...';
+    if (round.mode === 'search') {
+      if (round.phase === 'thinking') return 'AI 正在检索任务...';
+      if (round.phase === 'organizing') return '正在整理查询结果...';
+      if (round.phase === 'error') return '查询失败';
+      return '查询完成';
+    }
+    if (round.mode === 'action' || round.mode === 'answer') {
+      if (round.phase === 'done') return round.pendingOperation ? '等待确认' : '处理完成';
+    }
+    if (round.phase === 'thinking' && !round.reasoning) return '正在连接模型...';
+    if (round.phase === 'thinking') return '正在理解任务...';
+    if (round.phase === 'organizing') return '正在生成任务卡...';
     if (round.phase === 'done') return `✓ 已为你整理好 ${round.parsedTasks.length} 个任务`;
     if (round.phase === 'error') return '整理失败';
     return '';
   }
 
+  function taskLocation(task: any): string {
+    if (task.projectId) return `项目：${store.projects.get(task.projectId)?.name || '未知项目'}`;
+    if (task.areaId) return `区域：${store.areas.get(task.areaId)?.name || '未知区域'}`;
+    if (task.status === 'done') return '已完成任务';
+    if (task.someday) return '某天';
+    if (task.startDate) return new Date(task.startDate).toLocaleDateString();
+    return '收件箱';
+  }
+
+  function jumpToTask(task: any) {
+    let view: ViewType = 'inbox';
+    let viewId: string | undefined;
+    if (task.status === 'done') view = 'log';
+    else if (task.projectId) { view = 'project'; viewId = task.projectId; }
+    else if (task.areaId) { view = 'area'; viewId = task.areaId; }
+    else if (task.someday) view = 'someday';
+    else if (task.startDate) {
+      const end = new Date(); end.setHours(23, 59, 59, 999);
+      view = task.startDate <= end.getTime() ? 'today' : 'upcoming';
+    }
+    window.dispatchEvent(new CustomEvent('things-navigate', { detail: { view, viewId } }));
+    dispatch('navigate', { taskId: task.id });
+    const focus = () => {
+      const elements = Array.from(document.querySelectorAll(`[data-task-id="${task.id}"]`)) as HTMLElement[];
+      const target = elements.find((element) => element.offsetParent !== null);
+      if (!target) return false;
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      target.classList.add('is-ai-focused');
+      window.setTimeout(() => target.classList.remove('is-ai-focused'), 1800);
+      return true;
+    };
+    window.setTimeout(() => { if (!focus()) window.setTimeout(focus, 700); }, 250);
+  }
+
+  const progressSteps = ['连接模型', '理解任务', '生成任务卡'];
+
+  function progressStage(round: any): number {
+    if (round.phase === 'done') return progressSteps.length;
+    if (round.phase === 'organizing') return 2;
+    if (round.phase === 'thinking' && round.reasoning) return 1;
+    return 0;
+  }
+
+  // 点击外部关闭下拉选择器
+  function handleDocClick(e: MouseEvent) {
+    if (!showModelPicker && !showThinkingPicker) return;
+    const path = e.composedPath();
+    const clickedInsideWrap = path.some(
+      (el) => el instanceof HTMLElement && el.classList.contains('ai-chat__dropdown-wrap')
+    );
+    if (!clickedInsideWrap) {
+      showModelPicker = false;
+      showThinkingPicker = false;
+    }
+  }
+
   onMount(() => {
     autoGrow();
+    document.addEventListener('click', handleDocClick, true);
+  });
+
+  onDestroy(() => {
+    document.removeEventListener('click', handleDocClick, true);
   });
 </script>
 
@@ -151,8 +280,8 @@
         <div class="ai-chat__guide-icon">
           <Icon name="iconThingsSparkles" size={26} color="#ffffff" />
         </div>
-        <div class="ai-chat__guide-title">用自然语言描述你的任务</div>
-        <div class="ai-chat__guide-desc">AI 会自动理解你的描述，拆分成可执行的任务，并补充检查项。</div>
+        <div class="ai-chat__guide-title">用自然语言管理你的任务</div>
+        <div class="ai-chat__guide-desc">可以创建、查询、修改和整理已有任务，我会结合当前列表和会话上下文处理。</div>
         <div class="ai-chat__guide-examples">
           {#each examplePrompts as p}
             <button class="ai-chat__example-chip" on:click={() => fillExample(p)}>{p}</button>
@@ -172,33 +301,37 @@
       </div>
 
       <!-- AI 思考卡片 -->
+      {#if round.id === latestRoundId}
       <div class="ai-chat__card ai-chat__think-card">
         <div class="ai-chat__card-label">
           <Icon name="iconThingsSparkles" size={12} />
-          <span>AI 思考与整理</span>
+          <span>{round.mode === 'search' ? '任务查询' : 'AI 思考与整理'}</span>
           <span class="ai-chat__badge" class:is-done={round.phase === 'done'} class:is-error={round.phase === 'error'}>
             {roundStatusText(round)}
           </span>
         </div>
 
-        {#if round.phase === 'thinking' || round.phase === 'organizing'}
-          {#if round.reasoning}
+        {#if round.phase !== 'error' && round.mode !== 'search'}
+          <div class="ai-chat__progress" aria-label="AI 处理进度">
+            {#each progressSteps as step, stepIndex}
+              <div
+                class="ai-chat__progress-step"
+                class:is-complete={stepIndex < progressStage(round)}
+                class:is-current={stepIndex === progressStage(round) && round.phase !== 'done'}
+                class:is-pending={stepIndex > progressStage(round)}
+              >
+                <span class="ai-chat__progress-dot">
+                  {#if stepIndex < progressStage(round)}✓{/if}
+                </span>
+                <span>{step}</span>
+                {#if stepIndex === progressStage(round) && round.phase !== 'done'}
+                  <span class="ai-chat__progress-live">进行中</span>
+                {/if}
+              </div>
+            {/each}
+          </div>
+          {#if round.reasoning && (round.phase === 'thinking' || round.phase === 'organizing')}
             <div class="ai-chat__reasoning">{round.reasoning}</div>
-          {:else}
-            <div class="ai-chat__streaming-placeholder">
-              <span class="ai-chat__pulse-dot"></span>
-              正在连接模型...
-            </div>
-          {/if}
-          {#if round.phase === 'organizing'}
-            <div class="ai-chat__divider"></div>
-            <div class="ai-chat__organizing">
-              {#if round.content}
-                <div class="ai-chat__reasoning ai-chat__reasoning--content">{round.content}</div>
-              {:else}
-                <span class="ai-chat__pulse-dot"></span> 正在整理任务...
-              {/if}
-            </div>
           {/if}
         {/if}
 
@@ -206,39 +339,97 @@
           <div class="ai-chat__error-text">{round.errorMsg}</div>
         {/if}
       </div>
+      {/if}
+
+      {#if round.mode === 'search' && round.phase === 'done' && round.id === latestSearchRoundId}
+        <section class="ai-chat__search-section">
+          <div class="ai-chat__card-label"><span>查询结果</span><span class="ai-chat__count-badge">{round.searchResults?.length || 0}</span></div>
+          {#if round.assistantMessage}<div class="ai-chat__search-answer">{round.assistantMessage}</div>{/if}
+          {#if round.searchResults?.length}
+            <div class="ai-chat__search-list">
+              {#each round.searchResults as task (task.id)}
+                <button class="ai-chat__search-item" on:click={() => jumpToTask(task)}>
+                  <span class="ai-chat__search-status" class:is-done={task.status === 'done'}>{task.status === 'done' ? '✓' : '•'}</span>
+                  <span class="ai-chat__search-main"><span class="ai-chat__search-title">{task.title}</span><span class="ai-chat__search-location">{taskLocation(task)}</span></span>
+                </button>
+              {/each}
+            </div>
+          {:else}
+            <div class="ai-chat__search-empty">没有找到匹配的任务，可以换个关键词再问一次。</div>
+          {/if}
+        </section>
+      {/if}
+
+      {#if (round.mode === 'action' || round.mode === 'answer') && round.phase === 'done' && round.id === latestRoundId}
+        <section class="ai-chat__answer-card">
+          <div class="ai-chat__answer-text">{round.assistantMessage}</div>
+          {#if round.pendingOperation}
+            <div class="ai-chat__change-preview">
+              <div>{round.pendingOperation.type === 'delete' ? '将删除' : '将修改'} {round.pendingOperation.targetIds.length} 个任务</div>
+              {#if round.pendingOperation.type === 'delete'}
+                {#each round.pendingOperation.targetIds as id}
+                  <div class="ai-chat__change-row"><span>任务</span><strong>{store.tasks.get(id)?.title || id}</strong></div>
+                {/each}
+                <div class="ai-chat__change-row"><span>保护</span><strong>删除记录可恢复</strong></div>
+              {:else}
+                {#each Object.entries(round.pendingOperation.changes) as [field, value]}
+                  <div class="ai-chat__change-row"><span>{field}</span><strong>{String(value)}</strong></div>
+                {/each}
+              {/if}
+            </div>
+            <div class="ai-chat__confirm-actions">
+              <button class="ai-chat__confirm-btn" on:click={() => confirmAiOperation(round)}>{round.pendingOperation.type === 'delete' ? '确认删除' : '确认修改'}</button>
+              <button class="ai-chat__cancel-btn" on:click={() => cancelAiOperation(round)}>取消</button>
+            </div>
+          {/if}
+        </section>
+      {/if}
 
       <!-- 整理结果卡片 -->
-      {#if round.phase === 'done' && round.parsedTasks.length > 0}
-        <div class="ai-chat__card ai-chat__result-card">
+      {#if round.phase === 'done' && round.parsedTasks.length > 0 && round.id === latestRoundId}
+        <section class="ai-chat__result-section">
           <div class="ai-chat__card-label">
             <span>整理结果</span>
             <span class="ai-chat__count-badge">{round.parsedTasks.length}</span>
           </div>
           <div class="ai-chat__task-list">
             {#each round.parsedTasks as task, i (i)}
-              <div class="ai-chat__task-item" class:is-adopted={round.adopted.has(i)}>
-                <TaskCard
-                  mode="create"
-                  {store}
-                  currentView={currentView}
-                  currentViewId={currentViewId}
-                  noAutoSave={true}
-                  prefilledData={parsedToPrefill(task)}
-                />
-                {#if round.adopted.has(i)}
-                  <div class="ai-chat__adopted-badge">
-                    <Icon name="iconThingsCheck" size={12} />
-                    已添加
-                  </div>
-                {:else}
-                  <button class="ai-chat__adopt-btn" on:click={() => handleAdopt(round, i)}>
-                    {adoptLabel(currentView)}
-                  </button>
-                {/if}
-              </div>
+              {#if round.adopted.has(i)}
+                <div class="ai-chat__task-item ai-chat__task-item--adopted">
+                  <TaskCard
+                    mode="create"
+                    {store}
+                    currentView="inbox"
+                    aiPreview={true}
+                    collapsedPreview={true}
+                    collapsedStatusLabel="已添加"
+                    prefilledData={parsedToPrefill(task)}
+                  />
+                </div>
+              {:else}
+                <div
+                  class="ai-chat__task-item"
+                  class:is-closing={closingTaskKeys.has(`${round.id}:${i}`)}
+                >
+                  <TaskCard
+                    mode="create"
+                    {store}
+                    currentView="inbox"
+                    aiPreview={true}
+                    createOnBlur={false}
+                    createOnEnter={false}
+                    showCreateButton={true}
+                    createButtonLabel="添加任务"
+                    collapsibleCreate={true}
+                    prefilledData={parsedToPrefill(task)}
+                    on:draftchange={(e) => handleDraftChange(round, i, e)}
+                    on:created={(e) => handleTaskCreated(round, i, e)}
+                  />
+                </div>
+              {/if}
             {/each}
           </div>
-        </div>
+        </section>
       {/if}
     {/each}
   </div>
@@ -251,7 +442,7 @@
         bind:value={$aiInputText}
         on:input={autoGrow}
         on:keydown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey) {
+          if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
             e.preventDefault();
             handleSend();
           }
@@ -260,7 +451,6 @@
         rows="1"
         placeholder="描述你的任务，AI 帮你整理成待办…"
       ></textarea>
-    </div>
     <div class="ai-chat__input-toolbar">
       <div class="ai-chat__input-toolbar-left">
         <!-- 思考强度按钮 -->
@@ -298,8 +488,12 @@
         <div class="ai-chat__dropdown-wrap">
           <button
             class="ai-chat__tool-btn"
-            on:click={() => { showModelPicker = !showModelPicker; showThinkingPicker = false; }}
-            title="切换模型"
+            on:click={() => {
+              if (availableModels.length === 0) return;
+              showModelPicker = !showModelPicker; showThinkingPicker = false;
+            }}
+            title={availableModels.length === 0 ? '无可用模型' : '切换模型'}
+            class:is-disabled={availableModels.length === 0}
           >
             <svg width="13" height="13" viewBox="0 0 1024 1024" fill="currentColor">
               <path d="M958.976 612.352c-15.36 0-28.672 12.8-28.672 27.648v77.312c0 16.384-9.728 31.232-25.088 40.448l-369.152 203.776c-15.36 9.216-34.304 9.216-49.664 0L117.76 757.76c-15.36-7.168-25.088-24.064-25.088-40.448v-117.76c19.968-10.24 33.28-30.72 33.28-54.272 0-33.792-28.16-61.44-62.976-61.44-34.816 0-62.976 27.648-62.976 61.44 0 24.064 14.336 45.056 35.84 55.296v116.736c0 36.864 20.992 69.632 53.248 88.064l369.152 205.824c17.408 9.216 34.304 12.8 53.248 12.8 17.408 0 36.352-5.632 53.248-14.848l367.104-203.776c32.256-18.432 53.248-51.2 53.248-88.064V640c0.512-16.384-11.264-27.648-26.112-27.648z"/>
@@ -307,18 +501,20 @@
               <path d="M473.088 866.816l1.536 1.024c23.04 11.776 52.736 11.776 74.752-1.024l262.144-145.408 1.536-1.024c24.064-12.8 36.864-36.352 36.864-63.488v-291.84c-0.512-25.088-15.872-48.128-38.4-62.464l-262.144-145.408-1.536-1.024c-23.04-11.776-52.736-11.776-74.752 1.024L210.944 302.592l-1.536 1.024c-22.016 12.8-36.864 36.352-36.864 63.488v293.888c0.512 25.088 15.872 48.128 38.4 62.464l262.144 143.36z m157.184-505.856h62.464v285.184h-62.464V360.96z m-221.184 1.536h73.728l109.056 285.184h-69.12l-22.528-65.024h-107.52l-22.528 65.024H301.056l108.032-285.184z"/>
               <path d="M987.648 410.112V305.664c0-36.864-20.992-69.632-53.248-88.064L565.248 13.824c-32.256-18.432-74.752-18.432-107.008 0L89.088 217.6C56.832 236.032 35.84 269.312 35.84 305.664v69.632c0 14.848 13.312 27.648 28.672 27.648 15.36 0 28.672-12.8 28.672-27.648V305.664c0-16.384 9.728-31.232 25.088-40.448l368.64-203.776c15.36-9.216 34.304-9.216 49.664 0l367.104 205.824c15.36 7.168 25.088 24.064 25.088 40.448v104.96h1.024c-18.944 10.752-31.744 30.208-31.744 53.248 0 33.792 28.16 61.44 62.976 61.44 34.816 0 62.976-27.648 62.976-61.44 0-24.576-14.848-46.08-36.352-55.808z"/>
             </svg>
-            <span>{selectedModel || '选择模型'}</span>
+            <span>{availableModels.length === 0 ? '无' : ($aiSelectedModel || availableModels[0]?.value || '选择模型')}</span>
+            {#if availableModels.length > 0}
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M6 9l6 6 6-6"/>
             </svg>
+            {/if}
           </button>
 
-          {#if showModelPicker}
+          {#if showModelPicker && availableModels.length > 0}
             <div class="ai-chat__dropdown ai-chat__dropdown--up">
               {#each availableModels as model}
                 <button
                   class="ai-chat__dropdown-item"
-                  class:is-active={selectedModel === model.value}
+                  class:is-active={($aiSelectedModel || availableModels[0]?.value) === model.value}
                   on:click={() => { aiSelectedModel.set(model.value); showModelPicker = false; }}
                 >
                   <span class="ai-chat__dropdown-item-label">{model.label}</span>
@@ -339,6 +535,7 @@
           <span>发送</span>
         </button>
       </div>
+    </div>
     </div>
   </div>
 </div>
@@ -438,7 +635,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 500;
     color: var(--b3-theme-on-surface-light);
     margin-bottom: 8px;
@@ -457,7 +654,7 @@
   }
 
   &__user-text {
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.8;
     color: var(--b3-theme-on-surface);
     white-space: pre-wrap;
@@ -485,7 +682,7 @@
   }
 
   &__reasoning {
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.7;
     color: var(--b3-theme-on-surface-light);
     white-space: pre-wrap;
@@ -498,36 +695,96 @@
     }
   }
 
-  &__streaming-placeholder,
-  &__organizing {
+  &__progress {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+
+  &__progress-step {
     display: flex;
     align-items: center;
     gap: 8px;
+    min-height: 24px;
+    padding: 3px 7px;
+    border-radius: 7px;
     font-size: 12px;
-    color: var(--b3-theme-on-surface-light);
+    color: #a1a7b0;
+    transition: color 180ms ease, background 180ms ease;
+
+    &.is-complete {
+      color: #6f7884;
+    }
+
+    &.is-current {
+      color: #356fcf;
+      background: rgba(59, 127, 240, 0.08);
+      animation: ai-progress-glow 1.5s ease-in-out infinite;
+    }
   }
 
-  &__pulse-dot {
-    width: 8px;
-    height: 8px;
+  &__progress-dot {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border: 1.5px solid #c7ccd3;
     border-radius: 50%;
-    background: #3b7ff0;
+    font-size: 10px;
+    line-height: 1;
     flex-shrink: 0;
-    animation: ai-pulse 1.2s ease-in-out infinite;
+
+    .is-complete & {
+      border-color: #52a56e;
+      background: #52a56e;
+      color: #fff;
+    }
+
+    .is-current & {
+      border-color: #3b7ff0;
+      border-top-color: transparent;
+      animation: ai-progress-spin 0.9s linear infinite;
+    }
   }
 
-  &__divider {
-    height: 1px;
-    background: #f0f2f5;
-    margin: 10px 0;
+  &__progress-live {
+    margin-left: auto;
+    font-size: 10px;
+    color: #4a7fd8;
   }
 
   &__error-text {
-    font-size: 12px;
+    font-size: 13px;
     color: #dc2626;
   }
 
   // ===== 结果卡片 =====
+  &__result-section {
+    padding-top: 4px;
+  }
+
+  &__search-section { padding-top: 4px; }
+  &__search-list { display: flex; flex-direction: column; gap: 6px; }
+  &__search-answer { margin-bottom: 9px; font-size: 12px; line-height: 1.6; color: #59616d; }
+  &__search-item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 10px; border: 1px solid #e3e7ec; border-radius: 9px; background: #fff; color: inherit; cursor: pointer; text-align: left; }
+  &__search-item:hover { border-color: #9bbcf5; background: #f7faff; }
+  &__search-status { color: #3b7ff0; font-size: 16px; }
+  &__search-status.is-done { color: #62a879; }
+  &__search-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  &__search-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+  &__search-location { color: #8b93a0; font-size: 10px; }
+  &__search-empty { padding: 14px; border-radius: 9px; background: #f3f5f7; color: #7c8490; font-size: 12px; text-align: center; }
+  &__answer-card { padding: 12px 14px; border-radius: 10px; background: #fff; border: 1px solid #e3e7ec; }
+  &__answer-text { font-size: 13px; line-height: 1.65; color: var(--b3-theme-on-surface); }
+  &__change-preview { margin-top: 10px; padding: 9px 10px; border-radius: 8px; background: #f5f7fa; font-size: 11px; color: #69717d; }
+  &__change-row { display: flex; justify-content: space-between; gap: 12px; margin-top: 5px; }
+  &__confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+  &__confirm-btn, &__cancel-btn { padding: 6px 11px; border-radius: 7px; font-size: 11px; cursor: pointer; }
+  &__confirm-btn { border: none; background: #3b7ff0; color: #fff; }
+  &__cancel-btn { border: 1px solid #d8dde4; background: #fff; color: #606975; }
+
   &__count-badge {
     background: #3b7ff0;
     color: #ffffff;
@@ -544,51 +801,53 @@
 
   &__task-item {
     position: relative;
+    max-height: 800px;
+    overflow: visible;
+    transform-origin: top center;
 
-    &.is-adopted {
-      opacity: 0.65;
+    &.is-closing {
+      pointer-events: none;
+      overflow: hidden;
+      animation: ai-task-close 420ms ease forwards;
+    }
+
+    &--adopted {
+      max-height: none;
+      animation: ai-adopted-in 180ms ease-out;
     }
   }
 
-  &__adopt-btn {
-    position: absolute;
-    bottom: 12px;
-    right: 12px;
-    z-index: 5;
-    padding: 5px 14px;
-    border: none;
-    border-radius: 6px;
-    background: #3b7ff0;
-    color: #ffffff;
-    font-size: 10px;
-    cursor: pointer;
-    transition: background 0.15s;
-
-    &:hover {
-      background: #2e6bd6;
+  @keyframes ai-task-close {
+    0% {
+      opacity: 1;
+      filter: grayscale(0);
+      transform: scale(1);
+      max-height: 800px;
+    }
+    45% {
+      opacity: 0.55;
+      filter: grayscale(1);
+      transform: scale(0.985);
+      max-height: 800px;
+    }
+    100% {
+      opacity: 0;
+      filter: grayscale(1);
+      transform: scale(0.97);
+      max-height: 0;
+      margin: 0;
     }
   }
 
-  &__adopted-badge {
-    position: absolute;
-    bottom: 12px;
-    right: 12px;
-    z-index: 5;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 5px 12px;
-    border-radius: 6px;
-    background: #e8f5e9;
-    color: #4caf50;
-    font-size: 10px;
-    font-weight: 500;
+  @keyframes ai-adopted-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 
   // ===== 底部输入栏 =====
   &__input-bar {
     border-top: 1px solid #e4e8ec;
-    padding: 10px 16px 14px;
+    padding: 10px 16px;
     background: #f6f7f9;
     flex-shrink: 0;
   }
@@ -598,7 +857,6 @@
     border: 1px solid #e0e4e9;
     border-radius: 13px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.024);
-    margin-bottom: 8px;
     transition: border-color 0.2s;
 
     &:focus-within {
@@ -612,7 +870,7 @@
     outline: none;
     resize: none;
     background: transparent;
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.6;
     font-family: inherit;
     color: var(--b3-theme-on-background);
@@ -630,6 +888,8 @@
     align-items: center;
     justify-content: space-between;
     gap: 7px;
+    padding: 6px 10px 10px;
+    border-top: 1px solid #f0f2f5;
   }
 
   &__input-toolbar-left,
@@ -652,13 +912,23 @@
     border-radius: 7px;
     background: #fafbfc;
     color: var(--b3-theme-on-surface);
-    font-size: 10px;
+    font-size: 11px;
     cursor: pointer;
     transition: all 0.15s;
 
     &:hover {
       border-color: #c8d0d8;
       background: #f0f2f5;
+    }
+
+    &.is-disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+
+      &:hover {
+        border-color: #e4e8ec;
+        background: #fafbfc;
+      }
     }
   }
 
@@ -724,7 +994,7 @@
     border-radius: 7px;
     background: #3b7ff0;
     color: #ffffff;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
     cursor: pointer;
     white-space: nowrap;
@@ -743,6 +1013,15 @@
   @keyframes ai-pulse {
     0%, 100% { opacity: 1; transform: scale(1); }
     50% { opacity: 0.35; transform: scale(0.8); }
+  }
+
+  @keyframes ai-progress-spin {
+    to { transform: rotate(360deg); }
+  }
+
+  @keyframes ai-progress-glow {
+    0%, 100% { background: rgba(59, 127, 240, 0.06); }
+    50% { background: rgba(59, 127, 240, 0.13); }
   }
   } // .ai-chat
 </style>

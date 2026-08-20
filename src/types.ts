@@ -126,11 +126,17 @@ export interface StoreEvent {
 
 // ===== AI 解析结果 =====
 export interface ParsedTask {
+  clientId?: string;      // AI 会话内稳定草稿 ID
   title: string;
+  notes?: string;
   checklist?: string[];
   startDate?: string;    // YYYY-MM-DD
   startTime?: string;    // HH:mm
   deadline?: string;     // YYYY-MM-DD
+  deadlineTime?: string; // HH:mm
+  someday?: boolean;
+  project?: string;      // 项目名称
+  area?: string;         // 区域名称
+  heading?: string;      // 项目内标题分组名称
   tags?: string[];
-  priority?: Priority;
 }
