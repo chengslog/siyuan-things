@@ -41,7 +41,7 @@ export default defineConfig(buildTarget === "kernel" ? {
                 watchExternalFiles(["src/kernel.ts"])
             ] : [
                 cleanupDistFiles({
-                    patterns: ["i18n/*.yaml", "i18n/*.md"],
+                    patterns: ["i18n/*.yaml", "i18n/*.md", "README.zh-CN.md"],
                     distDir: outputDir
                 }),
                 zipPack({
@@ -79,7 +79,8 @@ export default defineConfig(buildTarget === "kernel" ? {
                 { src: "./docs/*.md", dest: "./docs" },
                 { src: "./plugin.json", dest: "./" },
                 { src: "./preview.png", dest: "./" },
-                { src: "./icon.png", dest: "./" }
+                { src: "./icon.png", dest: "./" },
+                { src: "./asset/sponsor.jpg", dest: "./asset" }
             ],
         }),
     ],
@@ -109,7 +110,8 @@ export default defineConfig(buildTarget === "kernel" ? {
                     "public/i18n/**",
                     "./README*.md",
                     "./docs/*.md",
-                    "./plugin.json"
+                    "./plugin.json",
+                    "./asset/sponsor.jpg"
                 ])
             ] : [],
 

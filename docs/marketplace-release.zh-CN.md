@@ -1,0 +1,27 @@
+# 思源插件集市发布清单
+
+## 首次上架前
+
+- [ ] 将 GitHub 仓库设为公开，默认分支保持为 `main`。
+- [ ] 准备清晰且不含隐私信息的 `preview.png`（官方建议 1024×768、低于 200 KB）。
+- [ ] 确认 `plugin.json`、`package.json` 和 Git 标签版本一致。
+- [ ] 执行 `npm test` 和 `npm run build`。
+- [ ] 检查 `package.zip` 至少包含 `index.js`、`index.css`、`kernel.js`、`plugin.json`、`icon.png`、`preview.png`、README 和 i18n 文件。
+
+## 发布版本
+
+```bash
+git tag v0.2.3
+git push origin v0.2.3
+```
+
+推送 `v*` 标签后，GitHub Actions 会验证标签与插件版本、运行测试、构建，并将 `package.zip` 上传到对应 GitHub Release。确认该 Release 标记为 Latest。
+
+## 首次提交集市
+
+1. Fork `siyuan-note/bazaar` 并同步其最新 `main`。
+2. 在根目录 `plugins.txt` 中增加一行：`chengslog/siyuan-things`。
+3. 仅提交这一项新增并向上游 `main` 创建 PR。
+4. 根据 PR Check 的结果修复当前 PR，不要为同一个插件重复创建 PR。
+
+后续更新只需提高版本并发布新的 Latest Release，无需再次修改 `plugins.txt`。

@@ -1,26 +1,43 @@
 # SiYuan Things
 
-[简体中文](./README.zh-CN.md)
+[English](./README.en.md)
 
-A Things-inspired GTD task manager for SiYuan Note. It provides Inbox, Today, Upcoming, Anytime, Someday, Log, projects, areas, headings, tags, checklists, dates, deadlines, reminders, and an AI task assistant.
+一款灵感来自 Things 的思源笔记 GTD 任务管理插件，提供收件箱、今天、计划、随时、某天、日志、项目、区域、标题分组、标签、检查项、日期、截止日期、提醒和 AI 任务助手。
 
-## Features
+## 主要功能
 
-- Organize tasks with GTD-style views, projects, areas, headings, and tags.
-- Schedule start dates and times, deadlines, reminders, and Someday tasks.
-- Repeat tasks daily, on weekdays, weekly, monthly, or yearly; the next occurrence is created after completion.
-- Add notes and checklists while keeping checklist items out of top-level task lists.
-- Create, search, summarize, update, and delete tasks through a conversational AI assistant.
-- Continue a conversation to refine drafts or operate on previously found tasks.
-- Detect possible duplicate tasks and preview destructive operations before confirmation.
-- Store plugin data through SiYuan's plugin data APIs so it can follow the workspace sync configuration.
+- 使用 GTD 视图、项目、区域、标题分组和标签整理任务。
+- 支持开始日期与具体时间、截止日期、提醒及“某天”任务。
+- 支持每天、工作日、每周、每月和每年重复；完成后自动生成下一次任务。
+- 支持备注和检查项；检查项不会作为独立任务出现在主列表中。
+- 通过对话式 AI 创建、查询、归纳、修改和删除任务。
+- 支持连续对话，可继续修改当前草稿或操作上一轮查询到的任务。
+- 支持分析可能的重复任务；删除等操作会先展示预览并等待确认。
+- 通过思源插件数据接口保存数据，可跟随工作空间的同步设置。
 
-## Requirements
+## 使用要求
 
-- SiYuan Note 3.7.0 or later.
-- An OpenAI-compatible AI service is optional and only required for AI features.
+- 思源笔记 3.7.0 或更高版本。
+- AI 功能为可选功能，使用时需要配置兼容 OpenAI 接口的 AI 服务。
 
-## Installation for development
+## 安装
+
+### 从集市安装
+
+插件上架后，可在思源笔记的「集市 → 插件」中搜索 `Things` 并安装。
+
+### 手动安装
+
+从 GitHub Releases 下载 `package.zip`，解压到 `<思源工作空间>/data/plugins/siyuan-things/`，然后重启思源或重新加载插件。
+
+## 基本使用
+
+- 点击思源停靠栏中的 Things 图标进入任务管理页面。
+- 使用收件箱、今天、计划、随时、某天和日志管理任务生命周期。
+- 在任务卡片中设置项目、区域、标签、日期、截止日期、提醒、重复规则、备注与检查项。
+- 在 AI 面板中用自然语言创建、查询、修改或删除任务；删除操作会先要求确认。
+
+## 本地开发
 
 ```bash
 npm install
@@ -28,18 +45,35 @@ npm test
 npm run build
 ```
 
-Copy the contents of `dist/` to `<SiYuan workspace>/data/plugins/siyuan-things/`, then restart SiYuan or reload the plugin.
+将 `dist/` 中的内容复制到 `<思源工作空间>/data/plugins/siyuan-things/`，然后重启思源或重新加载插件。
 
-## AI configuration and privacy
+## AI 配置与隐私
 
-The plugin can reuse the AI provider configured in SiYuan, or use a custom OpenAI-compatible endpoint, API key, and model name from the plugin settings.
+插件可以复用思源中已经配置的 AI 服务，也可以在插件设置中填写自定义的 OpenAI 兼容接口地址、API Key 和模型名称。
 
-Task context required to answer a query is sent to the selected AI provider. The plugin does not include an AI account or proxy service. Review the privacy and retention policy of your selected provider before enabling AI features.
+进行任务查询或整理时，完成请求所需的任务上下文会发送给你选择的 AI 服务商。插件本身不提供 AI 账号或中转服务。启用 AI 前，请确认所使用服务商的隐私和数据保留政策。
 
-## Data and sync
+- 未启用 AI 时，插件不会主动向 AI 服务商发送任务内容。
+- 启用 AI 后，用户消息以及完成请求所需的任务标题、日期、归属、标签、备注和检查项可能被发送至所选服务商。
+- API Key 保存在当前思源工作空间的插件设置数据中；请依靠操作系统和思源工作空间权限保护该数据。
+- 插件不包含作者运营的统计、广告或中转服务。
 
-Tasks and plugin settings are stored in the SiYuan workspace through the plugin data APIs. Whether these files sync to another device depends on the workspace synchronization configuration. Avoid editing the same task concurrently on multiple devices before synchronization completes.
+## 数据与同步
 
-## License
+任务和插件设置通过思源插件数据接口保存在当前工作空间。是否同步到其他设备取决于工作空间的同步配置。为避免同步冲突，建议一台设备完成同步后，再在另一台设备编辑同一批任务。
+
+## 兼容性与反馈
+
+- 最低支持思源笔记 3.7.0。
+- 当前主要在 Windows 桌面端开发和验证；其他声明平台欢迎反馈兼容性问题。
+- 问题与建议请提交到 [GitHub Issues](https://github.com/chengslog/siyuan-things/issues)，请附上思源版本、插件版本、操作步骤和必要截图；不要提交 API Key 或私人任务内容。
+
+## 支持项目
+
+如果这个插件对你有帮助，可以请作者喝杯咖啡。赞赏完全自愿，不影响任何功能的使用。
+
+<img src="./asset/sponsor.jpg" alt="微信赞赏码" width="280" />
+
+## 开源协议
 
 [MIT](./LICENSE)

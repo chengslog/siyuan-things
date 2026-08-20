@@ -2,7 +2,7 @@
   "name": "siyuan-things",
   "author": "ccriss",
   "url": "https://github.com/chengslog/siyuan-things",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "minAppVersion": "3.7.0",
   "kernels": [
     "windows",
@@ -32,16 +32,22 @@
   },
   "readme": {
     "default": "README.md",
-    "zh-CN": "README.zh-CN.md"
+    "zh-CN": "README.md",
+    "en": "README.en.md"
   },
   "funding": {
-    "custom": []
+    "custom": [
+      "https://github.com/chengslog/siyuan-things/blob/main/README.md#支持项目"
+    ]
   },
   "keywords": [
     "things",
     "task",
     "gtd",
     "todo",
-    "任务管理"
+    "任务管理",
+    "待办事项",
+    "人工智能",
+    "AI assistant"
   ]
 }
