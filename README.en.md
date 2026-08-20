@@ -2,6 +2,8 @@
 
 [简体中文](./README.md)
 
+![SiYuan Things overview](./asset/overview.jpg)
+
 A Things-inspired GTD task manager for SiYuan Note. It provides Inbox, Today, Upcoming, Anytime, Someday, Log, projects, areas, headings, tags, checklists, dates, deadlines, reminders, and an AI task assistant.
 
 ## Features

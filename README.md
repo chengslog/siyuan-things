@@ -2,6 +2,8 @@
 
 [English](./README.en.md)
 
+![SiYuan Things 功能概览](./asset/overview.jpg)
+
 一款灵感来自 Things 的思源笔记 GTD 任务管理插件，提供收件箱、今天、计划、随时、某天、日志、项目、区域、标题分组、标签、检查项、日期、截止日期、提醒和 AI 任务助手。
 
 ## 主要功能

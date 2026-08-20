@@ -80,7 +80,8 @@ export default defineConfig(buildTarget === "kernel" ? {
                 { src: "./plugin.json", dest: "./" },
                 { src: "./preview.png", dest: "./" },
                 { src: "./icon.png", dest: "./" },
-                { src: "./asset/sponsor.jpg", dest: "./asset" }
+                { src: "./asset/sponsor.jpg", dest: "./asset" },
+                { src: "./asset/overview.jpg", dest: "./asset" }
             ],
         }),
     ],
@@ -111,7 +112,8 @@ export default defineConfig(buildTarget === "kernel" ? {
                     "./README*.md",
                     "./docs/*.md",
                     "./plugin.json",
-                    "./asset/sponsor.jpg"
+                    "./asset/sponsor.jpg",
+                    "./asset/overview.jpg"
                 ])
             ] : [],
 
