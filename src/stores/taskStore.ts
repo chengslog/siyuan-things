@@ -1,16 +1,8 @@
 import type { Plugin } from 'siyuan';
-import type { Task, TaskStatus } from '@/types';
+import type { Task, TaskStatus, RepeatRule } from '@/types';
 import { BaseStore } from './base';
 import { genUUID } from '@/utils/id';
-
-/**
- * 检查任务的重复规则是否命中今天
- * TODO: 重复功能尚未实现，暂返回 false
- */
-function isRecurringMatchToday(_task: Task, _todayStartTs: number, _todayEndTs: number): boolean {
-  // 预留接口，待重复功能实现后补充逻辑
-  return false;
-}
+import { nextRepeatTimestamp } from '@/utils/recurrence';
 
 export class TaskStore extends BaseStore<Task> {
   private archiveFileName: string;
@@ -193,6 +185,8 @@ export class TaskStore extends BaseStore<Task> {
       startDate: partial.startDate,
       deadline: partial.deadline,
       someday: partial.someday,
+      repeatRule: partial.repeatRule,
+      recurrenceSourceId: partial.recurrenceSourceId,
       projectId: partial.projectId,
       areaId: partial.areaId,
       parentId: partial.parentId,
@@ -226,7 +220,43 @@ export class TaskStore extends BaseStore<Task> {
     }
 
     await this.update(updated);
+
+    if (changes.status === 'done' && task.status !== 'done' && updated.repeatRule && !updated.recurrenceGeneratedAt && !updated.parentId) {
+      const next = await this.createRecurringOccurrence(updated);
+      updated.recurrenceGeneratedAt = Date.now();
+      await this.update(updated);
+      this.emit({ type: 'recurrence', ids: [updated.id, next.id] });
+    }
     return updated;
+  }
+
+  private async createRecurringOccurrence(source: Task): Promise<Task> {
+    const base = source.startDate || source.deadline || source.completedDate || Date.now();
+    const next = await this.createTask({
+      title: source.title,
+      notes: source.notes,
+      priority: source.priority,
+      startDate: source.startDate ? nextRepeatTimestamp(source.startDate, source.repeatRule!) : (!source.deadline ? nextRepeatTimestamp(base, source.repeatRule!) : undefined),
+      deadline: source.deadline ? nextRepeatTimestamp(source.deadline, source.repeatRule!) : undefined,
+      someday: false,
+      repeatRule: source.repeatRule,
+      recurrenceSourceId: source.id,
+      projectId: source.projectId,
+      areaId: source.areaId,
+      headingId: source.headingId,
+      tags: [...(source.tags || [])],
+    });
+    for (const child of this.getSubTasks(source.id)) {
+      await this.createTask({
+        title: child.title,
+        notes: child.notes,
+        priority: child.priority,
+        parentId: next.id,
+        tags: [...(child.tags || [])],
+        status: 'todo',
+      });
+    }
+    return next;
   }
 
   /**
@@ -290,9 +320,7 @@ export class TaskStore extends BaseStore<Task> {
         // 条件1：开始日期 <= 今天
         (t.startDate && t.startDate <= todayEndTs) ||
         // 条件2：截止日期 = 今天（即使没有开始日期）
-        (t.deadline && t.deadline >= todayStartTs && t.deadline <= todayEndTs) ||
-        // 条件3：(预留) 重复规则命中今天
-        isRecurringMatchToday(t, todayStartTs, todayEndTs)
+        (t.deadline && t.deadline >= todayStartTs && t.deadline <= todayEndTs)
       )
     );
   }

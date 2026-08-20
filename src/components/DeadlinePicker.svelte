@@ -61,6 +61,9 @@
       case "clear":
         timestamp = undefined;
         break;
+      case "clearReminder":
+        if (timestamp) timestamp = dayStart(timestamp);
+        break;
     }
     dispatch("change", { timestamp });
     dispatch("close");
@@ -148,12 +151,19 @@
     />
   {/if}
 
+  {#if timestamp && new Date(timestamp).getHours() + new Date(timestamp).getMinutes() > 0}
+    <button class="deadline-picker__option deadline-picker__option--clear" on:click={() => handleQuickOption("clearReminder")}>
+      <span class="deadline-picker__icon"><Icon name="iconThingsX" size={16} /></span>
+      <span class="deadline-picker__label">清除截止提醒</span>
+    </button>
+  {/if}
+
   <!-- 清除 -->
   {#if showClear && timestamp}
     <div class="deadline-picker__separator"></div>
     <button class="deadline-picker__option deadline-picker__option--clear" on:click={() => handleQuickOption("clear")}>
       <span class="deadline-picker__icon"><Icon name="iconThingsX" size={16} /></span>
-      <span class="deadline-picker__label">清除</span>
+      <span class="deadline-picker__label">清除截止日期</span>
     </button>
   {/if}
 </div>
@@ -290,11 +300,6 @@
 
       &:hover {
         background: var(--b3-theme-surface-light);
-      }
-
-      &.is-other-month {
-        color: var(--b3-theme-on-surface-light);
-        opacity: 0.5;
       }
 
       &.is-today {

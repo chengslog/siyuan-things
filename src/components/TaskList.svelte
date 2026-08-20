@@ -1221,7 +1221,6 @@
                   mode="edit"
                   {task}
                   {store}
-                  scheduleMode={view === "upcoming" && hasTimeOfDay(task.startDate) && !group.startsWith("m-")}
                   inlineDate={view === "upcoming" && group.startsWith("m-")}
                   isDragging={draggedId === task.id}
                   currentView={view}
@@ -1766,8 +1765,4 @@
     }
   }
 
-  .task-list__ai-creator-wrapper {
-    padding: 0 72px;
-    margin-bottom: 8px;
-  }
 </style>

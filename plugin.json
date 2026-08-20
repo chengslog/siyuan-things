@@ -2,11 +2,26 @@
   "name": "siyuan-things",
   "author": "ccriss",
   "url": "https://github.com/chengslog/siyuan-things",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "minAppVersion": "3.7.0",
-  "kernels": ["windows", "linux", "darwin", "docker"],
-  "backends": ["windows", "linux", "darwin", "docker"],
-  "frontends": ["desktop", "mobile", "browser-desktop", "browser-mobile"],
+  "kernels": [
+    "windows",
+    "linux",
+    "darwin",
+    "docker"
+  ],
+  "backends": [
+    "windows",
+    "linux",
+    "darwin",
+    "docker"
+  ],
+  "frontends": [
+    "desktop",
+    "mobile",
+    "browser-desktop",
+    "browser-mobile"
+  ],
   "displayName": {
     "default": "Things",
     "zh-CN": "Things 任务管理"
@@ -22,5 +37,11 @@
   "funding": {
     "custom": []
   },
-  "keywords": ["things", "task", "gtd", "todo", "任务管理"]
+  "keywords": [
+    "things",
+    "task",
+    "gtd",
+    "todo",
+    "任务管理"
+  ]
 }

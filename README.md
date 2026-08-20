@@ -8,6 +8,7 @@ A Things-inspired GTD task manager for SiYuan Note. It provides Inbox, Today, Up
 
 - Organize tasks with GTD-style views, projects, areas, headings, and tags.
 - Schedule start dates and times, deadlines, reminders, and Someday tasks.
+- Repeat tasks daily, on weekdays, weekly, monthly, or yearly; the next occurrence is created after completion.
 - Add notes and checklists while keeping checklist items out of top-level task lists.
 - Create, search, summarize, update, and delete tasks through a conversational AI assistant.
 - Continue a conversation to refine drafts or operate on previously found tasks.
@@ -23,6 +24,7 @@ A Things-inspired GTD task manager for SiYuan Note. It provides Inbox, Today, Up
 
 ```bash
 npm install
+npm test
 npm run build
 ```
 

@@ -23,7 +23,6 @@
   export let store: StoreManager;
   export let currentView: ViewType = "inbox";
   export let currentViewId: string | undefined = undefined;
-  export let presetStartDate: number | undefined = undefined;
   export let aiConfig: AIConfig = {
     mode: "siyuan",
     endpoint: "",
@@ -180,6 +179,7 @@
       deadline: deadline.date,
       deadlineTime: deadline.time,
       someday: draft.someday === true,
+      repeatRule: draft.repeatRule,
       project: project?.name,
       area: area?.name,
       heading: heading?.title,
@@ -605,9 +605,9 @@
 
   &__example-chip {
     padding: 7px 12px;
-    border: 1px solid #e0e4e9;
+    border: 1px solid var(--b3-border-color);
     border-radius: 9px;
-    background: #fff;
+    background: var(--b3-theme-background);
     font-size: 11px;
     color: var(--b3-theme-on-surface);
     cursor: pointer;
@@ -616,16 +616,16 @@
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.024);
 
     &:hover {
-      border-color: #3b7ff0;
-      color: #3b7ff0;
-      background: #f0f5ff;
+      border-color: var(--b3-theme-primary);
+      color: var(--b3-theme-primary);
+      background: var(--b3-theme-primary-light);
     }
   }
 
   // ===== 卡片 =====
   &__card {
-    background: #fff;
-    border: 1px solid #e4e8ec;
+    background: var(--b3-theme-background);
+    border: 1px solid var(--b3-border-color);
     border-radius: 13px;
     padding: 14px 16px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.024);
@@ -767,23 +767,23 @@
 
   &__search-section { padding-top: 4px; }
   &__search-list { display: flex; flex-direction: column; gap: 6px; }
-  &__search-answer { margin-bottom: 9px; font-size: 12px; line-height: 1.6; color: #59616d; }
-  &__search-item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 10px; border: 1px solid #e3e7ec; border-radius: 9px; background: #fff; color: inherit; cursor: pointer; text-align: left; }
-  &__search-item:hover { border-color: #9bbcf5; background: #f7faff; }
+  &__search-answer { margin-bottom: 9px; font-size: 12px; line-height: 1.6; color: var(--b3-theme-on-surface); }
+  &__search-item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 10px; border: 1px solid var(--b3-border-color); border-radius: 9px; background: var(--b3-theme-background); color: inherit; cursor: pointer; text-align: left; }
+  &__search-item:hover { border-color: var(--b3-theme-primary); background: var(--b3-list-hover); }
   &__search-status { color: #3b7ff0; font-size: 16px; }
   &__search-status.is-done { color: #62a879; }
   &__search-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
   &__search-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-  &__search-location { color: #8b93a0; font-size: 10px; }
-  &__search-empty { padding: 14px; border-radius: 9px; background: #f3f5f7; color: #7c8490; font-size: 12px; text-align: center; }
-  &__answer-card { padding: 12px 14px; border-radius: 10px; background: #fff; border: 1px solid #e3e7ec; }
+  &__search-location { color: var(--b3-theme-on-surface-light); font-size: 10px; }
+  &__search-empty { padding: 14px; border-radius: 9px; background: var(--b3-theme-surface-light); color: var(--b3-theme-on-surface-light); font-size: 12px; text-align: center; }
+  &__answer-card { padding: 12px 14px; border-radius: 10px; background: var(--b3-theme-background); border: 1px solid var(--b3-border-color); }
   &__answer-text { font-size: 13px; line-height: 1.65; color: var(--b3-theme-on-surface); }
-  &__change-preview { margin-top: 10px; padding: 9px 10px; border-radius: 8px; background: #f5f7fa; font-size: 11px; color: #69717d; }
+  &__change-preview { margin-top: 10px; padding: 9px 10px; border-radius: 8px; background: var(--b3-theme-surface-light); font-size: 11px; color: var(--b3-theme-on-surface-light); }
   &__change-row { display: flex; justify-content: space-between; gap: 12px; margin-top: 5px; }
   &__confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
   &__confirm-btn, &__cancel-btn { padding: 6px 11px; border-radius: 7px; font-size: 11px; cursor: pointer; }
   &__confirm-btn { border: none; background: #3b7ff0; color: #fff; }
-  &__cancel-btn { border: 1px solid #d8dde4; background: #fff; color: #606975; }
+  &__cancel-btn { border: 1px solid var(--b3-border-color); background: var(--b3-theme-background); color: var(--b3-theme-on-surface); }
 
   &__count-badge {
     background: #3b7ff0;
@@ -846,15 +846,15 @@
 
   // ===== 底部输入栏 =====
   &__input-bar {
-    border-top: 1px solid #e4e8ec;
+    border-top: 1px solid var(--b3-border-color);
     padding: 10px 16px;
-    background: #f6f7f9;
+    background: var(--b3-theme-surface);
     flex-shrink: 0;
   }
 
   &__input-container {
-    background: #ffffff;
-    border: 1px solid #e0e4e9;
+    background: var(--b3-theme-background);
+    border: 1px solid var(--b3-border-color);
     border-radius: 13px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.024);
     transition: border-color 0.2s;
@@ -889,7 +889,7 @@
     justify-content: space-between;
     gap: 7px;
     padding: 6px 10px 10px;
-    border-top: 1px solid #f0f2f5;
+    border-top: 1px solid var(--b3-border-color);
   }
 
   &__input-toolbar-left,
@@ -908,9 +908,9 @@
     align-items: center;
     gap: 4px;
     padding: 4px 9px;
-    border: 1px solid #e4e8ec;
+    border: 1px solid var(--b3-border-color);
     border-radius: 7px;
-    background: #fafbfc;
+    background: var(--b3-theme-surface-light);
     color: var(--b3-theme-on-surface);
     font-size: 11px;
     cursor: pointer;
@@ -937,8 +937,8 @@
     bottom: calc(100% + 6px);
     left: 0;
     z-index: 60;
-    background: #ffffff;
-    border: 1px solid #e4e8ec;
+    background: var(--b3-theme-background);
+    border: 1px solid var(--b3-border-color);
     border-radius: 10px;
     box-shadow: 0 8px 24px rgba(30, 43, 62, 0.15);
     padding: 5px;

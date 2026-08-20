@@ -10,7 +10,6 @@
   export let store: StoreManager;
   export let currentView: ViewType = "inbox";
   export let currentViewId: string | undefined = undefined;
-  export let presetStartDate: number | undefined = undefined;
   export let aiConfig: AIConfig = {
     mode: "siyuan",
     endpoint: "",
@@ -44,7 +43,6 @@
         {store}
         {currentView}
         {currentViewId}
-        {presetStartDate}
         {aiConfig}
       />
     </div>
@@ -56,8 +54,8 @@
     height: 100%;
     margin: 0; // 外边距由 App 外壳的卡片容器负责，避免双重 margin 导致高度不一致
     border-radius: 14px;
-    border: 1px solid #e4e8ec;
-    background: #f6f7f9;
+    border: 1px solid var(--b3-border-color);
+    background: var(--b3-theme-surface);
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
     display: flex;
     flex-direction: column;

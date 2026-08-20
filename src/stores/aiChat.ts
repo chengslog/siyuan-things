@@ -15,6 +15,7 @@ import {
   type ThinkingLevel,
 } from "@/services/aiParser";
 import { parseDate } from "@/utils/date";
+import { normalizeRepeatRule } from "@/utils/recurrence";
 
 export interface ChatRound {
   id: string;
@@ -229,6 +230,7 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
               title: draft.title, notes: draft.notes, startDate: draft.startDate,
               deadline: draft.deadline, someday: draft.someday, tags: draft.tags,
               projectId: draft.projectId, areaId: draft.areaId, headingId: draft.headingId,
+              repeatRule: draft.repeatRule,
             });
             const existingChildren = taskStore.tasks.getSubTasks(taskId);
             const retained = new Set<string>();
@@ -315,6 +317,7 @@ function taskSummary(task: Task) {
     id: task.id, title: task.title, notes: task.notes, status: task.status,
     created: task.created, updated: task.updated, startDate: task.startDate,
     deadline: task.deadline, completedDate: task.completedDate, someday: !!task.someday,
+    repeatRule: task.repeatRule,
     project: task.projectId ? taskStore?.projects.get(task.projectId)?.name : undefined,
     area: task.areaId ? taskStore?.areas.get(task.areaId)?.name : undefined,
     tags: (task.tags || []).map((id) => taskStore?.tags.get(id)?.name).filter(Boolean),
@@ -425,6 +428,7 @@ function filterTaskCandidates(plan: any, scope: AIResolvedScope): Task[] {
   }
   if (plan.dateScope === 'upcoming') tasks = tasks.filter((task) => taskStore!.tasks.getUpcomingTasks().some((item) => item.id === task.id));
   if (plan.dateScope === 'someday') tasks = tasks.filter((task) => task.someday === true);
+  if (plan.recurring) tasks = tasks.filter((task) => !!task.repeatRule);
   if (plan.project) tasks = tasks.filter((task) => task.projectId && taskStore!.projects.get(task.projectId)?.name.toLowerCase().includes(String(plan.project).toLowerCase()));
   if (plan.area) tasks = tasks.filter((task) => task.areaId && taskStore!.areas.get(task.areaId)?.name.toLowerCase().includes(String(plan.area).toLowerCase()));
   // 关键词只作为第二阶段 AI 的语义线索，不在本地做字面过滤，避免漏掉同义表达。
@@ -473,6 +477,7 @@ async function executePendingOperation(): Promise<string> {
     }
     else if (raw.deadline === null) changes.deadline = undefined;
     if (raw.status && ['todo', 'done', 'canceled'].includes(raw.status)) changes.status = raw.status;
+    if ('repeatRule' in raw) changes.repeatRule = raw.repeatRule === null ? undefined : normalizeRepeatRule(raw.repeatRule);
     if (typeof raw.project === 'string') changes.projectId = taskStore.projects.getAll().find((p) => p.name.toLowerCase() === raw.project.toLowerCase())?.id;
     if (typeof raw.area === 'string') changes.areaId = taskStore.areas.getAll().find((a) => a.name.toLowerCase() === raw.area.toLowerCase())?.id;
     if (Array.isArray(raw.tags)) changes.tags = raw.tags.map((name: string) => taskStore!.tags.getAll().find((tag) => tag.name.toLowerCase() === String(name).toLowerCase())?.id).filter(Boolean);
@@ -552,6 +557,7 @@ async function legacySendAiMessage(text: string, config: AIConfig) {
         deadline: task.deadline,
         completedDate: task.completedDate,
         someday: task.someday === true,
+        repeatRule: task.repeatRule,
         project: task.projectId ? taskStore!.projects.get(task.projectId)?.name : undefined,
         area: task.areaId ? taskStore!.areas.get(task.areaId)?.name : undefined,
         tags: (task.tags || []).map((id) => taskStore!.tags.get(id)?.name).filter(Boolean),
@@ -674,6 +680,7 @@ async function legacySendAiMessage(text: string, config: AIConfig) {
           projectId: draft.projectId,
           areaId: draft.areaId,
           headingId: draft.headingId,
+          repeatRule: draft.repeatRule,
         });
 
         const oldChildren = taskStore.tasks.getSubTasks(taskId);
@@ -768,6 +775,7 @@ export function parsedToPrefill(parsed: ParsedTask) {
     projectId,
     areaId,
     headingId,
+    repeatRule: normalizeRepeatRule(parsed.repeatRule),
     unresolved,
   };
 }

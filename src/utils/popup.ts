@@ -18,6 +18,9 @@ export function smartPosition(node: HTMLElement) {
   node.style.position = 'fixed';
   node.style.zIndex = '100000';
   node.style.margin = '0';
+  node.style.boxSizing = 'border-box';
+  node.style.overflowY = 'auto';
+  node.style.overscrollBehavior = 'contain';
 
   function place() {
     cancelAnimationFrame(frame);
@@ -32,6 +35,9 @@ export function smartPosition(node: HTMLElement) {
       const popupRect = node.getBoundingClientRect();
       const viewportWidth = document.documentElement.clientWidth;
       const viewportHeight = document.documentElement.clientHeight;
+      const maxPopupHeight = Math.max(120, viewportHeight - margin * 2);
+      const maxHeight = `${maxPopupHeight}px`;
+      if (node.style.maxHeight !== maxHeight) node.style.maxHeight = maxHeight;
 
       let left = alignRight ? triggerRect.right - popupRect.width : triggerRect.left;
       left = Math.max(margin, Math.min(left, viewportWidth - popupRect.width - margin));
@@ -50,12 +56,17 @@ export function smartPosition(node: HTMLElement) {
   }
 
   place();
+  // Date/deadline pickers grow after opening their nested time picker. Re-run
+  // placement on content-size changes instead of waiting for window resize.
+  const resizeObserver = new ResizeObserver(place);
+  resizeObserver.observe(node);
   window.addEventListener('resize', place);
   document.addEventListener('scroll', place, true);
 
   return {
     destroy() {
       cancelAnimationFrame(frame);
+      resizeObserver.disconnect();
       window.removeEventListener('resize', place);
       document.removeEventListener('scroll', place, true);
       // The action portals this element outside its original Svelte block.

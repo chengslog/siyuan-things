@@ -4,12 +4,12 @@ import {
   Dialog,
   openTab,
   getFrontend,
+  fetchSyncPost,
 } from "siyuan";
 
 import "./index.scss";
 import App from "@/components/App.svelte";
 import { StoreManager } from "@/stores";
-import { TaskStoreDB } from "@/stores/taskStoreDB";
 import type { ViewType, PluginConfig } from "@/types";
 import { DEFAULT_CONFIG } from "@/types";
 import { SettingUtils } from "./libs/setting-utils";
@@ -31,6 +31,56 @@ export default class ThingsPlugin extends Plugin {
   private unsubTaskChange: (() => void) | null = null;
   private thingsApp: any = null; // 当前标签页的 Svelte 组件实例
   private thingsTab: any = null; // 当前标签页的 Tab 实例
+  private openingThingsTab: Promise<any> | null = null;
+  private currentThingsView: ViewType = "today";
+  private handleThingsDockButtonClick = (event: MouseEvent) => {
+    const target = event.target as HTMLElement | null;
+    const dockButton = target?.closest('.dock__item') as HTMLElement | null;
+    const dockType = dockButton?.dataset.type || "";
+    // SiYuan may namespace a plugin dock type with the plugin package name.
+    if (!dockButton || (dockType !== "things_nav" && !dockType.endsWith("things_nav"))) return;
+
+    // Let SiYuan finish its own dock toggle first. If a Things tab is already
+    // open, focus it and preserve its view; otherwise open the configured default.
+    setTimeout(() => {
+      const view = this.hasLiveThingsTab() ? this.currentThingsView : this.getConfiguredThingsView();
+      this.openThingsTab(view);
+      if (this.dockElement) this.setActive(this.dockElement, view);
+    }, 0);
+  };
+
+  private getConfiguredThingsView(): ViewType {
+    const configured = this.settingUtils?.get("defaultView") || "today";
+    return configured === "none" ? "today" : configured as ViewType;
+  }
+
+  private hasLiveThingsTab(): boolean {
+    if (!this.thingsApp || !this.thingsTab) return false;
+    const head = this.thingsTab.headElement as HTMLElement | undefined;
+    const element = this.thingsTab.element as HTMLElement | undefined;
+    return !!(head?.isConnected || element?.isConnected);
+  }
+
+  /** Ensure SiYuan does not restore old tabs before Things opens its default view. */
+  private async ensureCloseTabsOnStart(): Promise<boolean> {
+    const siyuan = (window as any).siyuan;
+    const fileTree = siyuan?.config?.fileTree;
+    if (!fileTree) return false;
+    if (fileTree.closeTabsOnStart === true && fileTree.tabStartupMode === 2) return true;
+
+    const nextFileTree = {
+      ...fileTree,
+      closeTabsOnStart: true,
+      tabStartupMode: 2,
+    };
+    const response: any = await fetchSyncPost("/api/setting/setFiletree", nextFileTree);
+    if (response?.code !== 0) {
+      console.error("[Things] Failed to update SiYuan startup behavior:", response);
+      return false;
+    }
+    siyuan.config.fileTree = response.data || nextFileTree;
+    return true;
+  }
 
   async onload() {
     console.log("[Things] Loading plugin...");
@@ -72,6 +122,7 @@ export default class ThingsPlugin extends Plugin {
 
         (this.element as any).__thingsApp = app;
         pluginInstance.thingsApp = app;
+        pluginInstance.currentThingsView = view as ViewType;
         // this.parent 是实际的 Tab 实例（拥有 updateTitle, headElement 等方法）
         if ((this as any).parent) {
           pluginInstance.thingsTab = (this as any).parent;
@@ -113,6 +164,7 @@ export default class ThingsPlugin extends Plugin {
         this.dockElement = null;
       }
     });
+    document.addEventListener("click", this.handleThingsDockButtonClick, true);
 
     // 注册命令
     this.addCommand({
@@ -236,36 +288,19 @@ export default class ThingsPlugin extends Plugin {
         return;
       }
 
-      // 应用默认视图的函数
-      const applyDefaultView = () => {
-        if (this.thingsApp && this.thingsTab) {
-          this.thingsApp.$set({ view: defaultView, viewId: undefined, searchQuery: "" });
-          this.updateTabTitle(this.getViewTitle(defaultView as ViewType));
-          this.updateTabIcon(this.getViewIcon(defaultView as ViewType));
-          if (this.dockElement) this.setActive(this.dockElement, defaultView as ViewType);
-        }
-      };
-
-      // 等待思源完成标签页恢复
+      // A concrete startup view requires SiYuan not to restore arbitrary old
+      // tabs. Keep the global setting in sync and use one creation path only.
+      await this.ensureCloseTabsOnStart();
       setTimeout(() => {
-        console.log("[Things] onLayoutReady: thingsApp=", !!this.thingsApp, "thingsTab=", !!this.thingsTab, "defaultView=", defaultView);
-        if (this.thingsApp && this.thingsTab) {
-          applyDefaultView();
-        } else {
-          this.openThingsTab(defaultView as ViewType);
-          if (this.dockElement) this.setActive(this.dockElement, defaultView as ViewType);
-        }
+        this.openThingsTab(defaultView as ViewType);
+        if (this.dockElement) this.setActive(this.dockElement, defaultView as ViewType);
       }, 300);
-
-      // 延迟二次更新，确保思源渲染完成后标题不被覆盖
-      setTimeout(() => {
-        applyDefaultView();
-      }, 1500);
     }
   }
 
   async onunload() {
     console.log("[Things] Plugin unloaded");
+    document.removeEventListener("click", this.handleThingsDockButtonClick, true);
 
     // 停止提醒服务
     this.reminderService?.stop();
@@ -381,8 +416,7 @@ export default class ThingsPlugin extends Plugin {
     this.renderTags(element);
     this.updateCounts(element);
 
-    // 默认选中"今天"
-    this.setActive(element, "today");
+    this.setActive(element, this.hasLiveThingsTab() ? this.currentThingsView : this.getConfiguredThingsView());
   }
 
   /**
@@ -999,6 +1033,7 @@ export default class ThingsPlugin extends Plugin {
    */
   private async openThingsTab(view: ViewType, viewId?: string, searchQuery?: string) {
     console.log("[Things] Opening tab:", view, viewId);
+    this.currentThingsView = view;
 
     const title = this.getViewTitle(view, viewId);
 
@@ -1025,8 +1060,17 @@ export default class ThingsPlugin extends Plugin {
       return;
     }
 
-    // 否则创建新标签页
-    const tab = await openTab({
+    this.thingsApp = null;
+    this.thingsTab = null;
+
+    // Serialize creation: startup, Dock clicks and sidebar clicks can arrive in
+    // the same frame, but only one custom tab may be created.
+    if (this.openingThingsTab) {
+      await this.openingThingsTab;
+      if (this.hasLiveThingsTab()) return this.openThingsTab(view, viewId, searchQuery);
+      return;
+    }
+    this.openingThingsTab = openTab({
       app: this.app,
       custom: {
         icon: this.getViewIcon(view),
@@ -1039,7 +1083,11 @@ export default class ThingsPlugin extends Plugin {
         id: this.name + TAB_TYPE,
       },
     });
-    this.thingsTab = tab;
+    try {
+      this.thingsTab = await this.openingThingsTab;
+    } finally {
+      this.openingThingsTab = null;
+    }
   }
 
   /**
@@ -1353,16 +1401,36 @@ export default class ThingsPlugin extends Plugin {
         desc.style.fontSize = "12px";
         desc.style.color = "#666";
         desc.style.marginBottom = "8px";
-        desc.textContent = "每次打开思源时默认显示的视图";
+        desc.textContent = "选择具体页面后，Things 会将思源的“启动行为”自动设为“关闭所有页签”，以确保启动时只打开这里设置的页面。选择“不打开”不会修改思源设置。";
         wrapper.appendChild(desc);
+
+        const startupStatus = document.createElement("div");
+        startupStatus.style.display = "none";
+        startupStatus.style.fontSize = "12px";
+        startupStatus.style.marginTop = "8px";
 
         defaultViewEl.addEventListener('change', async () => {
           const value = (defaultViewEl as HTMLSelectElement).value;
           await this.settingUtils.setAndSave(defaultViewKey, value);
+          if (value !== "none") {
+            const updated = await this.ensureCloseTabsOnStart();
+            startupStatus.style.display = "block";
+            startupStatus.style.color = updated
+              ? "var(--b3-theme-primary)"
+              : "var(--b3-theme-error)";
+            startupStatus.textContent = updated
+              ? "已自动将思源启动行为设为“关闭所有页签”"
+              : "未能修改思源启动行为，请在思源设置中手动选择“关闭所有页签”";
+          } else {
+            startupStatus.style.display = "block";
+            startupStatus.style.color = "var(--b3-theme-on-surface-light)";
+            startupStatus.textContent = "已设为启动时不打开 Things；思源的启动行为保持不变";
+          }
           console.log(`[Things] Setting ${defaultViewKey} saved:`, value);
         });
 
         wrapper.appendChild(defaultViewEl);
+        wrapper.appendChild(startupStatus);
         settingsEl.appendChild(wrapper);
       }
 

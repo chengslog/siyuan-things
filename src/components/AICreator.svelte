@@ -11,7 +11,6 @@
   export let store: StoreManager;
   export let currentView: ViewType = "inbox";
   export let currentViewId: string | undefined = undefined;
-  export let presetStartDate: number | undefined = undefined;
   export let aiConfig: AIConfig = {
     mode: "siyuan",
     endpoint: "",
@@ -50,7 +49,6 @@
         {store}
         {currentView}
         {currentViewId}
-        {presetStartDate}
         {aiConfig}
         on:navigate={() => dispatch('cancel')}
       />
@@ -64,7 +62,7 @@
     position: absolute;
     inset: 0;
     z-index: 100;
-    background: rgba(228, 232, 238, 0.6);
+    background: color-mix(in srgb, var(--b3-theme-surface) 72%, transparent);
     backdrop-filter: blur(2px);
     display: flex;
     align-items: center;
@@ -77,7 +75,7 @@
     flex-direction: column;
     width: 100%;
     height: min(920px, 100%);
-    background: #f6f7f9;
+    background: var(--b3-theme-surface);
     border-radius: 20px;
     box-shadow: 0 24px 65px rgba(30, 43, 62, 0.2);
     overflow: hidden;
@@ -136,7 +134,7 @@
       flex-shrink: 0;
 
       &:hover {
-        background: rgba(0, 0, 0, 0.05);
+        background: var(--b3-theme-surface-light);
         color: var(--b3-theme-on-surface);
       }
     }

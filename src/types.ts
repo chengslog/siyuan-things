@@ -3,6 +3,7 @@ export type TaskStatus = 'todo' | 'done' | 'canceled';
 
 // ===== 优先级 =====
 export type Priority = 'none' | 'low' | 'medium' | 'high';
+export type RepeatRule = 'daily' | 'weekdays' | 'weekly' | 'monthly' | 'yearly';
 
 // ===== 任务 =====
 export interface Task {
@@ -19,6 +20,9 @@ export interface Task {
   deadline?: number;     // 截止日期
   someday?: boolean;     // 是否是"某天"任务
   completedDate?: number;
+  repeatRule?: RepeatRule;
+  recurrenceSourceId?: string;
+  recurrenceGeneratedAt?: number;
 
   // 组织
   projectId?: string;
@@ -135,6 +139,7 @@ export interface ParsedTask {
   deadline?: string;     // YYYY-MM-DD
   deadlineTime?: string; // HH:mm
   someday?: boolean;
+  repeatRule?: RepeatRule;
   project?: string;      // 项目名称
   area?: string;         // 区域名称
   heading?: string;      // 项目内标题分组名称

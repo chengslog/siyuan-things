@@ -2,7 +2,7 @@
   import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
   import { fade } from "svelte/transition";
   import { showMessage } from "siyuan";
-  import type { Task, Priority } from "@/types";
+  import type { Task, Priority, RepeatRule } from "@/types";
   import type { StoreManager } from "@/stores";
   import { formatRelativeDate, isOverdue } from "@/utils/date";
   import { isTodayDate, isTomorrowDate, formatDateFull } from "@/utils/calendar";
@@ -28,9 +28,6 @@
   export let isDragging: boolean = false;
   export let registerItem: (id: string, el: HTMLElement) => void = () => {};
   export let unregisterItem: (id: string) => void = () => {};
-  // 日程行模式（计划视图中带具体时间的任务）：收缩态用时间列替换 checkbox、隐藏副标题/辅助信息；
-  // 展开后恢复正常卡片形态（checkbox 回来，可勾选完成）
-  export let scheduleMode: boolean = false;
   // 月度分组内联日期（计划视图月度组）：收缩态勾选框后显示任务的 M/D 日期
   export let inlineDate: boolean = false;
   // 新建模式继承拖拽落点的日期（今晚→18:00、日期组→当天、月度组→月初）
@@ -60,6 +57,7 @@
     startDate?: number;
     deadline?: number;
     someday?: boolean;
+    repeatRule?: RepeatRule;
     tags?: string[];
     priority?: string;
     projectId?: string;
@@ -77,6 +75,7 @@
   let notes = prefilledData?.notes || "";
   let startDate: number | undefined = prefilledData?.startDate;
   let deadline: number | undefined = prefilledData?.deadline;
+  let repeatRule: RepeatRule | undefined = prefilledData?.repeatRule;
   let someday: boolean = prefilledData?.someday || false;
   let selectedTags: string[] = prefilledData?.tags || [];
   let projectId: string | undefined = prefilledData?.projectId;
@@ -97,6 +96,7 @@
         startDate,
         deadline,
         someday,
+        repeatRule,
         tags: selectedTags,
         priority,
         projectId,
@@ -110,12 +110,17 @@
   let expanded = mode === 'create' && !collapsedPreview; // 普通新建默认展开；已添加预览固定收缩
   let showDatePicker = false;
   let showDeadlinePicker = false;
+  let showRepeatPicker = false;
   let showTagPicker = false;
   let showProjectAreaPicker = false;
   let showChecklist = true;
   let isInteracting = false;
   let isMovingOut = false;
   let titleInput: HTMLTextAreaElement;
+
+  $: if (showDatePicker || showDeadlinePicker || showTagPicker || showProjectAreaPicker) {
+    showRepeatPicker = false;
+  }
 
   // 标题输入框自动增高：编辑态长文本换行可见（收缩态仍是单行+省略号）
   function autoGrow(node: HTMLTextAreaElement) {
@@ -150,12 +155,14 @@
       notes = task.notes || "";
       startDate = task.startDate;
       deadline = task.deadline;
+      repeatRule = task.repeatRule;
       someday = task.someday || false;
       selectedTags = [...(task.tags || [])];
       priority = task.priority || 'none';
       // 初始化项目/区域归属（之前漏掉了，导致编辑后失去焦点会清除归属）
       projectId = task.projectId;
       areaId = task.areaId;
+      repeatRule = task.repeatRule;
       // 加载子任务到本地状态
       const subTasks = store.tasks.getSubTasks(task.id);
       if (subTasks.length > 0) {
@@ -218,6 +225,7 @@
     if (notes !== (task.notes || "")) changes.notes = notes;
     if (startDate !== task.startDate) changes.startDate = startDate;
     if (deadline !== task.deadline) changes.deadline = deadline;
+    if (repeatRule !== task.repeatRule) changes.repeatRule = repeatRule;
     if (someday !== (task.someday || false)) changes.someday = someday;
     if (projectId !== task.projectId) changes.projectId = projectId;
     if (areaId !== task.areaId) changes.areaId = areaId;
@@ -333,8 +341,9 @@
   $: deadlineDisplay = getDeadlineDisplay(resolvedDeadline);
   $: deadlineReminderDisplay = getReminderDisplay(resolvedDeadline);
 
-  // 收缩态提醒徽章：带具体时刻、且未被日程行时间列 / 今晚组头传达时显示
-  $: showTimeBadge = !scheduleMode && hasTimeOfDay(resolvedStartDate) && !(currentView === 'today' && isEveningTime(resolvedStartDate));
+  // 收缩态提醒徽章：开始时间统一显示为“小铃铛 + 时间”胶囊。
+  // 今天的“今晚”默认时刻已由组头表达，因此不重复显示。
+  $: showTimeBadge = hasTimeOfDay(resolvedStartDate) && !(currentView === 'today' && isEveningTime(resolvedStartDate));
   // 收缩态内联日期：所在视图不传达日期（项目/区域/标签/搜索/随时等）时显示。
   // 月度分组（inlineDate）改用行首日期列（日志同款），不再用内联徽章
   // 日志视图已有行首完成日期列，不再叠加开始日期徽章
@@ -385,6 +394,31 @@
     showDatePicker = false;
     showDeadlinePicker = false;
     showTagPicker = false;
+    showRepeatPicker = false;
+  }
+
+  const repeatOptions: Array<{ value?: RepeatRule; label: string }> = [
+    { value: undefined, label: "不重复" },
+    { value: "daily", label: "每天" },
+    { value: "weekdays", label: "每个工作日" },
+    { value: "weekly", label: "每周" },
+    { value: "monthly", label: "每月" },
+    { value: "yearly", label: "每年" },
+  ];
+  $: repeatLabel = repeatOptions.find(option => option.value === repeatRule)?.label || "重复";
+
+  function toggleRepeatPicker() {
+    showRepeatPicker = !showRepeatPicker;
+    showDatePicker = false;
+    showDeadlinePicker = false;
+    showTagPicker = false;
+    showProjectAreaPicker = false;
+  }
+
+  function selectRepeatRule(value?: RepeatRule) {
+    repeatRule = value;
+    showRepeatPicker = false;
+    if (mode === 'create') tick().then(() => titleInput?.focus());
   }
 
   // 卡片点击
@@ -396,12 +430,14 @@
 
     // 弹窗打开时：卡片内任何点击（弹窗自身除外，其内部已 stopPropagation）先关弹窗，
     // 不触发展开/折叠。修复"打开日期选择器后点卡片空白处弹窗不消失"。
-    const hasOpenDropdown = showDatePicker || showDeadlinePicker || showTagPicker || showProjectAreaPicker;
+    const hasOpenDropdown = showDatePicker || showDeadlinePicker || showRepeatPicker || showTagPicker || showProjectAreaPicker;
     if (hasOpenDropdown && (!target || !target.closest('.task-card__dropdown'))) {
       showDatePicker = false;
       showDeadlinePicker = false;
       showTagPicker = false;
+      showRepeatPicker = false;
       showProjectAreaPicker = false;
+      showRepeatPicker = false;
       return;
     }
 
@@ -477,6 +513,7 @@
       if (notes !== (task.notes || "")) changes.notes = notes;
       if (startDate !== task.startDate) changes.startDate = startDate;
       if (deadline !== task.deadline) changes.deadline = deadline;
+      if (repeatRule !== task.repeatRule) changes.repeatRule = repeatRule;
       if (someday !== (task.someday || false)) changes.someday = someday;
       if (projectId !== task.projectId) changes.projectId = projectId;
       if (areaId !== task.areaId) changes.areaId = areaId;
@@ -788,6 +825,28 @@
     deadline = undefined;
   }
 
+  async function clearStartReminder(e?: Event) {
+    e?.stopPropagation();
+    if (!resolvedStartDate) return;
+    const value = new Date(resolvedStartDate);
+    value.setHours(0, 0, 0, 0);
+    startDate = value.getTime();
+    if (mode === 'edit' && task && !expanded) {
+      await applyChangeWithAnimation({ startDate });
+    }
+  }
+
+  async function clearDeadlineReminder(e?: Event) {
+    e?.stopPropagation();
+    if (!resolvedDeadline) return;
+    const value = new Date(resolvedDeadline);
+    value.setHours(0, 0, 0, 0);
+    deadline = value.getTime();
+    if (mode === 'edit' && task && !expanded) {
+      await applyChangeWithAnimation({ deadline });
+    }
+  }
+
   // 判断给定变更是否会使任务移出当前视图（基于当前任务与变更的合并结果）
   function willChangeCauseMove(changes: Partial<Task>): boolean {
     if (!task) return false;
@@ -917,6 +976,7 @@
         notes: notes.trim(),
         startDate,
         deadline,
+        repeatRule,
         someday,
         tags: selectedTags,
         projectId,
@@ -972,6 +1032,7 @@
       notes = "";
       startDate = currentView === "today" ? getTodayStart() : undefined;
       deadline = undefined;
+      repeatRule = undefined;
       someday = false;
       selectedTags = [];
       projectId = currentView === "project" ? currentViewId : undefined;
@@ -1053,21 +1114,17 @@
     {#if inlineDate && mode === 'edit' && !expanded}
       <span class="task-card__month-date">{formatMonthDate(task?.startDate)}</span>
     {/if}
-    <!-- 复选框（日程行收缩态显示时间列，展开后换回复选框以便勾选） -->
+    <!-- 复选框 -->
     {#if mode === 'edit'}
-      {#if scheduleMode && !expanded}
-        <span class="task-card__schedule-time">{formatTime(task?.startDate)}</span>
-      {:else}
-        <button
-          class="task-card__check"
-          class:is-checked={task?.status === "done" || pendingDone}
-          on:click={handleToggle}
-        >
-          {#if task?.status === "done" || pendingDone}
-            <svg><use xlink:href="#iconThingsCheck" /></svg>
-          {/if}
-        </button>
-      {/if}
+      <button
+        class="task-card__check"
+        class:is-checked={task?.status === "done" || pendingDone}
+        on:click={handleToggle}
+      >
+        {#if task?.status === "done" || pendingDone}
+          <svg><use xlink:href="#iconThingsCheck" /></svg>
+        {/if}
+      </button>
     {:else}
       {#if aiPreview}
         <span class="task-card__ai-marker" title="AI 整理结果">
@@ -1109,7 +1166,7 @@
         <div class="task-card__title" class:is-done={task?.status === "done" || pendingDone}>
           {mode === 'create' ? title : task?.title}
         </div>
-        {#if subtitleDisplay && !scheduleMode}
+        {#if subtitleDisplay}
           <span class="task-card__subtitle">
             <Icon name={subtitleDisplay.icon} size={13} />
             <span class="task-card__subtitle-name">{subtitleDisplay.name}</span>
@@ -1117,19 +1174,22 @@
         {/if}
       </div>
 
-      <!-- 右侧辅助信息（收缩态，弱化显示；日程行只保留时间+标题，不显示） -->
-      {#if !scheduleMode}
-        <div class="task-card__aux">
+      <!-- 右侧辅助信息（收缩态，弱化显示） -->
+      <div class="task-card__aux">
           {#if showTimeBadge}
             <span class="task-card__aux-item task-card__aux-time" title="开始提醒（到点通知）">
               <Icon name="iconThingsBell" size={12} />
               <span>{formatTime(resolvedStartDate)}</span>
+              <button class="task-card__aux-remove" title="清除开始提醒，保留日期" on:click|stopPropagation={clearStartReminder}>×</button>
             </span>
           {/if}
           {#if resolvedDeadline}
             <span class="task-card__aux-item task-card__aux-deadline" class:is-overdue={isDeadlineOverdue} title={hasTimeOfDay(resolvedDeadline) ? `截止提醒 ${formatTime(resolvedDeadline)}（到点通知）` : "截止日期"}>
               <Icon name="iconThingsFlag" size={12} />
               <span>{formatRelativeDate(resolvedDeadline)}{hasTimeOfDay(resolvedDeadline) ? ` ${formatTime(resolvedDeadline)}` : ""}</span>
+              {#if hasTimeOfDay(resolvedDeadline)}
+                <button class="task-card__aux-remove" title="清除截止提醒，保留日期" on:click|stopPropagation={clearDeadlineReminder}>×</button>
+              {/if}
             </span>
           {/if}
           {#if checklistCount > 0}
@@ -1146,8 +1206,7 @@
               {/each}
             </span>
           {/if}
-        </div>
-      {/if}
+      </div>
     {/if}
     {#if collapsedPreview && collapsedStatusLabel}
       <span class="task-card__collapsed-status">{collapsedStatusLabel}</span>
@@ -1255,6 +1314,7 @@
             <div class="task-card__tag-item task-card__tag-item--reminder" title="开始提醒">
               <Icon name={dateReminderDisplay.icon} size={12} />
               <span>{dateReminderDisplay.text}</span>
+              <button class="task-card__tag-remove" title="清除开始提醒，保留日期" on:click|stopPropagation={clearStartReminder}>×</button>
             </div>
           {/if}
 
@@ -1314,6 +1374,26 @@
             <div class="task-card__tag-item task-card__tag-item--reminder-deadline" title="截止提醒">
               <Icon name={deadlineReminderDisplay.icon} size={12} />
               <span>{deadlineReminderDisplay.text}</span>
+              <button class="task-card__tag-remove" title="清除截止提醒，保留日期" on:click|stopPropagation={clearDeadlineReminder}>×</button>
+            </div>
+          {/if}
+
+          {#if repeatRule}
+            <div class="task-card__tag-item">
+              <button class="task-card__tag-btn" title="重复设置" on:click|stopPropagation={toggleRepeatPicker}>
+                <span class="task-card__repeat-icon">↻</span>
+                <span>{repeatLabel}</span>
+              </button>
+              <button class="task-card__tag-remove" title="取消重复" on:click|stopPropagation={() => selectRepeatRule(undefined)}>×</button>
+              {#if showRepeatPicker}
+                <div class="task-card__dropdown task-card__repeat-menu" use:smartPosition>
+                  {#each repeatOptions as option}
+                    <button class:is-active={option.value === repeatRule} on:click|stopPropagation={() => selectRepeatRule(option.value)}>
+                      <span>{option.label}</span><span>{option.value === repeatRule ? "✓" : ""}</span>
+                    </button>
+                  {/each}
+                </div>
+              {/if}
             </div>
           {/if}
 
@@ -1388,6 +1468,23 @@
                     on:change={handleDeadlineChange}
                     on:close={() => showDeadlinePicker = false}
                   />
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          {#if !repeatRule}
+            <div class="task-card__action-group">
+              <button class="task-card__tool-btn" title="重复" on:click|stopPropagation={toggleRepeatPicker}>
+                <span class="task-card__repeat-icon task-card__repeat-icon--tool">↻</span>
+              </button>
+              {#if showRepeatPicker}
+                <div class="task-card__dropdown task-card__dropdown--right task-card__repeat-menu" use:smartPosition>
+                  {#each repeatOptions as option}
+                    <button class:is-active={option.value === repeatRule} on:click|stopPropagation={() => selectRepeatRule(option.value)}>
+                      <span>{option.label}</span><span>{option.value === repeatRule ? "✓" : ""}</span>
+                    </button>
+                  {/each}
                 </div>
               {/if}
             </div>
@@ -1573,7 +1670,7 @@
 
     &.is-moving-out {
       opacity: 0.5;
-      background: #f3f4f6;
+      background: var(--b3-list-hover);
       transition: opacity 0.3s ease, background 0.3s ease;
       pointer-events: none;
     }
@@ -1674,17 +1771,6 @@
       font-variant-numeric: tabular-nums;
     }
 
-    // 日程行左侧时间列（计划视图带时间的任务，收缩态替代 checkbox）
-    &__schedule-time {
-      flex-shrink: 0;
-      width: 46px;
-      margin-top: 2px;
-      font-size: 15px;
-      font-weight: 500;
-      font-variant-numeric: tabular-nums;
-      color: #3b82f6;
-    }
-
     // 日志视图行首完成日期列：固定宽度保证各行复选框对齐
     &__log-date {
       flex-shrink: 0;
@@ -1756,6 +1842,28 @@
       margin-top: 2px;
       border: 1.5px solid #d1d5db;
       border-radius: 5px;
+    }
+
+    &__aux-remove {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 14px;
+      height: 14px;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: currentColor;
+      font-size: 11px;
+      line-height: 1;
+      cursor: pointer;
+      opacity: 0.55;
+
+      &:hover {
+        opacity: 1;
+        background: rgba(0, 0, 0, 0.08);
+      }
     }
 
     &:global(.is-ai-focused) {
@@ -1889,7 +1997,7 @@
       outline: none;
       font-size: 13px;
       font-family: inherit;
-      color: #4b5563;
+      color: var(--b3-theme-on-surface);
       background: transparent;
       resize: none;
       overflow: hidden;
@@ -2172,7 +2280,7 @@
       border-radius: 8px;
 
       &:hover {
-        background: #e5e7eb;
+        background: var(--b3-list-hover);
       }
     }
 
@@ -2185,12 +2293,12 @@
       border: none;
       background: transparent;
       cursor: pointer;
-      color: #9ca3af;
+      color: var(--b3-theme-on-surface-light);
       font-size: 12px;
       border-radius: 50%;
 
       &:hover {
-        background: #e5e7eb;
+        background: var(--b3-list-hover);
         color: #dc2626;
       }
     }
@@ -2256,5 +2364,39 @@
   @keyframes task-ai-focus {
     0%, 35% { background: rgba(59, 127, 240, 0.18); box-shadow: 0 0 0 3px rgba(59, 127, 240, 0.16); }
     100% { background: transparent; box-shadow: none; }
+  }
+
+  .task-card__repeat-icon {
+    font-size: 15px;
+    line-height: 1;
+  }
+
+  .task-card__repeat-icon--tool {
+    font-size: 19px;
+  }
+
+  .task-card__repeat-menu {
+    width: 172px;
+    padding: 6px;
+  }
+
+  .task-card__repeat-menu button {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border: 0;
+    border-radius: 6px;
+    padding: 7px 9px;
+    color: var(--b3-theme-on-background);
+    background: transparent;
+    cursor: pointer;
+    font-size: 13px;
+  }
+
+  .task-card__repeat-menu button:hover,
+  .task-card__repeat-menu button.is-active {
+    background: var(--b3-list-hover);
+    color: var(--b3-theme-primary);
   }
 </style>

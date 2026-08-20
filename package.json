@@ -1,6 +1,6 @@
 {
   "name": "siyuan-things",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "A GTD task management plugin inspired by Things for SiYuan Note",
   "repository": {
@@ -17,6 +17,7 @@
     "build": "run-s build:app build:kernel",
     "build:app": "cross-env NODE_ENV=production VITE_BUILD_TARGET=app vite build",
     "build:kernel": "cross-env NODE_ENV=production VITE_BUILD_TARGET=kernel vite build",
+    "test": "node --test --experimental-strip-types tests/*.test.ts",
     "make-link": "node --no-warnings ./scripts/make_dev_link.js",
     "make-link-win": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/elevate.ps1 -scriptPath ./scripts/make_dev_link.js",
     "update-version": "node --no-warnings ./scripts/update_version.js",

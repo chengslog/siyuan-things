@@ -22,6 +22,7 @@
   // ThingsAvailableWidth = 标签页容器实际宽度（思源两侧 dock 开合都会反映到这里）
   const TASK_RATIO = 0.25;           // 任务列表最小宽度 = 整个页面宽度的 1/4
   const AI_RATIO = 0.2;              // AI 面板最小宽度 = 整个页面宽度的 1/5
+  const DEFAULT_AI_RATIO = 0.45;     // 默认双栏：任务列表约 55%，AI 面板约 45%
   const DIVIDER_WIDTH = 6;           // 分隔条 2 宽度
 
   let rootEl: HTMLElement;
@@ -105,10 +106,10 @@
     plugin?.settingUtils?.setAndSave?.('aiPanelWidth', Math.round(aiPanelWidth));
   }
 
-  // 双击分隔条：任务列表和 AI 面板平分标签页宽度
+  // 双击分隔条：恢复默认比例（任务列表约 55%，AI 面板约 45%）
   function onDividerDblClick() {
     if (aiState !== 'full') return;
-    aiPanelWidth = Math.round((thingsWidth - DIVIDER_WIDTH) / 2);
+    aiPanelWidth = Math.round((thingsWidth - DIVIDER_WIDTH) * DEFAULT_AI_RATIO);
     plugin?.settingUtils?.setAndSave?.('aiPanelWidth', Math.round(aiPanelWidth));
   }
 
@@ -167,7 +168,7 @@
 
   // ========== 全局 AI Workspace（浮窗） ==========
   let aiWindowOpen = false;
-  let aiWindowDest: { destView?: ViewType; destViewId?: string; presetDate?: number } = {};
+  let aiWindowDest: { destView?: ViewType; destViewId?: string } = {};
 
   function handleOpenAI(e: CustomEvent) {
     const detail = e.detail || {};
@@ -194,14 +195,15 @@
   }
   $: aiConfig = getAIConfig();
 
-  // 首次进入 FULL 时初始化 AI 面板宽度：有保存值则用保存值，否则平分
+  // 首次进入 FULL 时初始化 AI 面板宽度：有保存值则用保存值，
+  // 否则让 AI 面板略窄于任务列表（约 45:55）。
   $: {
     if (aiPanelWidth === 0 && thingsWidth > 0) {
       const saved = plugin?.settingUtils?.get?.('aiPanelWidth');
       if (typeof saved === 'number' && saved > 0) {
         aiPanelWidth = saved;
       } else {
-        aiPanelWidth = Math.round((thingsWidth - DIVIDER_WIDTH) / 2);
+        aiPanelWidth = Math.round((thingsWidth - DIVIDER_WIDTH) * DEFAULT_AI_RATIO);
       }
     }
   }
@@ -244,7 +246,7 @@
       class:is-dragging={isDraggingDivider}
       on:mousedown={onDividerDown}
       on:dblclick={onDividerDblClick}
-      title="拖动调整 AI 面板宽度，双击平分"
+      title="拖动调整 AI 面板宽度，双击恢复 55:45"
     ></div>
   {/if}
 
@@ -266,7 +268,6 @@
       {store}
       currentView={aiWindowDest.destView || view}
       currentViewId={aiWindowDest.destViewId || viewId}
-      presetStartDate={aiWindowDest.presetDate}
       {aiConfig}
       on:cancel={handleCloseAI}
       on:done={handleCloseAI}
@@ -392,13 +393,13 @@
         bottom: 0;
         width: 2px;
         transform: translateX(-50%);
-        background: #e4e8ec;
+        background: var(--b3-border-color);
         transition: all 0.15s;
       }
 
       &:hover::after,
       &.is-dragging::after {
-        background: #3b7ff0;
+        background: var(--b3-theme-primary);
         width: 3px;
       }
     }

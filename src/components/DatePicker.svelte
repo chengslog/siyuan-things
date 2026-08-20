@@ -71,6 +71,10 @@
         timestamp = undefined;
         dispatch("change", { timestamp: undefined, someday: false });
         break;
+      case "clearReminder":
+        if (timestamp) timestamp = dayStart(timestamp);
+        dispatch("change", { timestamp, someday: false });
+        break;
     }
     console.log('[Things DatePicker] dispatching close');
     dispatch("close");
@@ -158,12 +162,19 @@
     />
   {/if}
 
+  {#if timestamp && new Date(timestamp).getHours() + new Date(timestamp).getMinutes() > 0}
+    <button class="date-picker__option date-picker__option--clear" on:click={(e) => { e.stopPropagation(); handleQuickOption("clearReminder"); }}>
+      <span class="date-picker__icon"><Icon name="iconThingsX" size={16} /></span>
+      <span class="date-picker__label">清除开始提醒</span>
+    </button>
+  {/if}
+
   <!-- 清除 -->
   {#if showClear && timestamp}
     <div class="date-picker__separator"></div>
     <button class="date-picker__option date-picker__option--clear" on:click={(e) => { e.stopPropagation(); handleQuickOption("clear"); }}>
       <span class="date-picker__icon"><Icon name="iconThingsX" size={16} /></span>
-      <span class="date-picker__label">清除</span>
+      <span class="date-picker__label">清除日期</span>
     </button>
   {/if}
 </div>
@@ -300,11 +311,6 @@
 
       &:hover {
         background: var(--b3-theme-surface-light);
-      }
-
-      &.is-other-month {
-        color: var(--b3-theme-on-surface-light);
-        opacity: 0.5;
       }
 
       &.is-today {

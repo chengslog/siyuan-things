@@ -1,6 +1,5 @@
 import type { Plugin } from "siyuan";
 import { TaskStore } from "./taskStore";
-import { TaskStoreDB } from "./taskStoreDB";
 import { ProjectStore } from "./projectStore";
 import { AreaStore } from "./areaStore";
 import { TagStore } from "./tagStore";
@@ -35,7 +34,6 @@ export class StoreManager {
 }
 
 export { TaskStore } from "./taskStore";
-export { TaskStoreDB } from "./taskStoreDB";
 export { ProjectStore } from "./projectStore";
 export { AreaStore } from "./areaStore";
 export { TagStore } from "./tagStore";

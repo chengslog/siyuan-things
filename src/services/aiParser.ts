@@ -72,6 +72,7 @@ export interface AIQueryPlan {
   area?: string;
   tag?: string;
   duplicate?: boolean;
+  recurring?: boolean;
 }
 
 export interface AIRouteResult {
@@ -141,6 +142,7 @@ function buildSystemPrompt(level: ThinkingLevel): string {
     "deadline": "YYYY-MM-DD 或 null",
     "deadlineTime": "HH:mm 或 null",
     "someday": false,
+    "repeatRule": "daily | weekdays | weekly | monthly | yearly 或 null",
     "project": "已有项目名称或 null",
     "area": "已有区域名称或 null",
     "heading": "已有项目内标题分组名称或 null",
@@ -156,6 +158,7 @@ function buildSystemPrompt(level: ThinkingLevel): string {
 - “今晚”必须同时返回今天的 startDate 和 startTime；未给出具体钟点时，startTime 使用 18:00
 - 备注：不适合作为标题或检查项、但对执行有帮助的补充信息
 - 某天：用户明确表示“以后、将来、某天、暂不安排”且没有具体日期时设为 true
+- 重复：识别每天、工作日、每周、每月、每年，分别返回 daily、weekdays、weekly、monthly、yearly；未提及返回 null
 - 项目/区域/标题分组：仅在用户明确提及名称时填写，不要凭空编造
 - 截止时间：用户给出截止日期的具体时刻时写入 deadlineTime
 - 标签：识别 #标签 或推断分类
@@ -296,12 +299,12 @@ intent 只能是 create/search/update/confirm/cancel/clarify/answer。
 - clarify：目标或要求不明确，需要追问；message 给出问题。
 - answer：无需操作即可根据上下文回答。
 不得把查询当创建，不得虚构上下文中不存在的任务 ID。“它、这个、第二个”等必须结合 focusedTasks、lastSearchResults、drafts 解析；不唯一时返回 clarify。
-任务字段：clientId,title,notes,checklist,startDate,startTime,deadline,deadlineTime,someday,project,area,heading,tags。`;
+任务字段：clientId,title,notes,checklist,startDate,startTime,deadline,deadlineTime,someday,repeatRule,project,area,heading,tags。repeatRule 只能是 daily/weekdays/weekly/monthly/yearly/null。`;
   const payload = {
     model: actualConfig.model || 'gpt-4o-mini',
     messages: [
       { role: 'system', content: system },
-      { role: 'system', content: 'Intent 还支持 delete。用户明确要删除真实任务时返回 {"intent":"delete","targetIds":["ID"],"message":"删除预览说明"}。targetIds 只能取自 lastSearchResults 或 focusedTasks；目标不明确时先 search 或 clarify，不得猜 ID。删除只生成待确认计划，不得声称已执行。查询重复任务时使用 search，并在 query 设置 duplicate=true。confirm/cancel 同时适用于修改和删除操作。' },
+      { role: 'system', content: 'Intent 还支持 delete。用户明确要删除真实任务时返回 {"intent":"delete","targetIds":["ID"],"message":"删除预览说明"}。targetIds 只能取自 lastSearchResults 或 focusedTasks；目标不明确时先 search 或 clarify，不得猜 ID。删除只生成待确认计划，不得声称已执行。查询重复内容的任务组时设置 query.duplicate=true；查询设置了重复规则的任务时设置 query.recurring=true。创建或修改重复规则使用 repeatRule=daily/weekdays/weekly/monthly/yearly/null。confirm/cancel 同时适用于修改和删除操作。' },
       { role: 'system', content: '视图名是精确产品术语：“计划”或“计划列表”必须映射为 search query.dateScope="upcoming"，不是所有待办；“今天”映射 today；“某天”映射 someday。对“全部”、“都有哪些”等追问，必须从 recentConversation 继承上一轮已明确的视图和筛选范围，不得重置为 any。' },
       { role: 'system', content: '查询计划必须优先返回结构化 query.view：all/inbox/today/upcoming/anytime/someday/log/projects/areas/tags/project/area/tag。产品术语映射：收件箱=inbox，今天=today，计划=upcoming，随时=anytime，某天=someday，日志或已完成=log。指定项目/区域/标签时返回 view=project/area/tag 并在 project/area/keywords 中给出名称；项目标题分组另返回 heading。用户说“当前、这里、这个列表”时使用 currentViewContext；说“全部”时继承 lastQueryScope，只移除关键词等内容限制，不得移除视图作用域。dateScope 只表示额外日期条件，不再用它表示侧边栏视图。' },
       { role: 'system', content: '创建任务时必须根据用户完整语义判断任务结构，并返回 structure：single_task（一个独立任务）、single_with_checklist（一个目标及其步骤/准备事项）、multiple_tasks（多个可独立完成和分别管理的结果）。不要仅凭“拆分、步骤、清单”等关键词决定数量：一个目标的准备事项或执行步骤应放入同一 task.checklist；多个独立目标应生成多个 tasks；多个目标分别要求步骤时，应生成多个 tasks，并在各自 checklist 中写步骤。用户明确指定任务数量、说“分别/各自/每个任务”时必须遵守。例如“明天上午 9 点开产品评审会，帮我拆分准备事项”是 single_with_checklist；“创建产品发布和季度复盘两个任务，分别拆分步骤”是 multiple_tasks。若无法判断事项是独立任务还是检查项，返回 clarify 追问，不得猜测。不得凭空增加日期、责任人、项目归属或用户未表达的具体要求。' },
