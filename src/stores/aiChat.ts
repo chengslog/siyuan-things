@@ -50,6 +50,14 @@ export interface AIPageContext {
   viewId?: string;
 }
 
+export type AIComposerContextKind = 'view' | 'project' | 'area' | 'tag';
+export interface AIComposerContext {
+  kind: AIComposerContextKind;
+  value: string;
+  label: string;
+  id?: string;
+}
+
 export interface PendingOperation {
   operationId: string;
   type: 'update' | 'delete';
@@ -64,6 +72,29 @@ export const aiInputText = writable("");
 export const aiSelectedModel = writable("");
 export const aiThinkingLevel = writable<ThinkingLevel>(THINKING_LEVELS[1]);
 export const aiIsSending = writable(false);
+export const aiComposerContexts = writable<AIComposerContext[]>([]);
+
+export function addAiComposerContext(context: AIComposerContext) {
+  aiComposerContexts.update((items) => {
+    let next = [...items];
+    if (context.kind === 'view') {
+      next = next.filter((item) => item.kind !== 'view');
+      if (context.value === 'inbox') next = next.filter((item) => item.kind !== 'project' && item.kind !== 'area');
+    } else if (context.kind === 'project' || context.kind === 'area') {
+      next = next.filter((item) => item.kind !== 'project' && item.kind !== 'area');
+      next = next.filter((item) => !(item.kind === 'view' && item.value === 'inbox'));
+    } else {
+      next = next.filter((item) => !(item.kind === 'tag' && item.id === context.id));
+    }
+    return [...next, context];
+  });
+}
+
+export function removeAiComposerContext(context: AIComposerContext) {
+  aiComposerContexts.update((items) => items.filter((item) =>
+    !(item.kind === context.kind && item.value === context.value && item.id === context.id)
+  ));
+}
 
 let taskStore: StoreManager | null = null;
 let roundSeq = 0;
@@ -81,6 +112,19 @@ export function startNewAiChat() {
   aiRounds.set([]);
   aiInputText.set("");
   pendingOperation = null;
+}
+
+/** 重置插件时强制清空会话及尚未执行的操作，不弹出会话级确认。 */
+export function resetAiChat() {
+  aiRounds.set([]);
+  aiInputText.set("");
+  aiComposerContexts.set([]);
+  aiSelectedModel.set("");
+  aiThinkingLevel.set(THINKING_LEVELS[1]);
+  aiIsSending.set(false);
+  aiComposerContexts.set([]);
+  pendingOperation = null;
+  executedOperationIds.clear();
 }
 
 function bump(round: ChatRound) {
@@ -106,6 +150,8 @@ export function updateAiTaskDraft(round: ChatRound, index: number, parsed: Parse
 export async function sendAiMessage(text: string, config: AIConfig, pageContext?: AIPageContext) {
   if (!taskStore || get(aiIsSending)) return;
   const existingRounds = get(aiRounds);
+  const creationContexts = get(aiComposerContexts);
+  const effectivePageContext = composerContextToPageContext(creationContexts) || pageContext;
   const previousDraftRound = [...existingRounds].reverse().find((r) => r.parsedTasks.length > 0);
   const previousSearchRound = [...existingRounds].reverse().find((r) => r.mode === 'search' && r.searchResults?.length);
   const previousScopedRound = [...existingRounds].reverse().find((r) => r.queryScope);
@@ -125,12 +171,15 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
     startedAt: Date.now(),
   };
   aiInputText.set('');
+  // 设定项只作用于这次已快照的请求；点击发送后立即还原空输入框。
+  aiComposerContexts.set([]);
   aiIsSending.set(true);
   aiRounds.update((items) => [...items, round]);
 
   const sessionContext = {
     recentConversation,
-    currentViewContext: describePageContext(pageContext),
+    currentViewContext: describePageContext(effectivePageContext),
+    creationConstraints: creationContexts,
     lastQueryScope: previousScopedRound?.queryScope || null,
     drafts: previousDraftRound?.parsedTasks.map((task, index) => ({
       ...task,
@@ -205,7 +254,7 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
     // Preserve them across short clarification replies such as "查看全部".
     if (route.intent === 'search') {
       round.mode = 'search';
-      const scope = resolveQueryScope(route.query || {}, text, recentConversation, previousScopedRound?.queryScope, pageContext);
+      const scope = resolveQueryScope(route.query || {}, text, recentConversation, previousScopedRound?.queryScope, effectivePageContext);
       round.queryScope = scope;
       const candidates = filterTaskCandidates(route.query || {}, scope);
       const summaries = candidates.map(taskSummary);
@@ -233,7 +282,7 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
       round.parsedTasks = parseTasksFromContent(JSON.stringify(route.tasks || [])).map((task, index) => ({
         ...task,
         clientId: task.clientId || previousDraftRound?.parsedTasks[index]?.clientId || `draft-${round.id}-${index}`,
-      }));
+      })).map((task) => applyComposerContexts(task, creationContexts));
       if (!round.parsedTasks.length) throw new Error('AI 未返回有效任务草稿');
       // 已经写入任务库的草稿后续修改仍沿用原任务映射。
       if (previousDraftRound) {
@@ -254,6 +303,7 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
               deadline: draft.deadline, someday: draft.someday, tags: draft.tags,
               projectId: draft.projectId, areaId: draft.areaId, headingId: draft.headingId,
               repeatRule: draft.repeatRule,
+              status: draft.status,
             });
             const existingChildren = taskStore.tasks.getSubTasks(taskId);
             const retained = new Set<string>();
@@ -320,6 +370,73 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
     aiIsSending.set(false);
     bump(round);
   }
+}
+
+function composerContextToPageContext(contexts: AIComposerContext[]): AIPageContext | undefined {
+  const assignment = [...contexts].reverse().find((item) =>
+    item.kind === 'project' || item.kind === 'area' || item.kind === 'tag'
+  );
+  if (assignment?.id) {
+    return { view: assignment.kind as ViewType, viewId: assignment.id };
+  }
+  const view = [...contexts].reverse().find((item) => item.kind === 'view');
+  return view ? { view: view.value as ViewType } : undefined;
+}
+
+function localDateString(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+/** 拖入输入框的设定项是确定性约束，模型输出后再次本地覆盖，避免名称或日期被润色丢失。 */
+function applyComposerContexts(task: ParsedTask, contexts: AIComposerContext[]): ParsedTask {
+  const next: ParsedTask = { ...task, tags: [...(task.tags || [])] };
+  const view = contexts.find((item) => item.kind === 'view')?.value;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  if (view === 'inbox') {
+    next.startDate = undefined;
+    next.startTime = undefined;
+    next.someday = false;
+    next.project = undefined;
+    next.area = undefined;
+    next.heading = undefined;
+  } else if (view === 'today') {
+    next.startDate = localDateString(today);
+    next.someday = false;
+  } else if (view === 'upcoming') {
+    if (!next.startDate && !next.deadline) {
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      next.startDate = localDateString(tomorrow);
+    }
+    next.someday = false;
+  } else if (view === 'anytime') {
+    next.startDate = undefined;
+    next.startTime = undefined;
+    next.someday = false;
+  } else if (view === 'someday') {
+    next.startDate = undefined;
+    next.startTime = undefined;
+    next.someday = true;
+  } else if (view === 'log') {
+    next.status = 'done';
+  }
+
+  const assignment = contexts.find((item) => item.kind === 'project' || item.kind === 'area');
+  if (assignment?.kind === 'project') {
+    next.project = assignment.value;
+    next.area = undefined;
+  } else if (assignment?.kind === 'area') {
+    next.area = assignment.value;
+    next.project = undefined;
+    next.heading = undefined;
+  }
+
+  for (const tag of contexts.filter((item) => item.kind === 'tag')) {
+    if (!next.tags!.some((name) => name.toLowerCase() === tag.value.toLowerCase())) next.tags!.push(tag.value);
+  }
+  return next;
 }
 
 type TaskStructure = 'single_task' | 'single_with_checklist' | 'multiple_tasks';
@@ -811,6 +928,7 @@ export function parsedToPrefill(parsed: ParsedTask) {
     projectId,
     areaId,
     headingId,
+    status: parsed.status,
     repeatRule: normalizeRepeatRule(parsed.repeatRule),
     unresolved,
   };

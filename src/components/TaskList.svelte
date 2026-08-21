@@ -22,6 +22,7 @@
   // AI 展示形态（设计文档状态机）：
   // full=AI 面板独立列；button=右下角 ✧ FAB；header=Header 内 ✦＋；compact=Header 仅小 ✦
   export let aiMode: 'full' | 'button' | 'header' | 'compact' = 'button';
+  export let aiEnabled: boolean = true;
   // AI 浮窗打开时隐藏整个 FAB 组
   export let hideFabs: boolean = false;
 
@@ -1035,7 +1036,7 @@
       <h1 class="task-list__title">{viewTitle}</h1>
 
       <!-- Header 操作区（AI_HEADER / COMPACT 状态：AI Button 移到 Header） -->
-      {#if aiMode === 'header'}
+      {#if aiEnabled && aiMode === 'header'}
         <div class="task-list__header-actions">
           <button class="task-list__header-btn" title="AI 任务整理" on:click={openAICreatorDefault}>
             <svg><use xlink:href="#iconThingsSparkles" /></svg>
@@ -1045,7 +1046,7 @@
             <svg><use xlink:href="#iconThingsAdd" /></svg>
           </button>
         </div>
-      {:else if aiMode === 'compact'}
+      {:else if aiEnabled && aiMode === 'compact'}
         <div class="task-list__header-actions">
           <button class="task-list__header-btn task-list__header-btn--mini" title="AI 任务整理" on:click={openAICreatorDefault}>
             <svg><use xlink:href="#iconThingsSparkles" /></svg>
@@ -1271,7 +1272,7 @@
   <!-- 悬浮按钮组（状态机）：full=仅＋；button=✧＋；header/compact=隐藏（按钮移到 Header） -->
   {#if aiMode === 'full' || aiMode === 'button'}
     <div class="things-fab-group" class:is-hidden={hideFabs}>
-      {#if aiMode === 'button'}
+      {#if aiEnabled && aiMode === 'button'}
         <button
           class="things-fab__btn things-fab__btn--ai"
           bind:this={aiFabBtnEl}

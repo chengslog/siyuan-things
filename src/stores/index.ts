@@ -31,6 +31,23 @@ export class StoreManager {
       this.tags.load(),
     ]);
   }
+
+  /** 清空所有 Things 业务数据，并移除旧 IndexedDB 中可能残留的副本。 */
+  async clearAll(): Promise<void> {
+    await Promise.all([
+      this.tasks.clear(),
+      this.projects.clear(),
+      this.areas.clear(),
+      this.tags.clear(),
+    ]);
+    // IndexedDB 仅是旧版迁移残留；不可用时不应让主文件清空被误报为失败。
+    try {
+      const { IDB_STORES, idbClear } = await import('./idb');
+      await Promise.all(IDB_STORES.map((name) => idbClear(name)));
+    } catch (error) {
+      console.warn('[Things] Failed to clear legacy IndexedDB data:', error);
+    }
+  }
 }
 
 export { TaskStore } from "./taskStore";

@@ -132,6 +132,7 @@ export interface StoreEvent {
 export interface ParsedTask {
   clientId?: string;      // AI 会话内稳定草稿 ID
   title: string;
+  status?: TaskStatus;    // 拖入“日志”时创建已完成记录
   notes?: string;
   checklist?: string[];
   startDate?: string;    // YYYY-MM-DD

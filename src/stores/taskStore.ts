@@ -15,6 +15,19 @@ export class TaskStore extends BaseStore<Task> {
     this.archiveFileName = 'tasks-archive.json';
   }
 
+  /** 清空当前、归档及回收记录中的全部任务。 */
+  async clear(): Promise<void> {
+    this.items.clear();
+    this.archivedItems.clear();
+    this.trashBatches = [];
+    await Promise.all([
+      this.plugin.saveData(this.fileName, []),
+      this.plugin.saveData(this.archiveFileName, []),
+      this.plugin.saveData(this.trashFileName, []),
+    ]);
+    this.emit({ type: 'change', ids: [] });
+  }
+
   /**
    * 加载数据（包括归档）
    */
@@ -189,6 +202,7 @@ export class TaskStore extends BaseStore<Task> {
       title: partial.title,
       notes: partial.notes || '',
       status: partial.status || 'todo',
+      completedDate: partial.status === 'done' ? (partial.completedDate || now) : partial.completedDate,
       priority: partial.priority || 'none',
       created: now,
       updated: now,

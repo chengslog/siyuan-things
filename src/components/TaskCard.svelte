@@ -2,7 +2,7 @@
   import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
   import { fade } from "svelte/transition";
   import { showMessage } from "siyuan";
-  import type { Task, Priority, RepeatRule } from "@/types";
+  import type { Task, Priority, RepeatRule, TaskStatus } from "@/types";
   import type { StoreManager } from "@/stores";
   import { formatRelativeDate, isOverdue } from "@/utils/date";
   import { isTodayDate, isTomorrowDate, formatDateFull } from "@/utils/calendar";
@@ -63,6 +63,7 @@
     projectId?: string;
     areaId?: string;
     headingId?: string;
+    status?: TaskStatus;
     unresolved?: string[];
   } | undefined = undefined;
 
@@ -983,6 +984,7 @@
         areaId,
         headingId,
         priority,
+        status: prefilledData?.status || 'todo',
       };
 
       // 目标视图以显式 preset 为准（拖 + 切视图时 currentView 可能还是旧视图），

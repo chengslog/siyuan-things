@@ -103,6 +103,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+
+    &[draggable="true"] {
+      cursor: grab;
+
+      &:active { cursor: grabbing; }
+    }
   }
 
   &__count {
@@ -201,6 +207,10 @@
     position: relative;
   }
 }
+
+.things-nav__item[draggable="true"] { cursor: grab; }
+.things-nav__item[draggable="true"]:active { cursor: grabbing; }
+.things-nav__item.is-ai-context-dragging { opacity: 0.52; }
 
 // 拖拽幽灵卡片（侧边栏排序时跟随指针）
 .things-drag-ghost {

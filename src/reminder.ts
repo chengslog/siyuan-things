@@ -48,6 +48,11 @@ export class ReminderService {
     this.timer = null;
   }
 
+  async clearHistory() {
+    this.notified.clear();
+    await this.plugin.saveData(STORAGE_FILE, {});
+  }
+
   private async check() {
     const now = Date.now();
     for (const t of this.store.tasks.getAll()) {

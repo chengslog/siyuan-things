@@ -82,6 +82,7 @@ export class SettingUtils {
 
     settings: Map<string, ISettingUtilsItem> = new Map();
     elements: Map<string, HTMLElement> = new Map();
+    defaults: Map<string, any> = new Map();
 
     constructor(args: {
         plugin: Plugin,
@@ -253,6 +254,7 @@ export class SettingUtils {
     }
 
     addItem(item: ISettingUtilsItem) {
+        this.defaults.set(item.key, item.value);
         this.settings.set(item.key, item);
         const IsCustom = item.type === 'custom';
         let error = IsCustom && (item.createElement === undefined || item.getEleVal === undefined || item.setEleVal === undefined);
@@ -294,6 +296,17 @@ export class SettingUtils {
                 }
             });
         }
+    }
+
+    /** 将所有设置恢复为注册时的默认值并立即保存。 */
+    async resetToDefaults() {
+        for (const [key, value] of this.defaults) {
+            const item = this.settings.get(key);
+            if (!item) continue;
+            item.value = value;
+            this.updateElementFromValue(key);
+        }
+        await this.save();
     }
 
     createDefaultElement(item: ISettingUtilsItem) {

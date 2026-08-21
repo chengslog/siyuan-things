@@ -13,6 +13,7 @@
   export let view: ViewType = "today";
   export let viewId: string | undefined = undefined;
   export let searchQuery: string = "";
+  export let aiEnabled: boolean = true;
 
   setContext("store", store);
   setContext("plugin", plugin);
@@ -42,7 +43,7 @@
   // 挤占优先级：任务列表先缩小 → 到 2/5 不再缩 → AI 面板缩小 → 到 1/5 消失变按钮。
   // 网格中 TaskList 是 1fr（先吸收收缩），AI 面板宽度由 effectivePanelWidth 钳制，
   // 钳制下限保证 TaskList ≥ 2/5、AI ≥ 1/5；两者都到下限时 FULL 条件打破，面板退出。
-  $: canShowPanel =
+  $: canShowPanel = aiEnabled &&
     thingsWidth >= taskListMinWidth + aiPanelMinWidth + DIVIDER_WIDTH;
   $: aiState = canShowPanel
     ? 'full'
@@ -171,6 +172,7 @@
   let aiWindowDest: { destView?: ViewType; destViewId?: string } = {};
 
   function handleOpenAI(e: CustomEvent) {
+    if (!aiEnabled) return;
     const detail = e.detail || {};
     aiWindowDest = detail;
     aiWindowOpen = true;
@@ -179,6 +181,10 @@
   function handleCloseAI() {
     aiWindowOpen = false;
     aiWindowDest = {};
+  }
+
+  $: if (!aiEnabled && aiWindowOpen) {
+    handleCloseAI();
   }
 
   // ========== AI 配置 ==========
@@ -227,6 +233,7 @@
         {searchQuery}
         {store}
         aiMode={aiState === 'full' ? 'full' : 'button'}
+        {aiEnabled}
         hideFabs={aiWindowOpen}
       />
     </div>
@@ -240,7 +247,7 @@
   {/if}
 
   <!-- 分隔条 2（仅 FULL 状态） -->
-  {#if aiState === 'full'}
+  {#if aiEnabled && aiState === 'full'}
     <div
       class="app-shell__divider"
       class:is-dragging={isDraggingDivider}
@@ -251,7 +258,7 @@
   {/if}
 
   <!-- AI 面板卡片区（仅 FULL 状态） -->
-  {#if aiState === 'full'}
+  {#if aiEnabled && aiState === 'full'}
     <div class="app-shell__ai-card" style="width: {effectivePanelWidth}px">
       <AIPanel
         {store}
@@ -263,7 +270,7 @@
   {/if}
 
   <!-- 全局 AI Workspace -->
-  {#if aiWindowOpen}
+  {#if aiEnabled && aiWindowOpen}
     <AICreator
       {store}
       currentView={aiWindowDest.destView || view}

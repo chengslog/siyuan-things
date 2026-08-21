@@ -5,6 +5,7 @@ import {
   openTab,
   getFrontend,
   fetchSyncPost,
+  confirm as siyuanConfirm,
 } from "siyuan";
 
 import "./index.scss";
@@ -17,9 +18,12 @@ import { ICON_SPRITE, getViewIconId } from "@/icons";
 import { ReminderService } from "@/reminder";
 import { TAG_PALETTE, nextTagColor } from "@/utils/colors";
 import { renderMarkdown } from "@/utils/markdown";
+import { resetAiChat, type AIComposerContext } from "@/stores/aiChat";
 
 const STORAGE_NAME = "things-config";
 const TAB_TYPE = "things_tab";
+const SYNC_DOCK_RESTORE_KEY = "siyuan-things:dock-open-before-sync";
+const AI_CONTEXT_MIME = "application/x-siyuan-things-context";
 declare const __PLUGIN_VERSION__: string;
 declare const __PLUGIN_CHANGELOG__: string;
 
@@ -28,11 +32,26 @@ export default class ThingsPlugin extends Plugin {
   private reminderService: ReminderService;
   private settingUtils: SettingUtils;
   private dockElement: HTMLElement | null = null;
+  private thingsDockType = "things_nav";
+  private dockRestoreTimers: number[] = [];
   private unsubTaskChange: (() => void) | null = null;
   private thingsApp: any = null; // 当前标签页的 Svelte 组件实例
   private thingsTab: any = null; // 当前标签页的 Tab 实例
   private openingThingsTab: Promise<any> | null = null;
   private currentThingsView: ViewType = "today";
+  private handleSyncStart = () => {
+    if (this.isThingsDockOpen()) {
+      sessionStorage.setItem(SYNC_DOCK_RESTORE_KEY, "1");
+    } else {
+      sessionStorage.removeItem(SYNC_DOCK_RESTORE_KEY);
+    }
+  };
+  private handleSyncEnd = async () => {
+    // 同步可能替换插件数据文件，先刷新内存和侧边栏内容。
+    await this.store.loadAll();
+    if (this.dockElement) this.renderDock(this.dockElement);
+    this.scheduleDockRestoreAfterSync();
+  };
   private handleThingsDockButtonClick = (event: MouseEvent) => {
     const target = event.target as HTMLElement | null;
     const dockButton = target?.closest('.dock__item') as HTMLElement | null;
@@ -95,6 +114,19 @@ export default class ThingsPlugin extends Plugin {
 
     const pluginInstance = this;
 
+    // 注册顶部栏入口。空间不足时思源会将它收进右上角插件菜单，
+    // 此处显式使用 Things 品牌图标，避免只出现默认的设置齿轮。
+    this.addTopBar({
+      icon: "iconThings",
+      title: "Things 任务管理",
+      position: "right",
+      callback: () => {
+        const view = this.hasLiveThingsTab() ? this.currentThingsView : this.getConfiguredThingsView();
+        this.openThingsTab(view);
+        if (this.dockElement) this.setActive(this.dockElement, view);
+      },
+    });
+
     // 注册自定义标签页类型
     this.addTab({
       type: TAB_TYPE,
@@ -117,6 +149,7 @@ export default class ThingsPlugin extends Plugin {
             searchQuery: "",
             store: pluginInstance.store,
             plugin: pluginInstance,
+            aiEnabled: pluginInstance.settingUtils?.get("aiEnabled") !== false,
           },
         });
 
@@ -145,7 +178,7 @@ export default class ThingsPlugin extends Plugin {
     });
 
     // 注册左侧面板（停靠栏展开后显示导航面板，保持原样）
-    this.addDock({
+    const dockRegistration = this.addDock({
       config: {
         position: "LeftTop",
         size: { width: 232, height: 0 },
@@ -157,6 +190,7 @@ export default class ThingsPlugin extends Plugin {
       type: "things_nav",
       init: (dock) => {
         console.log("[Things] Dock init");
+        this.thingsDockType = (dock as any).type || this.thingsDockType;
         this.dockElement = dock.element;
         this.renderDock(dock.element);
       },
@@ -164,6 +198,7 @@ export default class ThingsPlugin extends Plugin {
         this.dockElement = null;
       }
     });
+    this.thingsDockType = (dockRegistration.model as any)?.type || this.thingsDockType;
     document.addEventListener("click", this.handleThingsDockButtonClick, true);
 
     // 注册命令
@@ -176,6 +211,9 @@ export default class ThingsPlugin extends Plugin {
     });
 
     this.eventBus.on("click-blockicon", this.blockIconEvent.bind(this));
+    this.eventBus.on("sync-start", this.handleSyncStart);
+    this.eventBus.on("sync-end", this.handleSyncEnd);
+    this.eventBus.on("sync-fail", this.handleSyncEnd);
 
     // 面板级导航（如项目删除后跳回收件箱）：组件 dispatch window 事件，外壳执行切换
     window.addEventListener("things-navigate", ((e: CustomEvent) => {
@@ -207,7 +245,7 @@ export default class ThingsPlugin extends Plugin {
     // 添加设置项
     this.settingUtils.addItem({
       key: "defaultView",
-      value: "today",
+      value: "none",
       type: "select",
       title: "启动时默认显示",
       description: "每次打开思源时默认显示的视图；选「不打开」则不干预思源的启动逻辑（自动恢复上次打开的文档）",
@@ -223,6 +261,14 @@ export default class ThingsPlugin extends Plugin {
     });
 
     // AI 服务配置
+    this.settingUtils.addItem({
+      key: "aiEnabled",
+      value: true,
+      type: "checkbox",
+      title: "启用 AI 功能",
+      description: "关闭后隐藏 AI 面板和所有 AI 入口，已有 AI 配置会保留",
+    });
+
     this.settingUtils.addItem({
       key: "aiMode",
       value: "siyuan",
@@ -272,11 +318,13 @@ export default class ThingsPlugin extends Plugin {
   async onLayoutReady() {
     await this.store.loadAll();
     await this.settingUtils.load();
+    this.thingsApp?.$set?.({ aiEnabled: this.settingUtils.get("aiEnabled") !== false });
     console.log("[Things] Data loaded, tasks:", this.store.tasks.count);
 
     if (this.dockElement) {
       this.updateCounts(this.dockElement);
     }
+    this.scheduleDockRestoreAfterSync();
 
     {
       // 获取默认视图设置
@@ -301,6 +349,11 @@ export default class ThingsPlugin extends Plugin {
   async onunload() {
     console.log("[Things] Plugin unloaded");
     document.removeEventListener("click", this.handleThingsDockButtonClick, true);
+    this.eventBus.off("sync-start", this.handleSyncStart);
+    this.eventBus.off("sync-end", this.handleSyncEnd);
+    this.eventBus.off("sync-fail", this.handleSyncEnd);
+    this.dockRestoreTimers.forEach((timer) => window.clearTimeout(timer));
+    this.dockRestoreTimers = [];
 
     // 停止提醒服务
     this.reminderService?.stop();
@@ -319,6 +372,47 @@ export default class ThingsPlugin extends Plugin {
         (closeBtn as HTMLElement).click();
       }
     });
+  }
+
+  private getThingsDockButton(): HTMLElement | null {
+    return Array.from(document.querySelectorAll<HTMLElement>(".dock__item")).find((item) => {
+      const type = item.dataset.type || "";
+      return type === this.thingsDockType || type === "things_nav" || type.endsWith("things_nav");
+    }) || null;
+  }
+
+  private isThingsDockOpen(): boolean {
+    return this.getThingsDockButton()?.classList.contains("dock__item--active") === true;
+  }
+
+  /** 使用思源 Dock 布局 API 恢复同步前已展开的 Things 侧边栏。 */
+  private openThingsDock(): boolean {
+    const leftDock = (this.app as any)?.layout?.leftDock;
+    const button = this.getThingsDockButton();
+    if (!leftDock || !button) return false;
+    const runtimeType = Object.keys(leftDock.data || {}).find((type) =>
+      type === this.thingsDockType || type === "things_nav" || type.endsWith("things_nav") || type.includes(this.name)
+    ) || button.dataset.type || this.thingsDockType;
+    try {
+      leftDock.toggleModel(runtimeType, true, false, false, true);
+      leftDock.showDock(true);
+      return true;
+    } catch (error) {
+      console.warn("[Things] Failed to restore dock after sync:", error);
+      return false;
+    }
+  }
+
+  private scheduleDockRestoreAfterSync() {
+    if (sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1") return;
+    this.dockRestoreTimers.forEach((timer) => window.clearTimeout(timer));
+    this.dockRestoreTimers = [120, 500, 1400].map((delay) => window.setTimeout(() => {
+      if (sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1") return;
+      if (this.openThingsDock()) {
+        sessionStorage.removeItem(SYNC_DOCK_RESTORE_KEY);
+        if (this.dockElement) this.setActive(this.dockElement, this.currentThingsView);
+      }
+    }, delay));
   }
 
   /**
@@ -425,8 +519,12 @@ export default class ThingsPlugin extends Plugin {
   private bindEvents(element: HTMLElement) {
     // 主要导航点击
     element.querySelectorAll('.things-nav__item').forEach(el => {
+      const node = el as HTMLElement;
+      const view = node.dataset.view as ViewType;
+      const label = node.querySelector('.things-nav__label')?.textContent?.trim();
+      if (view && label) this.bindAiContextDrag(node, { kind: 'view', value: view, label });
       el.addEventListener('click', () => {
-        const view = (el as HTMLElement).dataset.view as ViewType;
+        const view = node.dataset.view as ViewType;
         console.log("[Things] Click:", view);
         this.openThingsTab(view);
         this.setActive(element, view);
@@ -511,6 +609,9 @@ export default class ThingsPlugin extends Plugin {
       });
 
       this.bindRowDelete(node, id, 'project');
+      const label = node.querySelector('.things-nav__label') as HTMLElement | null;
+      const project = this.store.projects.get(id);
+      if (label && project) this.bindAiContextDrag(label, { kind: 'project', id, value: project.name, label: `项目 · ${project.name}` }, node);
     });
     this.bindSectionDragSort(container, 'project');
   }
@@ -562,6 +663,9 @@ export default class ThingsPlugin extends Plugin {
       });
 
       this.bindRowDelete(node, id, 'area');
+      const label = node.querySelector('.things-nav__label') as HTMLElement | null;
+      const area = this.store.areas.get(id);
+      if (label && area) this.bindAiContextDrag(label, { kind: 'area', id, value: area.name, label: `区域 · ${area.name}` }, node);
     });
     this.bindSectionDragSort(container, 'area');
   }
@@ -629,6 +733,9 @@ export default class ThingsPlugin extends Plugin {
       });
 
       this.bindRowDelete(row, id, 'tag');
+      const label = row.querySelector('.things-nav__label') as HTMLElement | null;
+      const tag = this.store.tags.get(id);
+      if (label && tag) this.bindAiContextDrag(label, { kind: 'tag', id, value: tag.name, label: `标签 · ${tag.name}` }, row);
     });
     this.bindSectionDragSort(container, 'tag');
   }
@@ -646,6 +753,8 @@ export default class ThingsPlugin extends Plugin {
         const ev = e as MouseEvent;
         if (ev.button !== 0) return;
         const target = ev.target as HTMLElement;
+        // 名称支持原生拖到 AI 输入框；行内其余空白区域仍用于自定义排序。
+        if (target.closest('.things-nav__label[draggable="true"]')) return;
         // 交互元素上不启动拖拽（加号、标签色点、改名/删除按钮、改名输入框）
         if (target.closest('.things-nav__add') || target.closest('.things-tag-row__dot') ||
             target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') ||
@@ -654,6 +763,20 @@ export default class ThingsPlugin extends Plugin {
         this.startSectionDrag(ev, node, container as HTMLElement, kind, rowSel);
       });
     });
+  }
+
+  private bindAiContextDrag(source: HTMLElement, context: AIComposerContext, row: HTMLElement = source) {
+    source.draggable = true;
+    source.title = `${source.title ? `${source.title} · ` : ''}拖到 AI 输入框作为新建任务设定`;
+    source.addEventListener('dragstart', (event) => {
+      const transfer = event.dataTransfer;
+      if (!transfer) return;
+      transfer.effectAllowed = 'copy';
+      transfer.setData(AI_CONTEXT_MIME, JSON.stringify(context));
+      transfer.setData('text/plain', context.label);
+      row.classList.add('is-ai-context-dragging');
+    });
+    source.addEventListener('dragend', () => row.classList.remove('is-ai-context-dragging'));
   }
 
   private startSectionDrag(startEv: MouseEvent, node: HTMLElement, container: HTMLElement, kind: 'area' | 'project' | 'tag', rowSel: string) {
@@ -1434,6 +1557,43 @@ export default class ThingsPlugin extends Plugin {
         settingsEl.appendChild(wrapper);
       }
 
+      // AI 功能总开关
+      const aiEnabledKey = "aiEnabled";
+      const aiEnabledEl = this.settingUtils.getElement(aiEnabledKey) as HTMLInputElement | undefined;
+      const aiConfigSection = document.createElement("div");
+      if (aiEnabledEl) {
+        const item = this.settingUtils.settings.get(aiEnabledKey);
+        item?.setEleVal?.(aiEnabledEl, item.value);
+
+        const wrapper = document.createElement("div");
+        wrapper.style.marginBottom = "16px";
+        wrapper.style.display = "flex";
+        wrapper.style.alignItems = "center";
+        wrapper.style.justifyContent = "space-between";
+        wrapper.style.gap = "16px";
+
+        const copy = document.createElement("div");
+        const label = document.createElement("div");
+        label.style.fontWeight = "500";
+        label.textContent = "启用 AI 功能";
+        const desc = document.createElement("div");
+        desc.style.marginTop = "4px";
+        desc.style.fontSize = "12px";
+        desc.style.color = "var(--b3-theme-on-surface-light)";
+        desc.textContent = "关闭后隐藏 AI 面板和所有 AI 入口，已有配置会保留";
+        copy.append(label, desc);
+        wrapper.append(copy, aiEnabledEl);
+        settingsEl.appendChild(wrapper);
+
+        aiConfigSection.style.display = aiEnabledEl.checked ? "block" : "none";
+        aiEnabledEl.addEventListener("change", async () => {
+          const enabled = aiEnabledEl.checked;
+          await this.settingUtils.setAndSave(aiEnabledKey, enabled);
+          aiConfigSection.style.display = enabled ? "block" : "none";
+          this.thingsApp?.$set?.({ aiEnabled: enabled });
+        });
+      }
+
       // 添加 AI 模式选择
       const aiModeKey = "aiMode";
       const aiModeEl = this.settingUtils.getElement(aiModeKey);
@@ -1461,7 +1621,7 @@ export default class ThingsPlugin extends Plugin {
         wrapper.appendChild(desc);
 
         wrapper.appendChild(aiModeEl);
-        settingsEl.appendChild(wrapper);
+        aiConfigSection.appendChild(wrapper);
 
         // 自定义配置容器
         const customConfigContainer = document.createElement("div");
@@ -1514,7 +1674,7 @@ export default class ThingsPlugin extends Plugin {
           }
         }
 
-        settingsEl.appendChild(customConfigContainer);
+        aiConfigSection.appendChild(customConfigContainer);
 
         // 监听 AI 模式变化
         aiModeEl.addEventListener('change', async () => {
@@ -1526,6 +1686,68 @@ export default class ThingsPlugin extends Plugin {
           customConfigContainer.style.display = value === "custom" ? "block" : "none";
         });
       }
+      settingsEl.appendChild(aiConfigSection);
+
+      const dangerSection = document.createElement("div");
+      dangerSection.style.marginTop = "24px";
+      dangerSection.style.paddingTop = "16px";
+      dangerSection.style.borderTop = "1px solid var(--b3-border-color)";
+
+      const dangerTitle = document.createElement("div");
+      dangerTitle.style.fontWeight = "600";
+      dangerTitle.style.color = "var(--b3-theme-on-background)";
+      dangerTitle.textContent = "重置 Things";
+      dangerSection.appendChild(dangerTitle);
+
+      const dangerDesc = document.createElement("div");
+      dangerDesc.style.margin = "5px 0 10px";
+      dangerDesc.style.fontSize = "12px";
+      dangerDesc.style.lineHeight = "1.6";
+      dangerDesc.style.color = "var(--b3-theme-on-surface-light)";
+      dangerDesc.textContent = "清空任务、归档、删除记录、项目、区域、标签、提醒和 AI 会话，并将 Things 设置恢复为默认值。不会影响思源笔记及其他插件。";
+      dangerSection.appendChild(dangerDesc);
+
+      const resetButton = document.createElement("button");
+      resetButton.className = "b3-button";
+      resetButton.style.background = "transparent";
+      resetButton.style.border = "1px solid var(--b3-border-color)";
+      resetButton.style.color = "var(--b3-theme-error)";
+      resetButton.style.boxShadow = "none";
+      resetButton.textContent = "清空所有记录并恢复默认";
+      resetButton.addEventListener("click", () => {
+        const taskStats = this.store.tasks.getStorageStats();
+        const entityCount = this.store.projects.count + this.store.areas.count + this.store.tags.count;
+        siyuanConfirm(
+          "清空 Things 数据",
+          `即将永久清空 ${taskStats.active + taskStats.archived} 条任务记录和 ${entityCount} 个项目、区域或标签，并恢复默认设置。<br><br>此操作不会删除思源笔记，但无法撤销。`,
+          async (confirmDialog) => {
+            confirmDialog.destroy();
+            resetButton.disabled = true;
+            resetButton.textContent = "正在重置…";
+            try {
+              await this.store.clearAll();
+              await this.reminderService.clearHistory();
+              resetAiChat();
+              await this.settingUtils.resetToDefaults();
+              this.thingsApp?.$set?.({ aiEnabled: true });
+              if (this.dockElement) {
+                this.renderDock(this.dockElement);
+                this.setActive(this.dockElement, "today");
+              }
+              await this.openThingsTab("today");
+              dialog.destroy();
+              showMessage("Things 已清空并恢复默认设置", 4000);
+            } catch (error) {
+              console.error("[Things] Reset failed:", error);
+              resetButton.disabled = false;
+              resetButton.textContent = "清空所有记录并恢复默认";
+              showMessage("重置失败，请查看开发者控制台", 5000, "error");
+            }
+          },
+        );
+      });
+      dangerSection.appendChild(resetButton);
+      settingsEl.appendChild(dangerSection);
 
       const footer = document.createElement("div");
       footer.style.marginTop = "24px";
@@ -1541,6 +1763,11 @@ export default class ThingsPlugin extends Plugin {
       version.textContent = `Things v${__PLUGIN_VERSION__}`;
       footer.appendChild(version);
 
+      const footerLinks = document.createElement("div");
+      footerLinks.style.display = "flex";
+      footerLinks.style.alignItems = "center";
+      footerLinks.style.gap = "10px";
+
       const changelog = document.createElement("a");
       changelog.textContent = "更新日志";
       changelog.href = "#";
@@ -1554,7 +1781,24 @@ export default class ThingsPlugin extends Plugin {
           width: "680px",
         });
       });
-      footer.appendChild(changelog);
+      footerLinks.appendChild(changelog);
+
+      const separator = document.createElement("span");
+      separator.textContent = "·";
+      separator.style.color = "var(--b3-border-color)";
+      footerLinks.appendChild(separator);
+
+      const bugReport = document.createElement("a");
+      bugReport.textContent = "Bug 反馈";
+      bugReport.href = "https://github.com/chengslog/siyuan-things/issues/new?labels=bug&title=%5BBug%5D%20";
+      bugReport.target = "_blank";
+      bugReport.rel = "noopener noreferrer";
+      bugReport.style.color = "var(--b3-theme-primary)";
+      bugReport.style.textDecoration = "none";
+      bugReport.title = "前往 GitHub 提交问题";
+      footerLinks.appendChild(bugReport);
+
+      footer.appendChild(footerLinks);
 
       settingsEl.appendChild(footer);
     }

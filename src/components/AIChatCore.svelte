@@ -16,6 +16,10 @@
     parsedToPrefill,
     confirmAiOperation,
     cancelAiOperation,
+    aiComposerContexts,
+    addAiComposerContext,
+    removeAiComposerContext,
+    type AIComposerContext,
   } from "@/stores/aiChat";
   import Icon from "@/icons/Icon.svelte";
   import TaskCard from "./TaskCard.svelte";
@@ -39,6 +43,8 @@
   let closingTaskKeys = new Set<string>();
   let clockNow = Date.now();
   let clockTimer: ReturnType<typeof setInterval> | undefined;
+  let inputDropActive = false;
+  const AI_CONTEXT_MIME = 'application/x-siyuan-things-context';
 
   function getAvailableModels(): Array<{ value: string; label: string }> {
     if (aiConfig.mode === 'custom') {
@@ -87,6 +93,53 @@
   $: selectedModel = $aiSelectedModel || aiConfig.model;
   $: thinkingLevel = $aiThinkingLevel;
   $: isSending = $aiIsSending;
+
+  function handleContextDragOver(event: DragEvent) {
+    if (!event.dataTransfer?.types.includes(AI_CONTEXT_MIME)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    inputDropActive = true;
+  }
+
+  function handleContextDrop(event: DragEvent) {
+    event.preventDefault();
+    inputDropActive = false;
+    try {
+      const context = JSON.parse(event.dataTransfer?.getData(AI_CONTEXT_MIME) || '') as AIComposerContext;
+      const allowedViews = ['inbox', 'today', 'upcoming', 'anytime', 'someday', 'log'];
+      const valid = context?.label && context?.value && (
+        (context.kind === 'view' && allowedViews.includes(context.value)) ||
+        (context.kind === 'project' && !!context.id && !!store.projects.get(context.id)) ||
+        (context.kind === 'area' && !!context.id && !!store.areas.get(context.id)) ||
+        (context.kind === 'tag' && !!context.id && !!store.tags.get(context.id))
+      );
+      if (!valid) return;
+      addAiComposerContext(context);
+      tick().then(() => textareaEl?.focus());
+    } catch {
+      // 忽略来自其他应用的普通拖拽内容。
+    }
+  }
+
+  function handleContextDragLeave(event: DragEvent) {
+    const container = event.currentTarget as HTMLElement;
+    if (!container.contains(event.relatedTarget as Node | null)) inputDropActive = false;
+  }
+
+  function contextIcon(context: AIComposerContext): string {
+    if (context.kind === 'project') return 'iconThingsProject';
+    if (context.kind === 'area') return 'iconThingsArea';
+    if (context.kind === 'tag') return 'iconThingsTagColor';
+    const icons: Record<string, string> = {
+      inbox: 'iconThingsInbox',
+      today: 'iconThingsToday',
+      upcoming: 'iconThingsCalendar',
+      anytime: 'iconThingsAnytime',
+      someday: 'iconThingsSomeday',
+      log: 'iconThingsLog',
+    };
+    return icons[context.value] || 'iconThingsInbox';
+  }
 
   // 模型列表未选中时取第一个可用
   $: if (!$aiSelectedModel && (availableModels?.length || 0) > 0) {
@@ -185,6 +238,7 @@
       project: project?.name,
       area: area?.name,
       heading: heading?.title,
+      status: round.parsedTasks[index]?.status,
       tags: (draft.tags || []).map((id: string) => store.tags.get(id)?.name).filter(Boolean),
     });
   }
@@ -212,6 +266,11 @@
     if (round.mode === 'search') {
       if (round.phase === 'done') return '查询完成，我把结果整理在下面了。';
       return '好的，我来检索并整理相关任务。';
+    }
+    // 普通问答和任务操作的最终消息由下方 answer-card 统一承载；
+    // 处理完成后不再在思考卡内重复渲染同一条 assistantMessage。
+    if (round.mode === 'action' || round.mode === 'answer') {
+      return round.phase === 'done' ? '' : '好的，我正在理解并处理。';
     }
     return round.assistantMessage || '可以，我会帮你整理成清晰的任务。';
   }
@@ -481,7 +540,24 @@
 
   <!-- 底部输入栏 -->
   <div class="ai-chat__input-bar">
-    <div class="ai-chat__input-container">
+    <div
+      class="ai-chat__input-container"
+      class:is-context-drop={inputDropActive}
+      on:dragover={handleContextDragOver}
+      on:dragleave={handleContextDragLeave}
+      on:drop={handleContextDrop}
+    >
+      {#if $aiComposerContexts.length}
+        <div class="ai-chat__context-chips" aria-label="新建任务设定项">
+          {#each $aiComposerContexts as context (context.kind + ':' + (context.id || context.value))}
+            <span class="ai-chat__context-chip">
+              <Icon name={contextIcon(context)} size={11} />
+              <span>{context.label}</span>
+              <button type="button" title="移除设定" on:click={() => removeAiComposerContext(context)}>×</button>
+            </span>
+          {/each}
+        </div>
+      {/if}
       <textarea
         bind:this={textareaEl}
         bind:value={$aiInputText}
@@ -1059,7 +1135,7 @@
   &__search-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; }
   &__search-location { color: var(--b3-theme-on-surface-light); font-size: 10px; }
   &__search-empty { padding: 14px; border-radius: 9px; background: var(--b3-theme-surface-light); color: var(--b3-theme-on-surface-light); font-size: 12px; text-align: center; }
-  &__answer-card { padding: 12px 14px; border-radius: 10px; background: var(--b3-theme-background); border: 1px solid var(--b3-border-color); }
+  &__answer-card { margin-left: 32px; padding: 12px 14px; border-radius: 10px; background: var(--b3-theme-background); border: 1px solid var(--b3-border-color); }
   &__answer-text { font-size: 13px; line-height: 1.65; color: var(--b3-theme-on-surface); }
   &__change-preview { margin-top: 10px; padding: 9px 10px; border-radius: 8px; background: var(--b3-theme-surface-light); font-size: 11px; color: var(--b3-theme-on-surface-light); }
   &__change-row { display: flex; justify-content: space-between; gap: 12px; margin-top: 5px; }
@@ -1173,6 +1249,7 @@
   }
 
   &__input-container {
+    position: relative;
     background: rgba(255, 255, 255, 0.72);
     border: 1px solid #e8ebf0;
     border-radius: 14px;
@@ -1182,6 +1259,57 @@
     &:focus-within {
       border-color: #b8c9fb;
       box-shadow: 0 0 0 3px rgba(82, 119, 218, 0.08);
+    }
+
+    &.is-context-drop {
+      border-color: #6f83ee;
+      box-shadow: 0 0 0 4px rgba(92, 112, 232, 0.13), 0 10px 30px rgba(75, 91, 180, 0.12);
+      transform: translateY(-1px);
+    }
+  }
+
+  &__context-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 11px 12px 0;
+  }
+
+  &__context-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    padding: 3px 5px 3px 7px;
+    border: 1px solid color-mix(in srgb, var(--b3-border-color) 86%, #cbd2df 14%);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--b3-theme-on-background);
+    font-size: 9px;
+    line-height: 1.2;
+    box-shadow: 0 1px 3px rgba(38, 48, 68, 0.06);
+
+    > span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    button {
+      display: grid;
+      place-items: center;
+      width: 15px;
+      height: 15px;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--b3-theme-on-surface-light);
+      cursor: pointer;
+
+      font-size: 11px;
+
+      &:hover { background: rgba(90, 104, 140, 0.1); }
     }
   }
 

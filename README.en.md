@@ -31,6 +31,8 @@ Use natural language such as:
 
 The AI assistant supports follow-up conversations, so you can refine the current draft or operate on tasks found in the previous response. AI is optional and requires an OpenAI-compatible service.
 
+You can also drag Inbox, Today, Upcoming, Anytime, Someday, Logbook, or a specific project, area, or tag from the sidebar into the AI composer. Each item appears as a temporary constraint chip for the next request. Projects and areas replace each other, while multiple tags can be combined; the chips are cleared immediately after sending and are not included in the visible message text.
+
 ## Requirements
 
 - SiYuan Note 3.7.0 or later.
