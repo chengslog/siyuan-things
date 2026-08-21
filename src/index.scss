@@ -1,13 +1,28 @@
 // Things 插件样式
 
+// Things Dock 与标签页共用同一层底板；仅作用于本插件注册的 Dock 内容容器。
+.things-dock-surface {
+  background: color-mix(
+    in srgb,
+    var(--b3-theme-background) 94%,
+    var(--b3-theme-on-background) 6%
+  ) !important;
+}
+
 .things-nav {
   padding: 8px 0;
+  // 右侧预留更小：与思源 Dock 自带分隔区、任务卡左距合计约 10px。
+  margin: 10px 4px 10px 10px;
   font-size: 13px;
-  height: 100%;
+  height: calc(100% - 20px);
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
   overflow-y: auto;
+  border: 1px solid var(--b3-border-color);
+  border-radius: 14px;
+  background: var(--b3-theme-background);
+  box-shadow: 0 4px 16px rgba(30, 43, 62, 0.06);
 
   // 搜索框
   &__search {
@@ -103,12 +118,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-
-    &[draggable="true"] {
-      cursor: grab;
-
-      &:active { cursor: grabbing; }
-    }
   }
 
   &__count {
@@ -208,9 +217,12 @@
   }
 }
 
-.things-nav__item[draggable="true"] { cursor: grab; }
-.things-nav__item[draggable="true"]:active { cursor: grabbing; }
-.things-nav__item.is-ai-context-dragging { opacity: 0.52; }
+.things-nav__item.is-ai-context-dragging {
+  opacity: 0.52;
+  cursor: grabbing;
+
+  * { cursor: grabbing; }
+}
 
 // 拖拽幽灵卡片（侧边栏排序时跟随指针）
 .things-drag-ghost {
@@ -326,8 +338,33 @@
     }
   }
 
+  // AI 拖拽把手：与排序区域彻底分离，悬停行时才显示。
+  &__ai-drag {
+    visibility: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 3px;
+    border-radius: 4px;
+    color: var(--b3-theme-primary);
+    flex-shrink: 0;
+    transition: background 0.15s, color 0.15s;
+
+    svg {
+      width: 11px;
+      height: 11px;
+    }
+
+    &:hover {
+      background: var(--b3-theme-primary-light);
+    }
+  }
+
   &:hover .things-nav-row__del,
-  &:hover .things-nav-row__edit {
+  &:hover .things-nav-row__edit,
+  &:hover .things-nav-row__ai-drag {
     visibility: visible;
   }
 }

@@ -1617,11 +1617,11 @@
     transition: background-color 0.15s ease;
 
     &:hover {
-      background: #f9fafb;
+      background: var(--b3-theme-surface-light);
     }
 
     &.is-create {
-      background: #ffffff;
+      background: var(--b3-theme-background);
       box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
       border-radius: 16px;
       border: none;
@@ -1658,7 +1658,7 @@
       flex-shrink: 0;
       margin-top: 2px;
       font-size: 11px;
-      color: #7b8490;
+      color: var(--b3-theme-on-surface);
       white-space: nowrap;
     }
 
@@ -1668,7 +1668,7 @@
 
     &.is-moving {
       opacity: 0.4;
-      background: #f9fafb;
+      background: var(--b3-theme-surface-light);
     }
 
     &.is-dragging {
@@ -1684,7 +1684,7 @@
     }
 
     &.is-expanded {
-      background: #ffffff;
+      background: var(--b3-theme-background);
       box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
       border-radius: 16px;
       border: none;
@@ -1718,7 +1718,7 @@
       min-width: 0;
       font-size: 13px;
       font-weight: 400;
-      color: #9ca3af;
+      color: var(--b3-theme-on-surface-light);
       white-space: nowrap;
     }
 
@@ -1742,7 +1742,7 @@
       align-items: center;
       gap: 3px;
       font-size: 12px;
-      color: #9ca3af;
+      color: var(--b3-theme-on-surface-light);
       white-space: nowrap;
     }
 
@@ -1760,7 +1760,7 @@
 
     &__tag-name {
       font-size: 12px;
-      color: #6b7280;
+      color: var(--b3-theme-on-surface);
     }
 
     &__aux-deadline {
@@ -1818,7 +1818,7 @@
       height: 18px;
       margin-top: 3px;
       padding: 0;
-      border: 1.5px solid #d1d5db;
+      border: 1.5px solid var(--b3-border-color);
       border-radius: 5px;
       background: transparent;
       cursor: pointer;
@@ -1848,7 +1848,7 @@
       width: 18px;
       height: 18px;
       margin-top: 2px;
-      border: 1.5px solid #d1d5db;
+      border: 1.5px solid var(--b3-border-color);
       border-radius: 5px;
     }
 
@@ -1905,7 +1905,7 @@
     &__title {
       font-size: 16px;
       font-weight: 500;
-      color: #1f2937;
+      color: var(--b3-theme-on-background);
       // 收缩态单行 + 省略号（换行只在编辑态的输入框里）
       white-space: nowrap;
       overflow: hidden;
@@ -1915,7 +1915,7 @@
 
       &.is-done {
         text-decoration: line-through;
-        color: #9ca3af;
+        color: var(--b3-theme-on-surface-light);
         opacity: 0.7;
       }
     }
@@ -1946,7 +1946,7 @@
       font-weight: 600;
       font-family: inherit;
       line-height: 1.4;
-      color: #1f2937;
+      color: var(--b3-theme-on-background);
       border: none;
       outline: none;
       padding: 2px 0;
@@ -1960,9 +1960,9 @@
 
     &__date-badge {
       font-size: 11px;
-      color: #6b7280;
+      color: var(--b3-theme-on-surface-light);
       padding: 2px 8px;
-      background: #f3f4f6;
+      background: var(--b3-theme-surface-light);
       border-radius: 4px;
       flex-shrink: 0;
     }
@@ -1971,7 +1971,7 @@
       margin-top: 6px;
       padding-left: 28px;
       font-size: 13px;
-      color: #6b7280;
+      color: var(--b3-theme-on-surface-light);
       line-height: 1.5;
       white-space: pre-wrap;
       word-break: break-word;
@@ -1992,8 +1992,8 @@
     &__tag {
       font-size: 11px;
       padding: 2px 8px;
-      background: #f3f4f6;
-      color: #6b7280;
+      background: var(--b3-theme-surface-light);
+      color: var(--b3-theme-on-surface-light);
       border-radius: 10px;
     }
 
@@ -2024,7 +2024,7 @@
       line-height: 1.5;
 
       &::placeholder {
-        color: #9ca3af;
+        color: var(--b3-theme-on-surface-light);
       }
     }
 
@@ -2033,7 +2033,7 @@
       width: 100%;
       font-size: 13px;
       line-height: 1.6;
-      color: #4b5563;
+      color: var(--b3-theme-on-surface);
       word-break: break-word;
       // 展示态固定高度，超出截断
       max-height: 104px; // 约5行高度 (13px * 1.6 * 5 = 104px)
@@ -2100,11 +2100,11 @@
       cursor: pointer;
 
       &--has-content {
-        border-color: #f0f0f0;
+        border-color: var(--b3-border-color);
       }
 
       &--editing {
-        border-color: #e0e0e0;
+        border-color: var(--b3-theme-on-surface-light);
         cursor: default;
       }
 
@@ -2125,7 +2125,7 @@
       border: none;
       background: transparent;
       cursor: pointer;
-      color: #9ca3af;
+      color: var(--b3-theme-on-surface-light);
       font-size: 13px;
       display: flex;
       align-items: center;
@@ -2141,8 +2141,8 @@
 
     &__notes-edit:hover,
     &__notes-done:hover {
-      background: #f3f4f6;
-      color: #374151;
+      background: var(--b3-theme-surface-light);
+      color: var(--b3-theme-on-background);
     }
 
     &__notes-done {
@@ -2156,7 +2156,7 @@
       padding: 2px 8px;
       border: none;
       background: transparent;
-      color: #9ca3af;
+      color: var(--b3-theme-on-surface-light);
       font-size: 11px;
       border-radius: 4px;
       cursor: pointer;
@@ -2168,18 +2168,18 @@
       }
 
       &:hover {
-        background: #f3f4f6;
-        color: #374151;
+        background: var(--b3-theme-surface-light);
+        color: var(--b3-theme-on-background);
       }
     }
 
     &__notes-placeholder {
       font-size: 13px;
-      color: #9ca3af;
+      color: var(--b3-theme-on-surface-light);
       cursor: pointer;
 
       &:hover {
-        color: #6b7280;
+        color: var(--b3-theme-on-surface);
       }
     }
 
@@ -2200,7 +2200,7 @@
       gap: 8px;
       margin-top: 4px;
       padding-top: 8px;
-      border-top: 1px solid #f3f4f6;
+      border-top: 1px solid var(--b3-border-color);
     }
 
     &__toolbar-left {
@@ -2250,7 +2250,7 @@
       display: flex;
       align-items: center;
       gap: 2px;
-      background: #f3f4f6;
+      background: var(--b3-theme-surface-light);
       border-radius: 12px;
       padding: 2px 4px 2px 8px;
       font-size: 12px;
@@ -2259,8 +2259,8 @@
       &--reminder {
         gap: 4px;
         padding: 2px 8px;
-        background: #fef3c7;
-        color: #b45309;
+        background: color-mix(in srgb, var(--b3-theme-warning) 15%, transparent);
+        color: var(--b3-theme-warning);
         font-variant-numeric: tabular-nums;
       }
 
@@ -2268,16 +2268,16 @@
       &--reminder-deadline {
         gap: 4px;
         padding: 2px 8px;
-        background: #fee2e2;
-        color: #dc2626;
+        background: color-mix(in srgb, var(--b3-theme-error) 14%, transparent);
+        color: var(--b3-theme-error);
         font-variant-numeric: tabular-nums;
       }
 
       &.is-overdue {
-        background: #fee2e2;
+        background: color-mix(in srgb, var(--b3-theme-error) 14%, transparent);
 
         .task-card__tag-btn {
-          color: #dc2626;
+          color: var(--b3-theme-error);
         }
       }
     }
@@ -2295,7 +2295,7 @@
       cursor: pointer;
       padding: 2px 4px;
       font-size: 12px;
-      color: #4b5563;
+      color: var(--b3-theme-on-surface);
       border-radius: 8px;
 
       &:hover {
@@ -2337,25 +2337,25 @@
       cursor: pointer;
       border-radius: 6px;
       font-size: 14px;
-      color: #6b7280;
+      color: var(--b3-theme-on-surface-light);
       transition: all 0.2s;
 
       &:hover {
-        background: #f3f4f6;
+        background: var(--b3-theme-surface-light);
       }
 
       &.is-active {
-        color: #3b82f6;
-        background: #eff6ff;
+        color: var(--b3-theme-primary);
+        background: var(--b3-theme-primary-lighter);
       }
 
       &--delete {
         font-size: 18px;
-        color: #9ca3af;
+        color: var(--b3-theme-on-surface-light);
 
         &:hover {
-          background: #fee2e2;
-          color: #dc2626;
+          background: color-mix(in srgb, var(--b3-theme-error) 14%, transparent);
+          color: var(--b3-theme-error);
         }
       }
     }
@@ -2365,8 +2365,8 @@
       top: 100%;
       left: 0;
       z-index: 100;
-      background: #ffffff;
-      border: 1px solid #e5e7eb;
+      background: var(--b3-theme-background);
+      border: 1px solid var(--b3-border-color);
       border-radius: 8px;
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
       padding: 8px;

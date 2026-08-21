@@ -699,13 +699,13 @@
     margin-left: auto;
     height: 28px;
     padding: 0 10px;
-    border: 1px solid #e6e9ee;
+    border: 1px solid var(--b3-border-color);
     border-radius: 9px;
-    background: rgba(255, 255, 255, 0.65);
-    color: #666;
+    background: var(--b3-theme-background);
+    color: var(--b3-theme-on-surface);
     font-size: 10px;
     cursor: pointer;
-    &:hover { background: #f7f8fa; }
+    &:hover { background: var(--b3-theme-surface-light); }
   }
 
   // ===== 内容区 =====
@@ -776,12 +776,12 @@
   &__example-chip {
     position: relative;
     padding: 8px 12px;
-    border: 1px solid #e7eaf0;
+    border: 1px solid var(--b3-border-color);
     border-radius: 999px;
-    background: #fafbfc;
+    background: var(--b3-theme-background);
     font-size: 10px;
     line-height: 1.35;
-    color: #757d88;
+    color: var(--b3-theme-on-surface-light);
     cursor: pointer;
     text-align: left;
     transition: all 0.15s;
@@ -802,7 +802,7 @@
     &:hover {
       border-color: #d7e1fb;
       color: #476fd0;
-      background: #f0f5ff;
+      background: var(--b3-theme-primary-light);
       box-shadow: none;
 
       &::after { transform: translate(3px, -52%); }
@@ -811,8 +811,8 @@
 
   // ===== 卡片 =====
   &__card {
-    background: rgba(255, 255, 255, 0.72);
-    border: 1px solid #edf0f4;
+    background: var(--b3-theme-background);
+    border: 1px solid var(--b3-border-color);
     border-radius: 13px;
     padding: 14px 16px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.024);
@@ -923,14 +923,14 @@
 
     button {
       padding: 6px 9px;
-      border: 1px solid #e7eaf0;
+      border: 1px solid var(--b3-border-color);
       border-radius: 999px;
-      background: #fafbfc;
-      color: #757d88;
+      background: var(--b3-theme-surface-light);
+      color: var(--b3-theme-on-surface);
       font-size: 9px;
       cursor: pointer;
 
-      &:hover { border-color: #d7e1fb; background: #f0f5ff; color: #476fd0; }
+      &:hover { border-color: var(--b3-theme-primary-light); background: var(--b3-theme-primary-lighter); color: var(--b3-theme-primary); }
     }
   }
 
@@ -1119,10 +1119,10 @@
     align-items: center;
     justify-content: center;
     flex: 0 0 auto;
-    border: 1px solid #e4e7eb;
+    border: 1px solid var(--b3-border-color);
     border-radius: 999px;
-    background: #f7f8fa;
-    color: #8a929d;
+    background: var(--b3-theme-surface-light);
+    color: var(--b3-theme-on-surface);
     font-size: 9px;
     font-weight: 400;
   }
@@ -1153,8 +1153,8 @@
   }
 
   :global(.task-card.is-collapsed-preview) {
-    background: rgba(255, 255, 255, 0.58) !important;
-    border: 1px solid #e8ebf0 !important;
+    background: var(--b3-theme-background) !important;
+    border: 1px solid var(--b3-border-color) !important;
     box-shadow: none !important;
     border-radius: 10px !important;
     margin: 4px 0 !important;
@@ -1162,8 +1162,8 @@
   }
 
   :global(.task-card.is-create.is-collapsible-create:not(.is-expanded)) {
-    background: rgba(255, 255, 255, 0.58) !important;
-    border: 1px solid #e8ebf0 !important;
+    background: var(--b3-theme-background) !important;
+    border: 1px solid var(--b3-border-color) !important;
     box-shadow: none !important;
     border-radius: 10px !important;
     margin: 4px 0 !important;
@@ -1250,8 +1250,8 @@
 
   &__input-container {
     position: relative;
-    background: rgba(255, 255, 255, 0.72);
-    border: 1px solid #e8ebf0;
+    background: var(--b3-theme-background);
+    border: 1px solid var(--b3-border-color);
     border-radius: 14px;
     box-shadow: 0 2px 8px rgba(39, 57, 91, 0.04);
     transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
@@ -1283,7 +1283,7 @@
     padding: 3px 5px 3px 7px;
     border: 1px solid color-mix(in srgb, var(--b3-border-color) 86%, #cbd2df 14%);
     border-radius: 999px;
-    background: #fff;
+    background: var(--b3-theme-background);
     color: var(--b3-theme-on-background);
     font-size: 9px;
     line-height: 1.2;
@@ -1339,7 +1339,7 @@
     gap: 7px;
     padding: 10px 0 0;
     margin: 8px 12px 12px;
-    border-top: 1px solid #f0f1f4;
+    border-top: 1px solid var(--b3-border-color);
   }
 
   &__input-toolbar-left,
@@ -1360,8 +1360,8 @@
     padding: 6px 9px;
     border: none;
     border-radius: 10px;
-    background: #f4f5f7;
-    color: #6f7680;
+    background: var(--b3-theme-surface-light);
+    color: var(--b3-theme-on-surface);
     font-size: 9px;
     cursor: pointer;
     transition: all 0.15s;
@@ -1411,11 +1411,11 @@
     transition: background 0.1s;
 
     &:hover {
-      background: #f3f5f7;
+      background: var(--b3-theme-surface-light);
     }
 
     &.is-active {
-      background: #f0f5ff;
+      background: var(--b3-theme-primary-lighter);
     }
 
     &-label {

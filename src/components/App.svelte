@@ -24,7 +24,7 @@
   const TASK_RATIO = 0.25;           // 任务列表最小宽度 = 整个页面宽度的 1/4
   const AI_RATIO = 0.2;              // AI 面板最小宽度 = 整个页面宽度的 1/5
   const DEFAULT_AI_RATIO = 0.45;     // 默认双栏：任务列表约 55%，AI 面板约 45%
-  const DIVIDER_WIDTH = 6;           // 分隔条 2 宽度
+  const DIVIDER_WIDTH = 4;           // 透明拖动热区宽度；与两侧小间距合计约 10px
 
   let rootEl: HTMLElement;
   let thingsWidth = 0;
@@ -289,7 +289,11 @@
     width: 100%;
     overflow: hidden;
     position: relative; // AI 浮窗遮罩以其为定位上下文（任务列表之上，而非全局）
-    background: var(--b3-theme-surface, #e8eaee);
+    background: color-mix(
+      in srgb,
+      var(--b3-theme-background) 94%,
+      var(--b3-theme-on-background) 6%
+    );
     font-family: var(--b3-font-family);
 
     grid-template-columns: 1fr;
@@ -300,10 +304,13 @@
 
     // ===== 主任务卡片区 =====
     &__main-card {
-      margin: 10px 6px 10px 10px;
+      // 左侧靠近 Things Dock；中右间距同样约 10px。
+      margin: 10px 3px 10px 4px;
       border-radius: 14px;
-      background: var(--b3-theme-background, #ffffff);
-      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
+      border: 1px solid var(--b3-border-color);
+      background: var(--b3-theme-background);
+      box-shadow: 0 4px 16px rgba(30, 43, 62, 0.06);
+      box-sizing: border-box;
       position: relative;
       overflow: hidden;
       display: flex;
@@ -321,8 +328,10 @@
     &__secondary-placeholder {
       margin: 10px;
       border-radius: 14px;
-      background: var(--b3-theme-background, #ffffff);
-      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
+      border: 1px solid var(--b3-border-color);
+      background: var(--b3-theme-background);
+      box-shadow: 0 4px 16px rgba(30, 43, 62, 0.06);
+      box-sizing: border-box;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -384,7 +393,7 @@
 
     // ===== 分隔条 2 =====
     &__divider {
-      width: 6px;
+      width: 4px;
       margin: 10px 0;
       cursor: col-resize;
       background: transparent;
@@ -396,24 +405,28 @@
         content: '';
         position: absolute;
         left: 50%;
-        top: 0;
-        bottom: 0;
+        top: 50%;
+        height: 56px;
         width: 2px;
-        transform: translateX(-50%);
-        background: var(--b3-border-color);
-        transition: all 0.15s;
+        border-radius: 999px;
+        transform: translate(-50%, -50%);
+        background: transparent;
+        transition: width 0.15s, height 0.15s, background 0.15s, opacity 0.15s;
+        opacity: 0;
       }
 
       &:hover::after,
       &.is-dragging::after {
         background: var(--b3-theme-primary);
-        width: 3px;
+        width: 2px;
+        height: 72px;
+        opacity: 0.62;
       }
     }
 
     // ===== AI 面板卡片区 =====
     &__ai-card {
-      margin: 10px 10px 10px 6px;
+      margin: 10px 10px 10px 3px;
       min-width: 0;
       min-height: 0;
       height: calc(100% - 20px);

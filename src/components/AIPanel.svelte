@@ -55,8 +55,9 @@
     margin: 0; // 外边距由 App 外壳的卡片容器负责，避免双重 margin 导致高度不一致
     border-radius: 14px;
     border: 1px solid var(--b3-border-color);
-    background: color-mix(in srgb, var(--b3-theme-background) 96%, #eef2fb 4%);
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
+    background: var(--b3-theme-background);
+    box-shadow: 0 4px 16px rgba(30, 43, 62, 0.06);
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     overflow: hidden;

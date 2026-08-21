@@ -11,8 +11,9 @@
 ## 发布版本
 
 ```bash
-git tag v0.2.9
-git push origin v0.2.9
+VERSION=$(node -p "require('./plugin.json').version")
+git tag "v${VERSION}"
+git push origin main "v${VERSION}"
 ```
 
 推送 `v*` 标签后，GitHub Actions 会验证标签与插件版本、运行测试、构建，并将 `package.zip` 上传到对应 GitHub Release。确认该 Release 标记为 Latest。
@@ -24,4 +25,4 @@ git push origin v0.2.9
 3. 每个 PR 只新增一个插件条目，并向上游 `main` 创建 PR。
 4. 根据 PR Check 的结果修复当前 PR，不要为同一个插件重复创建 PR。
 
-后续更新只需提高版本并发布新的 Latest Release，无需再次修改 `plugins.txt`。
+后续更新只需提高版本并发布新的 Latest Release，无需再次修改 `plugins.txt`，也无需重复提交 Bazaar PR。

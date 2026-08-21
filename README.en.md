@@ -16,6 +16,7 @@ A Things-inspired GTD task manager for SiYuan Note. It provides Inbox, Today, Up
 | **Recurring tasks** | Repeat daily, on weekdays, weekly, monthly, or yearly; completing a task creates its next occurrence. |
 | **Task details** | Add notes and checklists without exposing checklist items as top-level tasks. |
 | **AI task assistant** | Create, search, summarize, update, and delete tasks through a continuous conversation. |
+| **Theme and layout** | Follows SiYuan's light and dark themes with consistent cards across the sidebar, task list, and AI panel. |
 | **Safer operations** | Preview destructive operations such as deletion before confirmation. |
 | **Workspace data** | Store data through SiYuan's plugin APIs so it can follow workspace sync settings. |
 

@@ -192,6 +192,7 @@ export default class ThingsPlugin extends Plugin {
         console.log("[Things] Dock init");
         this.thingsDockType = (dock as any).type || this.thingsDockType;
         this.dockElement = dock.element;
+        dock.element.classList.add("things-dock-surface");
         this.renderDock(dock.element);
       },
       destroy() {
@@ -574,9 +575,10 @@ export default class ThingsPlugin extends Plugin {
 
     for (const p of projects) {
       html += `
-        <div class="things-nav__item things-nav__item--sub things-nav-row" data-view="project" data-id="${p.id}" title="单击打开 · 悬停 ✎ 改名 · 按住拖动排序">
+        <div class="things-nav__item things-nav__item--sub things-nav-row" data-view="project" data-id="${p.id}" title="单击打开 · 按住行拖动排序">
           <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsFolder"></use></svg>
           <span class="things-nav__label things-nav-row__name">${p.name}</span>
+          <span class="things-nav-row__ai-drag" title="拖到 AI 输入框"><svg><use xlink:href="#iconThingsSparkles"></use></svg></span>
           <span class="things-nav-row__edit" title="重命名项目"><svg><use xlink:href="#iconThingsPencil"></use></svg></span>
           <span class="things-nav-row__del" title="删除项目">×</span>
         </div>
@@ -597,7 +599,7 @@ export default class ThingsPlugin extends Plugin {
       node.addEventListener('click', (e) => {
         if (node.dataset.justDragged) { delete node.dataset.justDragged; return; }
         const target = e.target as HTMLElement;
-        if (target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
+        if (target.closest('.things-nav-row__ai-drag') || target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
         this.openThingsTab('project' as ViewType, id);
         this.setActive(element, 'project' as ViewType, id);
       });
@@ -609,7 +611,7 @@ export default class ThingsPlugin extends Plugin {
       });
 
       this.bindRowDelete(node, id, 'project');
-      const label = node.querySelector('.things-nav__label') as HTMLElement | null;
+      const label = node.querySelector('.things-nav-row__ai-drag') as HTMLElement | null;
       const project = this.store.projects.get(id);
       if (label && project) this.bindAiContextDrag(label, { kind: 'project', id, value: project.name, label: `项目 · ${project.name}` }, node);
     });
@@ -628,9 +630,10 @@ export default class ThingsPlugin extends Plugin {
 
     for (const a of areas) {
       html += `
-        <div class="things-nav__item things-nav__item--sub things-nav-row" data-view="area" data-id="${a.id}" title="单击打开 · 悬停 ✎ 改名 · 按住拖动排序">
+        <div class="things-nav__item things-nav__item--sub things-nav-row" data-view="area" data-id="${a.id}" title="单击打开 · 按住行拖动排序">
           <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsLayers"></use></svg>
           <span class="things-nav__label things-nav-row__name">${a.name}</span>
+          <span class="things-nav-row__ai-drag" title="拖到 AI 输入框"><svg><use xlink:href="#iconThingsSparkles"></use></svg></span>
           <span class="things-nav-row__edit" title="重命名区域"><svg><use xlink:href="#iconThingsPencil"></use></svg></span>
           <span class="things-nav-row__del" title="删除区域">×</span>
         </div>
@@ -651,7 +654,7 @@ export default class ThingsPlugin extends Plugin {
       node.addEventListener('click', (e) => {
         if (node.dataset.justDragged) { delete node.dataset.justDragged; return; }
         const target = e.target as HTMLElement;
-        if (target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
+        if (target.closest('.things-nav-row__ai-drag') || target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
         this.openThingsTab('area' as ViewType, id);
         this.setActive(element, 'area' as ViewType, id);
       });
@@ -663,7 +666,7 @@ export default class ThingsPlugin extends Plugin {
       });
 
       this.bindRowDelete(node, id, 'area');
-      const label = node.querySelector('.things-nav__label') as HTMLElement | null;
+      const label = node.querySelector('.things-nav-row__ai-drag') as HTMLElement | null;
       const area = this.store.areas.get(id);
       if (label && area) this.bindAiContextDrag(label, { kind: 'area', id, value: area.name, label: `区域 · ${area.name}` }, node);
     });
@@ -691,6 +694,7 @@ export default class ThingsPlugin extends Plugin {
                style="padding-left: ${12 + depth * 16}px" title="单击打开 · 悬停 ✎ 改名 · 按住拖动排序">
             ${dot}
             <span class="things-nav__label things-nav-row__name">${t.name}</span>
+            <span class="things-nav-row__ai-drag" title="拖到 AI 输入框"><svg><use xlink:href="#iconThingsSparkles"></use></svg></span>
             <span class="things-nav-row__edit" title="重命名标签"><svg><use xlink:href="#iconThingsPencil"></use></svg></span>
             <span class="things-nav-row__del" title="删除标签">×</span>
           </div>
@@ -715,7 +719,7 @@ export default class ThingsPlugin extends Plugin {
       row.addEventListener('click', (e) => {
         if (row.dataset.justDragged) { delete row.dataset.justDragged; return; }
         const target = e.target as HTMLElement;
-        if (target.closest('.things-tag-row__dot') || target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
+        if (target.closest('.things-tag-row__dot') || target.closest('.things-nav-row__ai-drag') || target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
         this.openThingsTab('tag' as ViewType, id);
         this.setActive(element, 'tag' as ViewType, id);
       });
@@ -733,7 +737,7 @@ export default class ThingsPlugin extends Plugin {
       });
 
       this.bindRowDelete(row, id, 'tag');
-      const label = row.querySelector('.things-nav__label') as HTMLElement | null;
+      const label = row.querySelector('.things-nav-row__ai-drag') as HTMLElement | null;
       const tag = this.store.tags.get(id);
       if (label && tag) this.bindAiContextDrag(label, { kind: 'tag', id, value: tag.name, label: `标签 · ${tag.name}` }, row);
     });
@@ -753,11 +757,11 @@ export default class ThingsPlugin extends Plugin {
         const ev = e as MouseEvent;
         if (ev.button !== 0) return;
         const target = ev.target as HTMLElement;
-        // 名称支持原生拖到 AI 输入框；行内其余空白区域仍用于自定义排序。
-        if (target.closest('.things-nav__label[draggable="true"]')) return;
+        // AI 星光把手使用原生拖拽；整行其余区域用于自定义排序。
+        if (target.closest('.things-nav-row__ai-drag')) return;
         // 交互元素上不启动拖拽（加号、标签色点、改名/删除按钮、改名输入框）
         if (target.closest('.things-nav__add') || target.closest('.things-tag-row__dot') ||
-            target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') ||
+            target.closest('.things-nav-row__ai-drag') || target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') ||
             target.closest('.things-nav-row__input')) return;
         ev.preventDefault(); // 阻止文本选中
         this.startSectionDrag(ev, node, container as HTMLElement, kind, rowSel);
@@ -767,7 +771,9 @@ export default class ThingsPlugin extends Plugin {
 
   private bindAiContextDrag(source: HTMLElement, context: AIComposerContext, row: HTMLElement = source) {
     source.draggable = true;
-    source.title = `${source.title ? `${source.title} · ` : ''}拖到 AI 输入框作为新建任务设定`;
+    if (!source.title.includes('拖到 AI 输入框')) {
+      source.title = `${source.title ? `${source.title} · ` : ''}拖到 AI 输入框作为新建任务设定`;
+    }
     source.addEventListener('dragstart', (event) => {
       const transfer = event.dataTransfer;
       if (!transfer) return;
@@ -776,6 +782,7 @@ export default class ThingsPlugin extends Plugin {
       transfer.setData('text/plain', context.label);
       row.classList.add('is-ai-context-dragging');
     });
+    source.addEventListener('click', (event) => event.stopPropagation());
     source.addEventListener('dragend', () => row.classList.remove('is-ai-context-dragging'));
   }
 
