@@ -107,15 +107,35 @@
     plugin?.settingUtils?.setAndSave?.('aiPanelWidth', Math.round(aiPanelWidth));
   }
 
-  // 双击分隔条：恢复默认比例（任务列表约 55%，AI 面板约 45%）
-  function onDividerDblClick() {
-    if (aiState !== 'full') return;
+  function resetLayoutToDefault() {
+    measureWidth();
+    if (thingsWidth <= 0) return;
     aiPanelWidth = Math.round((thingsWidth - DIVIDER_WIDTH) * DEFAULT_AI_RATIO);
     plugin?.settingUtils?.setAndSave?.('aiPanelWidth', Math.round(aiPanelWidth));
   }
 
+  // 双击分隔条：恢复默认比例（任务列表约 55%，AI 面板约 45%）
+  function onDividerDblClick() {
+    if (aiState !== 'full') return;
+    resetLayoutToDefault();
+  }
+
+  function handleResetLayout() {
+    // Dock 展开期间由 ResizeObserver 连续保持 55:45，稳定后保存最终宽度。
+    followDefaultRatio = true;
+    if (layoutFollowTimer !== null) window.clearTimeout(layoutFollowTimer);
+    requestAnimationFrame(resetLayoutToDefault);
+    layoutFollowTimer = window.setTimeout(() => {
+      resetLayoutToDefault();
+      followDefaultRatio = false;
+      layoutFollowTimer = null;
+    }, 700);
+  }
+
   // ========== 宽度监听 ==========
   let resizeObserver: ResizeObserver | null = null;
+  let layoutFollowTimer: number | null = null;
+  let followDefaultRatio = false;
 
   function measureWidth() {
     if (!rootEl) return;
@@ -130,6 +150,9 @@
     if (!w) w = window.innerWidth;
     if (Math.abs(w - thingsWidth) > 1) {
       thingsWidth = w;
+      if (followDefaultRatio) {
+        aiPanelWidth = Math.round((w - DIVIDER_WIDTH) * DEFAULT_AI_RATIO);
+      }
     }
   }
 
@@ -149,13 +172,16 @@
     window.addEventListener("resize", handleWindowResize);
     window.addEventListener("things-open-ai", handleOpenAI as EventListener);
     window.addEventListener("things-navigate", onNavigate as EventListener);
+    window.addEventListener("things-reset-layout", handleResetLayout);
   });
 
   onDestroy(() => {
     resizeObserver?.disconnect();
+    if (layoutFollowTimer !== null) window.clearTimeout(layoutFollowTimer);
     window.removeEventListener("resize", handleWindowResize);
     window.removeEventListener("things-open-ai", handleOpenAI as EventListener);
     window.removeEventListener("things-navigate", onNavigate as EventListener);
+    window.removeEventListener("things-reset-layout", handleResetLayout);
   });
 
   // 诊断日志

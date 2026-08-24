@@ -204,7 +204,10 @@
       color: var(--b3-theme-on-surface-light);
     }
 
-    &__notes-section { margin-top: 10px; }
+    &__notes-section {
+      margin-top: 10px;
+      margin-bottom: 10px;
+    }
 
     &__notes-wrap {
       position: relative;

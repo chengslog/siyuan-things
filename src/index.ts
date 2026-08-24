@@ -34,6 +34,7 @@ export default class ThingsPlugin extends Plugin {
   private dockElement: HTMLElement | null = null;
   private thingsDockType = "things_nav";
   private dockRestoreTimers: number[] = [];
+  private layoutResetTimers: number[] = [];
   private unsubTaskChange: (() => void) | null = null;
   private thingsApp: any = null; // 当前标签页的 Svelte 组件实例
   private thingsTab: any = null; // 当前标签页的 Tab 实例
@@ -59,12 +60,26 @@ export default class ThingsPlugin extends Plugin {
     // SiYuan may namespace a plugin dock type with the plugin package name.
     if (!dockButton || (dockType !== "things_nav" && !dockType.endsWith("things_nav"))) return;
 
+    const wasDockOpen = dockButton.classList.contains("dock__item--active");
+
     // Let SiYuan finish its own dock toggle first. If a Things tab is already
     // open, focus it and preserve its view; otherwise open the configured default.
-    setTimeout(() => {
+    setTimeout(async () => {
       const view = this.hasLiveThingsTab() ? this.currentThingsView : this.getConfiguredThingsView();
-      this.openThingsTab(view);
+      await this.openThingsTab(view);
       if (this.dockElement) this.setActive(this.dockElement, view);
+
+      // 每次由关闭状态展开 Things Dock，都基于新的可用空间恢复默认双栏比例。
+      // 关闭 Dock 或点击已展开的 Dock 时不重置，避免干扰思源自身的收起动作。
+      if (!wasDockOpen) {
+        this.layoutResetTimers.forEach((timer) => window.clearTimeout(timer));
+        // 交给 App 的 ResizeObserver 在 Dock 展开期间连续维持默认比例；
+        // 此处只启动一次，避免多个定时校准造成卡片分段跳动。
+        this.layoutResetTimers = [60].map((delay) => window.setTimeout(() => {
+          if (!this.isThingsDockOpen()) return;
+          window.dispatchEvent(new CustomEvent("things-reset-layout"));
+        }, delay));
+      }
     }, 0);
   };
 
@@ -355,6 +370,8 @@ export default class ThingsPlugin extends Plugin {
     this.eventBus.off("sync-fail", this.handleSyncEnd);
     this.dockRestoreTimers.forEach((timer) => window.clearTimeout(timer));
     this.dockRestoreTimers = [];
+    this.layoutResetTimers.forEach((timer) => window.clearTimeout(timer));
+    this.layoutResetTimers = [];
 
     // 停止提醒服务
     this.reminderService?.stop();
