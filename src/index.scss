@@ -24,37 +24,6 @@
   background: var(--b3-theme-background);
   box-shadow: 0 4px 16px rgba(30, 43, 62, 0.06);
 
-  // 搜索框
-  &__search {
-    display: flex;
-    align-items: center;
-    padding: 6px 12px;
-    margin-bottom: 8px;
-    margin-top: 4px;
-  }
-
-  &__search-input {
-    flex: 1;
-    border: 1px solid var(--b3-border-color);
-    border-radius: 4px;
-    background: var(--b3-theme-background);
-    font-size: 12px;
-    outline: none;
-    padding: 6px 8px 6px 28px;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'%3E%3C/circle%3E%3Cpath d='m21 21-4.3-4.3'%3E%3C/path%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: 8px center;
-    background-size: 14px;
-
-    &:focus {
-      border-color: var(--b3-theme-primary);
-    }
-
-    &::placeholder {
-      color: var(--b3-theme-on-surface-light);
-    }
-  }
-
   &__item {
     display: flex;
     align-items: center;
@@ -141,7 +110,8 @@
     margin-top: 14px;
 
     &:first-child {
-      margin-top: 2px;
+      // 快速查找是侧边栏首个入口，避免紧贴卡片上沿。
+      margin-top: 10px;
     }
   }
 

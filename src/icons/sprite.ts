@@ -33,16 +33,10 @@ export const ICON_SPRITE = `
         <rect x="260" y="376" width="168" height="28" rx="14" style="fill:#AFC0CF"/>
       </symbol>
       <symbol id="iconThingsInbox" viewBox="0 0 1024 1024">
-        <path d="M928 224V128h-32V96h-96v32h-32v9.28a224 224 0 0 0-179.2 22.72H544V96h-96v64h-64v192H192a96 96 0 0 0-96 96v384a96 96 0 0 0 96 96h640a96 96 0 0 0 96-96V448a96 96 0 0 0-7.68-37.76A225.6 225.6 0 0 0 928 352a224 224 0 0 0-32-115.2V224z" style="fill:#CDE6FF"/>
-        <path d="M704 352m-192 0a192 192 0 1 0 384 0 192 192 0 1 0-384 0Z" style="fill:#9FCDFF"/>
-        <path d="M832 384h-224v-64h-192v64H192a64 64 0 0 0-64 64v384a64 64 0 0 0 64 64h640a64 64 0 0 0 64-64V448a64 64 0 0 0-64-64z" style="fill:#F2F9FF"/>
-        <path d="M704 640v128H320v-128H128v192a64 64 0 0 0 64 64h640a64 64 0 0 0 64-64v-192z" style="fill:#5FB2FF"/>
-        <path d="M832 384h-160v32h160a32 32 0 0 1 32 32v192h-160v128H320v-128H160v-192a32 32 0 0 1 32-32h160v-32H192a64 64 0 0 0-64 64v384a64 64 0 0 0 64 64h640a64 64 0 0 0 64-64V448a64 64 0 0 0-64-64z m-96 480H192a32 32 0 0 1-32-32v-160h128v128h448v-128h128v160a32 32 0 0 1-32 32z" style="fill:#2A5082"/>
-        <path d="M512 672l192-192H320l192 192z" style="fill:#5FB2FF"/>
-        <path d="M608 288h-32V256h32zM512 672l192-192h-96v-160h-32v160h-128V256h-32v224h-96z m114.88-160L512 626.88 397.12 512zM448 224h-32V192h32zM512 160h-32V128h32zM608 224h-32V192h32z" style="fill:#2A5082"/>
-        <path d="M512 384h-32V224h32z" style="fill:#2A5082"/>
-        <path d="M800 160h96v32h-96z" style="fill:#8FBCE8"/>
-        <path d="M864 128v96h-32V128zM832 288h-32V256h-32v32h-32v32h32v32h32v-32h32V288z" style="fill:#8FBCE8"/>
+        <path d="M832 974H195.74c-93.74 0-170-76.256-170-170v-292h60v292c0 60.652 49.344 110 110 110H832c60.652 0 110-49.348 110-110v-292h60v292c0 93.744-76.256 170-170 170z" style="fill:#36B7A8"/>
+        <path d="M234.108 666h575.44v60H234.108z" style="fill:#F2B45D"/>
+        <path d="M234.108 410h575.44v60H234.108z" style="fill:#F2B45D"/>
+        <path d="M234.108 154h575.44v60H234.108z" style="fill:#F2B45D"/>
       </symbol>
       <symbol id="iconThingsToday" viewBox="0 0 1024 1024">
         <path d="M512 85.9l138.4 280.5 309.6 45-224 218.4 52.9 308.3L512 792.5 235.1 938.1 288 629.8 64 411.4l309.6-45z" style="fill:#FFD400"/>
@@ -114,8 +108,9 @@ export const ICON_SPRITE = `
       <symbol id="iconThingsAdd" viewBox="0 0 32 32">
         <path d="M16 4v12h12v4H16v12h-4V20H0v-4h12V4h4z"/>
       </symbol>
-      <symbol id="iconThingsSearch" viewBox="0 0 32 32">
-        <path d="M22 20.59l4.59 4.59L24.59 27 20 22.41V22a10 10 0 110-20 10 10 0 110 20v.59zM14 22a8 8 0 100-16 8 8 0 000 16z"/>
+      <symbol id="iconThingsSearch" viewBox="0 0 24 24">
+        <circle cx="11" cy="11" r="7" style="fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round"/>
+        <path d="m20 20-4.05-4.05" style="fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round"/>
       </symbol>
       <symbol id="iconThingsCheck" viewBox="0 0 32 32">
         <path d="M13.667 21.333l-6.667-6.667 1.88-1.88 4.787 4.787 9.56-9.56 1.88 1.88-11.44 11.44z"/>

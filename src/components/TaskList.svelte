@@ -63,6 +63,7 @@
   }
   let refreshKey = 0;
   let itemsEl: HTMLElement;
+  let searchInput: HTMLInputElement;
 
   // 跨组拖拽：按分组 key 注册 DragSort 实例与分组块 DOM
   let dragSortRefs: Record<string, DragSort> = {};
@@ -105,6 +106,10 @@
       document.removeEventListener("mousedown", onHeadingInputOutside);
     };
   });
+
+  $: if (view === "search" && searchInput) {
+    tick().then(() => searchInput?.focus());
+  }
 
   // 根据视图获取任务列表 - 使用响应式声明确保视图切换时刷新
   $: tasks = getTasks(view, viewId, searchQuery, refreshKey, store.tasks.count);
@@ -158,8 +163,8 @@
   }
 
   function getTasks(view: ViewType, viewId?: string, query?: string, _key?: number, _count?: number): Task[] {
-    if (query) {
-      return store.tasks.search(query);
+    if (view === "search") {
+      return searchTasks(query || "");
     }
 
     switch (view) {
@@ -195,6 +200,79 @@
       default:
         return [];
     }
+  }
+
+  function normalizeSearchText(value: unknown): string {
+    return String(value || "").toLocaleLowerCase().replace(/\s+/g, " ").trim();
+  }
+
+  function searchTasks(query: string): Task[] {
+    const terms = normalizeSearchText(query).split(" ").filter(Boolean);
+    if (!terms.length) return [];
+
+    // 建立产品视图语义索引：用户搜索“今天”等词时，应得到该视图中的任务，
+    // 而不是要求标题或备注里真的写有“今天”。
+    const inboxIds = new Set(store.tasks.getInboxTasks().map((task) => task.id));
+    const todayIds = new Set(store.tasks.getTodayTasks().map((task) => task.id));
+    const upcomingIds = new Set(store.tasks.getUpcomingTasks().map((task) => task.id));
+    const anytimeIds = new Set(store.tasks.getAnytimeTasks().map((task) => task.id));
+    const somedayIds = new Set(store.tasks.getSomedayTasks().map((task) => task.id));
+    const completedIds = new Set(store.tasks.getCompletedTasks().map((task) => task.id));
+    const canceledIds = new Set(store.tasks.getCanceledTasks().map((task) => task.id));
+
+    return store.tasks.getAll()
+      .filter((task) => !task.parentId)
+      .map((task) => {
+        const project = task.projectId ? store.projects.get(task.projectId) : undefined;
+        const directArea = task.areaId ? store.areas.get(task.areaId) : undefined;
+        const projectArea = project?.areaId ? store.areas.get(project.areaId) : undefined;
+        const heading = project?.headings?.find((item) => item.id === task.headingId);
+        const tags = (task.tags || []).map((id) => store.tags.get(id)?.name || "");
+        const checklist = store.tasks.getSubTasks(task.id).map((item) => item.title);
+        const statusText = task.status === "done" ? "已完成 完成 日志" : task.status === "canceled" ? "已取消 取消" : "未完成 待办 进行中";
+        const viewText = [
+          inboxIds.has(task.id) ? "收件箱" : "",
+          todayIds.has(task.id) ? "今天 今日" : "",
+          upcomingIds.has(task.id) ? "计划 未来 即将到来" : "",
+          anytimeIds.has(task.id) ? "随时" : "",
+          somedayIds.has(task.id) ? "某天" : "",
+          completedIds.has(task.id) ? "日志 已完成" : "",
+          canceledIds.has(task.id) ? "已取消" : "",
+        ];
+        const dateText = [task.startDate, task.deadline, task.completedDate]
+          .filter((value): value is number => typeof value === "number")
+          .map((value) => new Date(value).toLocaleString("zh-CN", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }));
+        const fields = [
+          task.title, task.notes, project?.name, directArea?.name, projectArea?.name,
+          heading?.title, ...tags, ...checklist, statusText, ...viewText,
+          task.someday ? "某天" : "", task.repeatRule ? `重复 ${task.repeatRule}` : "", ...dateText,
+        ];
+        const haystack = normalizeSearchText(fields.join(" "));
+        if (!terms.every((term) => haystack.includes(term))) return null;
+        const title = normalizeSearchText(task.title);
+        const score = terms.reduce((total, term) => total + (title.startsWith(term) ? 4 : title.includes(term) ? 2 : 0), 0);
+        return { task, score };
+      })
+      .filter((item): item is { task: Task; score: number } => item !== null)
+      .sort((a, b) => b.score - a.score || Number(a.task.status === "done") - Number(b.task.status === "done") || b.task.updated - a.task.updated)
+      .map((item) => item.task);
+  }
+
+  function getSearchMatchLabels(task: Task): string[] {
+    const query = normalizeSearchText(searchQuery);
+    if (!query) return [];
+    const labels: string[] = [];
+    const project = task.projectId ? store.projects.get(task.projectId) : undefined;
+    const area = task.areaId ? store.areas.get(task.areaId) : project?.areaId ? store.areas.get(project.areaId) : undefined;
+    const tags = (task.tags || []).map((id) => store.tags.get(id)?.name || "").filter(Boolean);
+    const checklistMatch = store.tasks.getSubTasks(task.id).some((item) => normalizeSearchText(item.title).includes(query));
+    if (normalizeSearchText(task.notes).includes(query)) labels.push("备注");
+    if (project && normalizeSearchText(project.name).includes(query)) labels.push(`项目 · ${project.name}`);
+    if (area && normalizeSearchText(area.name).includes(query)) labels.push(`区域 · ${area.name}`);
+    const tag = tags.find((name) => normalizeSearchText(name).includes(query));
+    if (tag) labels.push(`标签 · ${tag}`);
+    if (checklistMatch) labels.push("检查项");
+    return labels.slice(0, 3);
   }
 
   // 排序 - 使用 order 字段（随时/标签/项目/区域视图已在 getTasks 中按日期排序，不再重排）
@@ -1057,6 +1135,30 @@
     {#if getViewDescription(view)}
       <p class="task-list__description">{getViewDescription(view)}</p>
     {/if}
+    {#if view === "search"}
+      <div class="task-list__search-box">
+        <Icon name="iconThingsSearch" size={17} />
+        <input
+          bind:this={searchInput}
+          bind:value={searchQuery}
+          placeholder="搜索标题、备注、检查项、项目、区域或标签"
+          aria-label="搜索任务"
+          on:keydown={(event) => {
+            if (event.key === "Escape") searchQuery = "";
+          }}
+        />
+        {#if searchQuery}
+          <button title="清空搜索" aria-label="清空搜索" on:click={() => searchQuery = ""}>×</button>
+        {/if}
+      </div>
+      <div class="task-list__search-summary">
+        {#if searchQuery.trim()}
+          找到 {sortedTasks.length} 个任务
+        {:else}
+          支持多个关键词，以空格分隔
+        {/if}
+      </div>
+    {/if}
   </div>
 
   <!-- 创建项目/区域表单 -->
@@ -1085,6 +1187,13 @@
 
   <!-- 任务列表 -->
   <div class="task-list__items" bind:this={itemsEl}>
+    {#if view === "search" && !searchQuery.trim()}
+      <div class="task-list__empty task-list__empty--search">
+        <Icon name="iconThingsSearch" size={42} klass="task-list__empty-icon" />
+        <p>输入关键词查找任务</p>
+        <span>可以搜索备注、检查项、项目、区域和标签</span>
+      </div>
+    {:else}
     {#if view === "project" && projectObj}
       <ProjectPanel store={store} project={projectObj} tasks={projectTasks} on:addheading={startAddHeading} />
     {/if}
@@ -1218,6 +1327,13 @@
                 class:is-dragging={draggedId === task.id}
                 out:slideOut
               >
+                {#if view === "search" && getSearchMatchLabels(task).length}
+                  <div class="task-list__search-matches">
+                    {#each getSearchMatchLabels(task) as label}
+                      <span>{label}</span>
+                    {/each}
+                  </div>
+                {/if}
                 <TaskCard
                   mode="edit"
                   {task}
@@ -1227,7 +1343,9 @@
                   currentView={view}
                   {registerItem}
                   {unregisterItem}
-                  on:dragstart={(e) => handleDragStart(e.detail.event, task.id)}
+                  on:dragstart={(e) => {
+                    if (view !== "search") handleDragStart(e.detail.event, task.id);
+                  }}
                 />
               </div>
             {/each}
@@ -1266,6 +1384,7 @@
           />
         </div>
       {/if}
+    {/if}
     {/if}
   </div>
 
@@ -1614,6 +1733,60 @@
       text-align: left;
     }
 
+    &__search-box {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 18px;
+      padding: 11px 13px;
+      border: 1px solid var(--b3-border-color);
+      border-radius: 12px;
+      background: var(--b3-theme-background);
+      color: var(--b3-theme-on-surface-light);
+      box-shadow: 0 3px 12px rgba(30, 43, 62, 0.06);
+
+      &:focus-within {
+        border-color: var(--b3-theme-primary);
+        box-shadow: 0 0 0 3px var(--b3-theme-primary-light);
+      }
+
+      input {
+        flex: 1;
+        min-width: 0;
+        border: none;
+        outline: none;
+        background: transparent;
+        color: var(--b3-theme-on-background);
+        font: inherit;
+        font-size: 14px;
+
+        &::placeholder { color: var(--b3-theme-on-surface-light); }
+      }
+
+      button {
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        border: none;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--b3-theme-on-surface-light);
+        font-size: 17px;
+        cursor: pointer;
+
+        &:hover {
+          background: var(--b3-theme-surface-light);
+          color: var(--b3-theme-on-background);
+        }
+      }
+    }
+
+    &__search-summary {
+      margin-top: 9px;
+      font-size: 11px;
+      color: var(--b3-theme-on-surface-light);
+    }
+
     &__items {
       flex: 1;
       overflow-y: auto;
@@ -1632,6 +1805,22 @@
       &.is-dragging {
         opacity: 0;
         pointer-events: none;
+      }
+    }
+
+    &__search-matches {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      padding: 5px 28px 0;
+
+      span {
+        padding: 2px 7px;
+        border-radius: 999px;
+        background: var(--b3-theme-surface-light);
+        color: var(--b3-theme-on-surface-light);
+        font-size: 10px;
+        line-height: 1.4;
       }
     }
 
@@ -1686,6 +1875,15 @@
       p {
         margin: 4px 0;
         font-size: 14px;
+      }
+
+      span {
+        margin-top: 3px;
+        font-size: 11px;
+      }
+
+      &--search {
+        padding-top: 64px;
       }
     }
   }

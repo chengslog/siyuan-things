@@ -438,8 +438,9 @@ export default class ThingsPlugin extends Plugin {
    */
   private renderDock(element: HTMLElement) {
     // 主导航按语义分组（组间以空行分隔，不用分割线）：
-    // 收件箱 | 今天、计划、随时、某天 | 日志
+    // 快速查找 | 收件箱 | 今天、计划、随时、某天 | 日志
     const navGroups: { view: ViewType; icon: string; label: string }[][] = [
+      [{ view: "search" as ViewType, icon: "iconThingsSearch", label: "快速查找" }],
       [{ view: "inbox" as ViewType, icon: "iconThingsInbox", label: "收件箱" }],
       [
         { view: "today" as ViewType, icon: "iconThingsToday", label: "今天" },
@@ -451,13 +452,6 @@ export default class ThingsPlugin extends Plugin {
     ];
 
     let html = `<div class="things-nav">`;
-
-    // 搜索框
-    html += `
-      <div class="things-nav__search">
-        <input type="text" class="things-nav__search-input" placeholder="快速查找" />
-      </div>
-    `;
 
     // 主要导航（分组渲染）
     for (const group of navGroups) {
@@ -540,7 +534,7 @@ export default class ThingsPlugin extends Plugin {
       const node = el as HTMLElement;
       const view = node.dataset.view as ViewType;
       const label = node.querySelector('.things-nav__label')?.textContent?.trim();
-      if (view && label) this.bindAiContextDrag(node, { kind: 'view', value: view, label });
+      if (view && view !== 'search' && label) this.bindAiContextDrag(node, { kind: 'view', value: view, label });
       el.addEventListener('click', () => {
         const view = node.dataset.view as ViewType;
         console.log("[Things] Click:", view);
@@ -570,14 +564,6 @@ export default class ThingsPlugin extends Plugin {
         }
       });
     });
-
-    // 搜索框 - 点击后在编辑区域打开搜索
-    const searchBox = element.querySelector('.things-nav__search') as HTMLElement;
-    if (searchBox) {
-      searchBox.addEventListener('click', () => {
-        this.openSearchDialog();
-      });
-    }
   }
 
   /**
@@ -1313,131 +1299,6 @@ export default class ThingsPlugin extends Plugin {
     }
 
     return titles[view] || "Things";
-  }
-
-  /**
-   * 打开搜索对话框
-   */
-  private openSearchDialog() {
-    // 检查是否已经打开
-    const existingOverlay = document.querySelector('.things-search-overlay');
-    if (existingOverlay) {
-      (existingOverlay as HTMLElement).querySelector('input')?.focus();
-      return;
-    }
-
-    // 获取编辑区域的位置
-    const editorArea = document.querySelector('.layout__center') || document.body;
-    const editorRect = editorArea.getBoundingClientRect();
-
-    // 创建遮罩层，覆盖整个编辑区域
-    const overlay = document.createElement('div');
-    overlay.className = 'things-search-overlay';
-    overlay.style.cssText = `
-      position: fixed;
-      top: ${editorRect.top}px;
-      left: ${editorRect.left}px;
-      width: ${editorRect.width}px;
-      height: ${editorRect.height}px;
-      z-index: 300;
-      display: flex;
-      justify-content: center;
-      align-items: flex-start;
-      padding-top: 60px;
-      background: rgba(0, 0, 0, 0.3);
-    `;
-
-    const dialog = document.createElement('div');
-    dialog.style.cssText = `
-      width: 500px;
-      max-width: 80%;
-      background: var(--b3-theme-surface);
-      border-radius: 12px;
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
-      overflow: hidden;
-    `;
-
-    dialog.innerHTML = `
-      <div style="padding: 16px;">
-        <div style="display: flex; align-items: center; gap: 8px; background: var(--b3-theme-background); border: 1px solid var(--b3-border-color); border-radius: 8px; padding: 10px 14px;">
-          <svg style="width: 18px; height: 18px; color: var(--b3-theme-on-surface-light); flex-shrink: 0;"><use xlink:href="#iconThingsSearch"></use></svg>
-          <input type="text" style="flex: 1; border: none; background: transparent; font-size: 15px; outline: none;" id="things-search-input" placeholder="搜索任务..." />
-        </div>
-        <div id="things-search-results" style="margin-top: 12px; max-height: 400px; overflow-y: auto;"></div>
-      </div>
-    `;
-
-    overlay.appendChild(dialog);
-    document.body.appendChild(overlay);
-
-    const input = dialog.querySelector("#things-search-input") as HTMLInputElement;
-    const results = dialog.querySelector("#things-search-results") as HTMLElement;
-
-    setTimeout(() => input?.focus(), 100);
-
-    // 点击遮罩关闭
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) {
-        document.body.removeChild(overlay);
-      }
-    });
-
-    // ESC 关闭
-    overlay.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        document.body.removeChild(overlay);
-      }
-    });
-
-    let debounceTimer: any;
-    input.addEventListener("input", () => {
-      clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        const query = input.value.trim();
-        if (query) {
-          const tasks = this.store.tasks.search(query);
-          this.renderSearchResults(results, tasks);
-        } else {
-          results.innerHTML = "";
-        }
-      }, 200);
-    });
-  }
-
-  /**
-   * 渲染搜索结果
-   */
-  private renderSearchResults(container: HTMLElement, tasks: any[]) {
-    if (tasks.length === 0) {
-      container.innerHTML = '<div style="text-align: center; color: var(--b3-theme-on-surface-light); padding: 20px;">未找到匹配任务</div>';
-      return;
-    }
-
-    let html = '';
-    for (const task of tasks) {
-      const statusIcon = task.status === 'done'
-        ? '<svg style="width: 14px; height: 14px; color: var(--b3-theme-success, #3fb950); flex-shrink: 0;"><use xlink:href="#iconThingsCheck"></use></svg>'
-        : '<svg style="width: 14px; height: 14px; color: var(--b3-theme-on-surface-light); flex-shrink: 0;"><use xlink:href="#iconThingsCircle"></use></svg>';
-      html += `
-        <div class="things-search-result" data-id="${task.id}" style="display: flex; align-items: center; gap: 8px; padding: 8px; cursor: pointer; border-radius: 4px;">
-          <span>${statusIcon}</span>
-          <span style="flex: 1;">${task.title}</span>
-        </div>
-      `;
-    }
-    container.innerHTML = html;
-
-    // 绑定点击事件
-    container.querySelectorAll('.things-search-result').forEach(el => {
-      el.addEventListener('click', () => {
-        const taskId = (el as HTMLElement).dataset.id;
-        const task = this.store.tasks.get(taskId);
-        if (task) {
-          // 打开任务详情
-          console.log("[Things] Open task:", task);
-        }
-      });
-    });
   }
 
   /**
