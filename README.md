@@ -86,6 +86,8 @@ pnpm run build
 
 - 最低支持思源笔记 `3.7.0`。
 - 当前主要在 Windows 桌面端开发和验证，欢迎反馈其他平台的兼容性问题。
+- 侧边栏底部显示当前 Things 版本，点击版本号可直接查看更新日志。
+- 插件设置页末尾提供“支持与反馈”入口。
 - 问题与建议请提交到 [GitHub Issues](https://github.com/chengslog/siyuan-things/issues)。
 - 提交问题时请附上思源版本、插件版本、操作步骤和必要截图；请勿提交 API Key 或私人任务内容。
 

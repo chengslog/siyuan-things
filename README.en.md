@@ -86,6 +86,8 @@ Tasks and plugin settings are stored in the SiYuan workspace through the plugin 
 
 - Requires SiYuan Note 3.7.0 or later.
 - Development and validation currently focus on Windows desktop. Compatibility reports for other declared platforms are welcome.
+- The current Things version appears at the bottom of the sidebar; click it to open the bundled changelog.
+- The plugin settings page provides a dedicated Support and Feedback section.
 - Report problems through [GitHub Issues](https://github.com/chengslog/siyuan-things/issues) with the SiYuan version, plugin version, reproduction steps, and safe screenshots. Never include API keys or private task content.
 
 ## Support the project

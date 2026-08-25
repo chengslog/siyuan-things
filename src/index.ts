@@ -451,7 +451,7 @@ export default class ThingsPlugin extends Plugin {
       [{ view: "log" as ViewType, icon: "iconThingsLog", label: "日志" }],
     ];
 
-    let html = `<div class="things-nav">`;
+    let html = `<div class="things-nav"><div class="things-nav__scroll">`;
 
     // 主要导航（分组渲染）
     for (const group of navGroups) {
@@ -513,7 +513,14 @@ export default class ThingsPlugin extends Plugin {
       </div>
     `;
 
-    html += `</div>`;
+    html += `
+      </div>
+      <div class="things-nav__footer">
+        <button type="button" class="things-nav__version" data-footer-action="changelog" title="查看更新日志">
+          Things v${__PLUGIN_VERSION__}
+        </button>
+      </div>
+    </div>`;
     element.innerHTML = html;
 
     this.bindEvents(element);
@@ -563,6 +570,18 @@ export default class ThingsPlugin extends Plugin {
           this.showCreateCard(element, type, el as HTMLElement);
         }
       });
+    });
+
+    element.querySelector('[data-footer-action="changelog"]')?.addEventListener('click', () => {
+      this.openChangelogDialog();
+    });
+  }
+
+  private openChangelogDialog() {
+    new Dialog({
+      title: `Things v${__PLUGIN_VERSION__} 更新日志`,
+      content: `<div class="b3-typography" style="padding: 20px; max-height: 70vh; overflow: auto;">${renderMarkdown(__PLUGIN_CHANGELOG__)}</div>`,
+      width: "680px",
     });
   }
 
@@ -1380,7 +1399,7 @@ export default class ThingsPlugin extends Plugin {
   openSetting(): void {
     const dialog = new Dialog({
       title: "Things 设置",
-      content: '<div id="things-settings" style="padding: 16px;"></div>',
+      content: '<div id="things-settings" style="padding: 16px 16px 20px;"></div>',
       width: "600px",
     });
 
@@ -1574,30 +1593,20 @@ export default class ThingsPlugin extends Plugin {
       settingsEl.appendChild(aiConfigSection);
 
       const dangerSection = document.createElement("div");
-      dangerSection.style.marginTop = "24px";
-      dangerSection.style.paddingTop = "16px";
-      dangerSection.style.borderTop = "1px solid var(--b3-border-color)";
+      dangerSection.className = "things-settings__action-section";
 
       const dangerTitle = document.createElement("div");
-      dangerTitle.style.fontWeight = "600";
-      dangerTitle.style.color = "var(--b3-theme-on-background)";
+      dangerTitle.className = "things-settings__action-title";
       dangerTitle.textContent = "重置 Things";
       dangerSection.appendChild(dangerTitle);
 
       const dangerDesc = document.createElement("div");
-      dangerDesc.style.margin = "5px 0 10px";
-      dangerDesc.style.fontSize = "12px";
-      dangerDesc.style.lineHeight = "1.6";
-      dangerDesc.style.color = "var(--b3-theme-on-surface-light)";
+      dangerDesc.className = "things-settings__action-desc";
       dangerDesc.textContent = "清空任务、归档、删除记录、项目、区域、标签、提醒和 AI 会话，并将 Things 设置恢复为默认值。不会影响思源笔记及其他插件。";
       dangerSection.appendChild(dangerDesc);
 
       const resetButton = document.createElement("button");
-      resetButton.className = "b3-button";
-      resetButton.style.background = "transparent";
-      resetButton.style.border = "1px solid var(--b3-border-color)";
-      resetButton.style.color = "var(--b3-theme-error)";
-      resetButton.style.boxShadow = "none";
+      resetButton.className = "things-settings__action-button things-settings__action-button--danger";
       resetButton.textContent = "清空所有记录并恢复默认";
       resetButton.addEventListener("click", () => {
         const taskStats = this.store.tasks.getStorageStats();
@@ -1634,58 +1643,28 @@ export default class ThingsPlugin extends Plugin {
       dangerSection.appendChild(resetButton);
       settingsEl.appendChild(dangerSection);
 
-      const footer = document.createElement("div");
-      footer.style.marginTop = "24px";
-      footer.style.paddingTop = "14px";
-      footer.style.borderTop = "1px solid var(--b3-border-color)";
-      footer.style.display = "flex";
-      footer.style.alignItems = "center";
-      footer.style.justifyContent = "space-between";
-      footer.style.fontSize = "12px";
-      footer.style.color = "var(--b3-theme-on-surface-light)";
+      const supportSection = document.createElement("div");
+      supportSection.className = "things-settings__action-section";
 
-      const version = document.createElement("span");
-      version.textContent = `Things v${__PLUGIN_VERSION__}`;
-      footer.appendChild(version);
+      const supportTitle = document.createElement("div");
+      supportTitle.className = "things-settings__action-title";
+      supportTitle.textContent = "支持与反馈";
+      supportSection.appendChild(supportTitle);
 
-      const footerLinks = document.createElement("div");
-      footerLinks.style.display = "flex";
-      footerLinks.style.alignItems = "center";
-      footerLinks.style.gap = "10px";
+      const supportDesc = document.createElement("div");
+      supportDesc.className = "things-settings__action-desc";
+      supportDesc.textContent = "遇到问题时，可以前往 GitHub 提交反馈。";
+      supportSection.appendChild(supportDesc);
 
-      const changelog = document.createElement("a");
-      changelog.textContent = "更新日志";
-      changelog.href = "#";
-      changelog.style.color = "var(--b3-theme-primary)";
-      changelog.style.textDecoration = "none";
-      changelog.addEventListener("click", (event) => {
-        event.preventDefault();
-        new Dialog({
-          title: `Things v${__PLUGIN_VERSION__} 更新日志`,
-          content: `<div class="b3-typography" style="padding: 20px; max-height: 70vh; overflow: auto;">${renderMarkdown(__PLUGIN_CHANGELOG__)}</div>`,
-          width: "680px",
-        });
-      });
-      footerLinks.appendChild(changelog);
+      const bugLink = document.createElement("a");
+      bugLink.href = "https://github.com/chengslog/siyuan-things/issues/new?labels=bug&title=%5BBug%5D%20";
+      bugLink.target = "_blank";
+      bugLink.rel = "noopener noreferrer";
+      bugLink.className = "things-settings__action-button";
+      bugLink.textContent = "提交 Bug 反馈";
+      supportSection.appendChild(bugLink);
+      settingsEl.appendChild(supportSection);
 
-      const separator = document.createElement("span");
-      separator.textContent = "·";
-      separator.style.color = "var(--b3-border-color)";
-      footerLinks.appendChild(separator);
-
-      const bugReport = document.createElement("a");
-      bugReport.textContent = "Bug 反馈";
-      bugReport.href = "https://github.com/chengslog/siyuan-things/issues/new?labels=bug&title=%5BBug%5D%20";
-      bugReport.target = "_blank";
-      bugReport.rel = "noopener noreferrer";
-      bugReport.style.color = "var(--b3-theme-primary)";
-      bugReport.style.textDecoration = "none";
-      bugReport.title = "前往 GitHub 提交问题";
-      footerLinks.appendChild(bugReport);
-
-      footer.appendChild(footerLinks);
-
-      settingsEl.appendChild(footer);
     }
   }
 }

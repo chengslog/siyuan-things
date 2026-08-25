@@ -213,7 +213,17 @@
     // 建立产品视图语义索引：用户搜索“今天”等词时，应得到该视图中的任务，
     // 而不是要求标题或备注里真的写有“今天”。
     const inboxIds = new Set(store.tasks.getInboxTasks().map((task) => task.id));
-    const todayIds = new Set(store.tasks.getTodayTasks().map((task) => task.id));
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date(todayStart);
+    todayEnd.setHours(23, 59, 59, 999);
+    const todayIds = new Set([
+      ...store.tasks.getTodayTasks().map((task) => task.id),
+      // 日志中的“今天”按完成时间分组；搜索“今天”也应包含今天完成的任务。
+      ...store.tasks.getCompletedTasks()
+        .filter((task) => !!task.completedDate && task.completedDate >= todayStart.getTime() && task.completedDate <= todayEnd.getTime())
+        .map((task) => task.id),
+    ]);
     const upcomingIds = new Set(store.tasks.getUpcomingTasks().map((task) => task.id));
     const anytimeIds = new Set(store.tasks.getAnytimeTasks().map((task) => task.id));
     const somedayIds = new Set(store.tasks.getSomedayTasks().map((task) => task.id));
