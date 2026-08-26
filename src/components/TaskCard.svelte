@@ -16,6 +16,7 @@
   import { renderMarkdown } from "@/utils/markdown";
   import { uploadImage } from "@/utils/upload";
   import { smartPosition } from "@/utils/popup";
+  import { formatTaskAsMarkdown } from "@/utils/taskMarkdown";
 
   // 模式：create 或 edit
   export let mode: 'create' | 'edit' = 'edit';
@@ -48,7 +49,12 @@
   // 已添加的 AI 结果复用任务卡收缩态，仅展示摘要，不允许再次展开或编辑。
   export let collapsedPreview: boolean = false;
   export let collapsedStatusLabel: string = "";
+  export let collapsedStatusIcon: string = "";
   export let aiPreview: boolean = false;
+  // AI 会话只让当前轮结果默认展开；focusKey 每次新轮次变化时通知历史卡片收起。
+  // 历史卡片仍可由用户手动重新展开，直到下一轮对话再次转移焦点。
+  export let aiPreviewActive: boolean = true;
+  export let aiPreviewFocusKey: string = "";
   // AI 预填充数据：create 模式下用这些数据初始化本地状态
   export let prefilledData: {
     title?: string;
@@ -108,7 +114,7 @@
   }
 
   // UI 状态
-  let expanded = mode === 'create' && !collapsedPreview; // 普通新建默认展开；已添加预览固定收缩
+  let expanded = mode === 'create' && !collapsedPreview && (!aiPreview || aiPreviewActive);
   let showDatePicker = false;
   let showDeadlinePicker = false;
   let showRepeatPicker = false;
@@ -117,7 +123,31 @@
   let showChecklist = true;
   let isInteracting = false;
   let isMovingOut = false;
+  let notesExpanded = false;
+  let copyFeedback: 'idle' | 'copied' | 'failed' = 'idle';
+  let copyFeedbackTimer: ReturnType<typeof setTimeout> | undefined;
   let titleInput: HTMLTextAreaElement;
+  let previousAiPreviewFocusKey = aiPreviewFocusKey;
+  let previousAiPreviewActive = aiPreviewActive;
+
+  // 新一轮对话出现时，所有已经成为历史轮的未添加卡片自动收起。
+  // 仅在焦点轮次发生变化时收起，因此历史卡片之后仍可由用户手动展开。
+  $: {
+    const focusChanged = aiPreviewFocusKey !== previousAiPreviewFocusKey;
+    const becameHistorical = previousAiPreviewActive && !aiPreviewActive;
+    if (aiPreview && !aiPreviewActive && (focusChanged || becameHistorical)) {
+      expanded = false;
+      notesExpanded = false;
+      showDatePicker = false;
+      showDeadlinePicker = false;
+      showRepeatPicker = false;
+      showTagPicker = false;
+      showProjectAreaPicker = false;
+      document.removeEventListener('click', handleOutsideClick);
+    }
+    previousAiPreviewFocusKey = aiPreviewFocusKey;
+    previousAiPreviewActive = aiPreviewActive;
+  }
 
   $: if (showDatePicker || showDeadlinePicker || showTagPicker || showProjectAreaPicker) {
     showRepeatPicker = false;
@@ -195,8 +225,8 @@
       // 项目视图：继承插入落点的标题分组（此前缺这步，分组下新建的任务全掉进未分组）
       if (destView === 'project' && presetHeadingId) headingId = presetHeadingId;
       if (destView === 'someday') someday = true;
-      if (!collapsedPreview) setTimeout(() => titleInput?.focus(), 100);
-      if (collapsibleCreate) {
+      if (!collapsedPreview && (!aiPreview || aiPreviewActive)) setTimeout(() => titleInput?.focus(), 100);
+      if (collapsibleCreate && expanded) {
         setTimeout(() => document.addEventListener('click', handleOutsideClick), 10);
       }
     }
@@ -211,6 +241,7 @@
       savePendingChanges();
     }
     if (moveTimeout) clearTimeout(moveTimeout);
+    if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer);
     // 若组件在完成延迟结束前被销毁（如切换视图），立即完成任务，避免丢失用户的勾选操作
     if (pendingDone && !completionApplied && task) {
       store.tasks.toggleTask(task.id);
@@ -422,6 +453,88 @@
     if (mode === 'create') tick().then(() => titleInput?.focus());
   }
 
+  function taskCopyButtonLabel(): string {
+    if (copyFeedback === 'copied') return '已复制 Markdown';
+    if (copyFeedback === 'failed') return '复制失败';
+    return '复制任务为 Markdown';
+  }
+
+  function buildTaskMarkdown(): string {
+    if (!task) return '';
+    const project = projectId ? store.projects.get(projectId) : undefined;
+    const areaIdForCopy = areaId || project?.areaId;
+    const area = areaIdForCopy ? store.areas.get(areaIdForCopy) : undefined;
+    const heading = task.headingId
+      ? project?.headings?.find((item) => item.id === task.headingId)
+      : undefined;
+    const parentTask = task.parentId ? store.tasks.get(task.parentId) : undefined;
+    const tagNames = selectedTags
+      .map((id) => store.tags.get(id)?.name)
+      .filter((name): name is string => !!name);
+
+    return formatTaskAsMarkdown({
+      id: task.id,
+      title,
+      notes,
+      status: pendingDone ? 'done' : task.status,
+      priority,
+      project: project?.name,
+      area: area?.name,
+      heading: heading?.title,
+      parentTask: parentTask?.title,
+      tags: tagNames,
+      checklist: checklistItems
+        .filter((item) => item.title.trim())
+        .map((item) => ({ title: item.title, completed: item.completed })),
+      startDate,
+      deadline,
+      someday,
+      completedDate: task.completedDate,
+      repeatRule,
+      created: task.created,
+      updated: task.updated,
+      blockId: task.blockId,
+      recurrenceSourceId: task.recurrenceSourceId,
+      recurrenceGeneratedAt: task.recurrenceGeneratedAt,
+      order: task.order,
+    });
+  }
+
+  async function writeTaskMarkdownToClipboard(markdown: string) {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(markdown);
+        return;
+      } catch {
+        // 思源部分 WebView 会拒绝 Clipboard API，继续走兼容复制方案。
+      }
+    }
+    const textarea = document.createElement('textarea');
+    textarea.value = markdown;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const copied = document.execCommand('copy');
+    textarea.remove();
+    if (!copied) throw new Error('copy failed');
+  }
+
+  async function copyTaskAsMarkdown() {
+    const markdown = buildTaskMarkdown();
+    if (!markdown) return;
+    if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer);
+    try {
+      await writeTaskMarkdownToClipboard(markdown);
+      copyFeedback = 'copied';
+    } catch {
+      copyFeedback = 'failed';
+    }
+    copyFeedbackTimer = setTimeout(() => { copyFeedback = 'idle'; }, 1800);
+  }
+
   // 卡片点击
   function handleCardClick(e?: Event) {
     if (collapsedPreview) return;
@@ -577,7 +690,6 @@
   // —— 备注 Markdown 展示/编辑 + 图片粘贴/拖拽 ——
   let editingNotes = false;
   let notesArea: HTMLTextAreaElement;
-  let notesExpanded = false;
   let notesContentEl: HTMLElement;
   $: renderedNotes = renderMarkdown(notes);
   // 检测备注内容是否超过 2 行（需要展开按钮）
@@ -690,16 +802,32 @@
       pendingDone = false;
       isMoving = false;
     } else {
-      // 完成：先本地显示打勾 + 置灰，3 秒后才真正写入 store（移入日志）
+      // 项目/区域/标签会保留已完成任务：展开卡片先完整收起，再写入完成状态，
+      // 随后由列表 FLIP 动画沉到底部；其他视图保留 3 秒反悔窗口后移入日志。
+      const sinksInCurrentList = currentView === 'project' || currentView === 'area' || currentView === 'tag';
+      const collapseBeforeSink = sinksInCurrentList && expanded;
       pendingDone = true;
       completionApplied = false;
       isMoving = true;
+
+      if (collapseBeforeSink) {
+        expanded = false;
+        notesExpanded = false;
+        showDatePicker = false;
+        showDeadlinePicker = false;
+        showRepeatPicker = false;
+        showTagPicker = false;
+        showProjectAreaPicker = false;
+        document.removeEventListener('click', handleOutsideClick);
+      }
+
       moveTimeout = setTimeout(async () => {
+        moveTimeout = null;
         completionApplied = true;
         await store.tasks.toggleTask(task.id);
         pendingDone = false;
         isMoving = false;
-      }, 3000);
+      }, sinksInCurrentList ? (collapseBeforeSink ? 260 : 180) : 3000);
     }
   }
 
@@ -1214,10 +1342,33 @@
               {/each}
             </span>
           {/if}
+          {#if mode === 'edit'}
+            <button
+              class="task-card__copy-btn task-card__copy-btn--compact"
+              class:is-copied={copyFeedback === 'copied'}
+              class:is-failed={copyFeedback === 'failed'}
+              title={taskCopyButtonLabel()}
+              aria-label={taskCopyButtonLabel()}
+              aria-live="polite"
+              on:click|stopPropagation={copyTaskAsMarkdown}
+            >
+              {#if copyFeedback !== 'idle'}
+                <span aria-hidden="true">{copyFeedback === 'copied' ? '✓' : '!'}</span>
+              {:else}
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <rect x="5" y="5" width="8" height="8" rx="1.5"></rect>
+                  <path d="M3.5 10.5H3A1.5 1.5 0 0 1 1.5 9V3A1.5 1.5 0 0 1 3 1.5h6A1.5 1.5 0 0 1 10.5 3v.5"></path>
+                </svg>
+              {/if}
+            </button>
+          {/if}
       </div>
     {/if}
     {#if collapsedPreview && collapsedStatusLabel}
-      <span class="task-card__collapsed-status">{collapsedStatusLabel}</span>
+      <span class="task-card__collapsed-status" role="status" title={collapsedStatusLabel}>
+        {#if collapsedStatusIcon}<Icon name={collapsedStatusIcon} size={12} />{/if}
+        <span class="task-card__collapsed-status-label">{collapsedStatusLabel}</span>
+      </span>
     {/if}
   </div>
 
@@ -1584,6 +1735,24 @@
 
           <!-- 删除（编辑模式） -->
           {#if mode === 'edit'}
+            <button
+              class="task-card__tool-btn task-card__copy-btn"
+              class:is-copied={copyFeedback === 'copied'}
+              class:is-failed={copyFeedback === 'failed'}
+              title={taskCopyButtonLabel()}
+              aria-label={taskCopyButtonLabel()}
+              aria-live="polite"
+              on:click|stopPropagation={copyTaskAsMarkdown}
+            >
+              {#if copyFeedback !== 'idle'}
+                <span aria-hidden="true">{copyFeedback === 'copied' ? '✓' : '!'}</span>
+              {:else}
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <rect x="5" y="5" width="8" height="8" rx="1.5"></rect>
+                  <path d="M3.5 10.5H3A1.5 1.5 0 0 1 1.5 9V3A1.5 1.5 0 0 1 3 1.5h6A1.5 1.5 0 0 1 10.5 3v.5"></path>
+                </svg>
+              {/if}
+            </button>
             <button class="task-card__tool-btn task-card__tool-btn--delete" title="删除" on:click|stopPropagation={handleDelete}>
               <Icon name="iconThingsX" size={14} />
             </button>
@@ -1614,7 +1783,13 @@
     padding: 10px;
     margin-bottom: 2px;
     cursor: pointer;
-    transition: background-color 0.15s ease;
+    transition:
+      background-color 180ms ease,
+      opacity 180ms ease,
+      padding 180ms ease,
+      margin 180ms ease,
+      border-radius 180ms ease,
+      box-shadow 180ms ease;
 
     &:hover {
       background: var(--b3-theme-surface-light);
@@ -1645,20 +1820,35 @@
       margin: 4px 8px;
       border-radius: 10px;
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
-      opacity: 0.58;
-      filter: grayscale(0.85);
+      border: 1px solid rgba(82, 165, 110, 0.16);
+      background: rgba(82, 165, 110, 0.045);
       pointer-events: none;
 
       .task-card__title {
-        text-decoration: line-through;
+        color: var(--b3-theme-on-surface-light);
       }
     }
 
     &__collapsed-status {
-      flex-shrink: 0;
-      margin-top: 2px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex: 0 1 auto;
+      min-width: 0;
+      max-width: 48%;
+      margin-top: 1px;
+      padding: 3px 7px;
+      border-radius: 999px;
       font-size: 11px;
-      color: var(--b3-theme-on-surface);
+      font-weight: 500;
+      color: #4f9566;
+      background: rgba(82, 165, 110, 0.1);
+    }
+
+    &__collapsed-status-label {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
       white-space: nowrap;
     }
 
@@ -1744,6 +1934,63 @@
       font-size: 12px;
       color: var(--b3-theme-on-surface-light);
       white-space: nowrap;
+    }
+
+    &__copy-btn {
+      svg {
+        width: 14px;
+        height: 14px;
+        fill: none;
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 1.35;
+      }
+
+      > span {
+        line-height: 1;
+      }
+
+      &.is-copied {
+        color: #4f9566;
+        background: rgba(82, 165, 110, 0.1);
+      }
+
+      &.is-failed {
+        color: #b42318;
+        background: rgba(180, 35, 24, 0.08);
+      }
+
+      &--compact {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+        width: 26px;
+        height: 26px;
+        margin: -3px 0 -3px 2px;
+        padding: 0;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--b3-theme-on-surface-light);
+        cursor: pointer;
+        opacity: 0.48;
+        transition: opacity 160ms ease, color 160ms ease, background 160ms ease, border-color 160ms ease;
+
+        &:hover,
+        &:focus-visible {
+          opacity: 1;
+          color: var(--b3-theme-primary);
+          background: var(--b3-theme-background);
+          outline: none;
+        }
+
+        &.is-copied,
+        &.is-failed {
+          opacity: 1;
+        }
+      }
     }
 
     // 收缩态标签内联显示（彩色圆点 + 标签名）

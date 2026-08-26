@@ -4,7 +4,7 @@
    * 选项目 → projectId（areaId 清空，区域随项目的 areaId 间接体现）；
    * 选区域 → areaId（projectId 清空）。
    */
-  import { createEventDispatcher } from "svelte";
+  import { createEventDispatcher, onMount } from "svelte";
   import type { StoreManager } from "@/stores";
   import { Icon } from "@/icons";
 
@@ -14,10 +14,20 @@
 
   const dispatch = createEventDispatcher();
   let query = "";
+  let storeVersion = 0;
+
+  // StoreManager 内部使用可变 Map，store 引用本身不会变化。显式订阅项目/区域
+  // 事件，并让下面的派生列表依赖版本号，确保已打开的 AI 任务卡片也能看到
+  // 在其他视图中新建、改名或删除的项目与区域。
+  onMount(() => {
+    const refresh = () => storeVersion++;
+    const unsubs = [store.projects.on(refresh), store.areas.on(refresh)];
+    return () => unsubs.forEach((unsubscribe) => unsubscribe());
+  });
 
   $: q = query.trim().toLowerCase();
-  $: areas = store.areas.getAll().sort((a, b) => a.order - b.order);
-  $: projects = store.projects.getActiveProjects().sort((a, b) => a.order - b.order);
+  $: areas = readAreas(store, storeVersion);
+  $: projects = readProjects(store, storeVersion);
   // 搜索时：按名称过滤项目；区域保留"名称命中或包含命中项目"的
   $: matchedProjects = q ? projects.filter((p) => p.name.toLowerCase().includes(q)) : projects;
   $: visibleAreas = q
@@ -25,6 +35,14 @@
     : areas;
   $: validAreaIds = new Set(areas.map((a) => a.id));
   $: orphanProjects = matchedProjects.filter((p) => !p.areaId || !validAreaIds.has(p.areaId));
+
+  function readAreas(manager: StoreManager, _version: number) {
+    return manager.areas.getAll().sort((a, b) => a.order - b.order);
+  }
+
+  function readProjects(manager: StoreManager, _version: number) {
+    return manager.projects.getActiveProjects().sort((a, b) => a.order - b.order);
+  }
 
   function pickProject(id: string) {
     dispatch("change", { projectId: id, areaId: undefined });

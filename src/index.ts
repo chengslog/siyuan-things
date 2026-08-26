@@ -24,6 +24,7 @@ const STORAGE_NAME = "things-config";
 const TAB_TYPE = "things_tab";
 const SYNC_DOCK_RESTORE_KEY = "siyuan-things:dock-open-before-sync";
 const AI_CONTEXT_MIME = "application/x-siyuan-things-context";
+const AI_CONTEXT_DROP_EVENT = "things-ai-context-drop";
 declare const __PLUGIN_VERSION__: string;
 declare const __PLUGIN_CHANGELOG__: string;
 
@@ -40,6 +41,7 @@ export default class ThingsPlugin extends Plugin {
   private thingsTab: any = null; // 当前标签页的 Tab 实例
   private openingThingsTab: Promise<any> | null = null;
   private currentThingsView: ViewType = "today";
+  private currentThingsViewId: string | undefined = undefined;
   private handleSyncStart = () => {
     if (this.isThingsDockOpen()) {
       sessionStorage.setItem(SYNC_DOCK_RESTORE_KEY, "1");
@@ -65,9 +67,11 @@ export default class ThingsPlugin extends Plugin {
     // Let SiYuan finish its own dock toggle first. If a Things tab is already
     // open, focus it and preserve its view; otherwise open the configured default.
     setTimeout(async () => {
-      const view = this.hasLiveThingsTab() ? this.currentThingsView : this.getConfiguredThingsView();
-      await this.openThingsTab(view);
-      if (this.dockElement) this.setActive(this.dockElement, view);
+      const hasLiveTab = this.hasLiveThingsTab();
+      const view = hasLiveTab ? this.currentThingsView : this.getConfiguredThingsView();
+      const viewId = hasLiveTab ? this.currentThingsViewId : undefined;
+      await this.openThingsTab(view, viewId);
+      if (this.dockElement) this.setActive(this.dockElement, view, viewId);
 
       // 每次由关闭状态展开 Things Dock，都基于新的可用空间恢复默认双栏比例。
       // 关闭 Dock 或点击已展开的 Dock 时不重置，避免干扰思源自身的收起动作。
@@ -136,9 +140,11 @@ export default class ThingsPlugin extends Plugin {
       title: "Things 任务管理",
       position: "right",
       callback: () => {
-        const view = this.hasLiveThingsTab() ? this.currentThingsView : this.getConfiguredThingsView();
-        this.openThingsTab(view);
-        if (this.dockElement) this.setActive(this.dockElement, view);
+        const hasLiveTab = this.hasLiveThingsTab();
+        const view = hasLiveTab ? this.currentThingsView : this.getConfiguredThingsView();
+        const viewId = hasLiveTab ? this.currentThingsViewId : undefined;
+        this.openThingsTab(view, viewId);
+        if (this.dockElement) this.setActive(this.dockElement, view, viewId);
       },
     });
 
@@ -171,6 +177,7 @@ export default class ThingsPlugin extends Plugin {
         (this.element as any).__thingsApp = app;
         pluginInstance.thingsApp = app;
         pluginInstance.currentThingsView = view as ViewType;
+        pluginInstance.currentThingsViewId = viewId || undefined;
         // this.parent 是实际的 Tab 实例（拥有 updateTitle, headElement 等方法）
         if ((this as any).parent) {
           pluginInstance.thingsTab = (this as any).parent;
@@ -247,6 +254,7 @@ export default class ThingsPlugin extends Plugin {
         this.renderAreas(this.dockElement);
         this.renderTags(this.dockElement);
         this.updateCounts(this.dockElement);
+        this.restoreDockActiveState(this.dockElement);
       }
     };
     this.store.projects.on(refreshDock);
@@ -428,7 +436,7 @@ export default class ThingsPlugin extends Plugin {
       if (sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1") return;
       if (this.openThingsDock()) {
         sessionStorage.removeItem(SYNC_DOCK_RESTORE_KEY);
-        if (this.dockElement) this.setActive(this.dockElement, this.currentThingsView);
+        if (this.dockElement) this.setActive(this.dockElement, this.currentThingsView, this.currentThingsViewId);
       }
     }, delay));
   }
@@ -529,7 +537,7 @@ export default class ThingsPlugin extends Plugin {
     this.renderTags(element);
     this.updateCounts(element);
 
-    this.setActive(element, this.hasLiveThingsTab() ? this.currentThingsView : this.getConfiguredThingsView());
+    this.restoreDockActiveState(element);
   }
 
   /**
@@ -597,7 +605,7 @@ export default class ThingsPlugin extends Plugin {
 
     for (const p of projects) {
       html += `
-        <div class="things-nav__item things-nav__item--sub things-nav-row" data-view="project" data-id="${p.id}" title="单击打开 · 按住行拖动排序">
+        <div class="things-nav__item things-nav__item--sub things-nav-row" data-view="project" data-id="${p.id}" title="单击打开 · 拖动排序或添加到 AI">
           <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsFolder"></use></svg>
           <span class="things-nav__label things-nav-row__name">${p.name}</span>
           <span class="things-nav-row__ai-drag" title="拖到 AI 输入框"><svg><use xlink:href="#iconThingsSparkles"></use></svg></span>
@@ -652,7 +660,7 @@ export default class ThingsPlugin extends Plugin {
 
     for (const a of areas) {
       html += `
-        <div class="things-nav__item things-nav__item--sub things-nav-row" data-view="area" data-id="${a.id}" title="单击打开 · 按住行拖动排序">
+        <div class="things-nav__item things-nav__item--sub things-nav-row" data-view="area" data-id="${a.id}" title="单击打开 · 拖动排序或添加到 AI">
           <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsLayers"></use></svg>
           <span class="things-nav__label things-nav-row__name">${a.name}</span>
           <span class="things-nav-row__ai-drag" title="拖到 AI 输入框"><svg><use xlink:href="#iconThingsSparkles"></use></svg></span>
@@ -713,7 +721,7 @@ export default class ThingsPlugin extends Plugin {
           : `<span class="things-tag-row__dot things-tag-row__dot--empty" title="设置颜色"><span></span></span>`;
         html += `
           <div class="things-nav__item things-nav__item--sub things-tag-row things-nav-row${depth === 0 ? ' things-tag-row--root' : ''}" data-view="tag" data-id="${t.id}"
-               style="padding-left: ${12 + depth * 16}px" title="单击打开 · 悬停 ✎ 改名 · 按住拖动排序">
+               style="padding-left: ${12 + depth * 16}px" title="单击打开 · 拖动排序或添加到 AI">
             ${dot}
             <span class="things-nav__label things-nav-row__name">${t.name}</span>
             <span class="things-nav-row__ai-drag" title="拖到 AI 输入框"><svg><use xlink:href="#iconThingsSparkles"></use></svg></span>
@@ -773,25 +781,31 @@ export default class ThingsPlugin extends Plugin {
   private bindSectionDragSort(container: Element, kind: 'area' | 'project' | 'tag') {
     // 标签只允许顶层行参与排序（嵌套子标签不介入，避免打乱层级）
     const rowSel = kind === 'tag' ? '.things-tag-row--root' : '.things-nav__item';
-    container.querySelectorAll(rowSel).forEach(el => {
+    // 子标签虽然不参与层级排序，也允许从整行拖到 AI 输入框。
+    const dragSel = kind === 'tag' ? '.things-tag-row' : rowSel;
+    container.querySelectorAll(dragSel).forEach(el => {
       const node = el as HTMLElement;
       node.addEventListener('mousedown', (e) => {
         const ev = e as MouseEvent;
         if (ev.button !== 0) return;
         const target = ev.target as HTMLElement;
-        // AI 星光把手使用原生拖拽；整行其余区域用于自定义排序。
-        if (target.closest('.things-nav-row__ai-drag')) return;
         // 交互元素上不启动拖拽（加号、标签色点、改名/删除按钮、改名输入框）
         if (target.closest('.things-nav__add') || target.closest('.things-tag-row__dot') ||
-            target.closest('.things-nav-row__ai-drag') || target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') ||
+            target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') ||
             target.closest('.things-nav-row__input')) return;
         ev.preventDefault(); // 阻止文本选中
-        this.startSectionDrag(ev, node, container as HTMLElement, kind, rowSel);
+        this.startSectionDrag(ev, node, container as HTMLElement, kind, rowSel, node.matches(rowSel));
       });
     });
   }
 
   private bindAiContextDrag(source: HTMLElement, context: AIComposerContext, row: HTMLElement = source) {
+    row.dataset.aiContext = JSON.stringify(context);
+    source.addEventListener('click', (event) => event.stopPropagation());
+
+    // 项目/区域/标签由整行自定义拖动统一处理；星芒仅作为可拖动提示。
+    // 主导航没有排序行为，继续使用原生拖放。
+    if (source !== row) return;
     source.draggable = true;
     if (!source.title.includes('拖到 AI 输入框')) {
       source.title = `${source.title ? `${source.title} · ` : ''}拖到 AI 输入框作为新建任务设定`;
@@ -804,18 +818,20 @@ export default class ThingsPlugin extends Plugin {
       transfer.setData('text/plain', context.label);
       row.classList.add('is-ai-context-dragging');
     });
-    source.addEventListener('click', (event) => event.stopPropagation());
     source.addEventListener('dragend', () => row.classList.remove('is-ai-context-dragging'));
   }
 
-  private startSectionDrag(startEv: MouseEvent, node: HTMLElement, container: HTMLElement, kind: 'area' | 'project' | 'tag', rowSel: string) {
+  private startSectionDrag(startEv: MouseEvent, node: HTMLElement, container: HTMLElement, kind: 'area' | 'project' | 'tag', rowSel: string, canSort: boolean) {
+    const startX = startEv.clientX;
     const startY = startEv.clientY;
     const rect = node.getBoundingClientRect();
+    const offsetX = startX - rect.left;
     const offsetY = startY - rect.top;
     const itemH = rect.height;
     let dragging = false;
     let ghost: HTMLElement | null = null;
     let indicator: HTMLElement | null = null;
+    let aiDropTarget: HTMLElement | null = null;
     let insertIdx = -1;
 
     const rows = () => Array.from(container.querySelectorAll(rowSel)) as HTMLElement[];
@@ -827,6 +843,7 @@ export default class ThingsPlugin extends Plugin {
     });
 
     const layout = (pointerY: number) => {
+      if (!canSort) return;
       // 目标插入索引（相对"去除源"的列表）；源的最终全局位置即 idx
       let idx = others0.length;
       for (let i = 0; i < centers0.length; i++) {
@@ -867,30 +884,78 @@ export default class ThingsPlugin extends Plugin {
 
     const onMove = (ev: MouseEvent) => {
       if (!dragging) {
-        if (Math.abs(ev.clientY - startY) < 5) return; // 阈值：区分点击与拖动
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return; // 阈值：区分点击与拖动
         dragging = true;
         ghost = node.cloneNode(true) as HTMLElement;
         ghost.classList.add('things-drag-ghost');
-        ghost.style.left = `${rect.left}px`;
         ghost.style.width = `${rect.width}px`;
         document.body.appendChild(ghost);
         node.style.visibility = 'hidden';
-        indicator = document.createElement('div');
-        indicator.className = 'things-drag-indicator';
-        container.appendChild(indicator);
-        layout(startEv.clientY); // 初始态：指引线落在源槽位
+        node.classList.add('is-ai-context-dragging');
+        if (canSort) {
+          indicator = document.createElement('div');
+          indicator.className = 'things-drag-indicator';
+          container.appendChild(indicator);
+        }
       }
+      ghost!.style.left = `${ev.clientX - offsetX}px`;
       ghost!.style.top = `${ev.clientY - offsetY}px`;
-      layout(ev.clientY);
+      const pointerTarget = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+      const nextAiTarget = pointerTarget?.closest('.ai-chat__input-container') as HTMLElement | null;
+      if (nextAiTarget !== aiDropTarget) {
+        aiDropTarget?.classList.remove('is-context-drop');
+        aiDropTarget = nextAiTarget;
+        aiDropTarget?.classList.add('is-context-drop');
+      }
+
+      const inSourceList = !!pointerTarget && container.contains(pointerTarget);
+      ghost!.classList.toggle('is-ai-context-target', !!aiDropTarget);
+      if (indicator) indicator.style.display = inSourceList && !aiDropTarget ? '' : 'none';
+
+      if (inSourceList && !aiDropTarget) {
+        layout(ev.clientY);
+      } else {
+        insertIdx = -1;
+        rows().forEach(r => { r.style.transform = ''; });
+      }
     };
 
-    const onUp = async () => {
+    const onUp = async (ev: MouseEvent) => {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
       if (!dragging) return;
       node.dataset.justDragged = '1'; // 抑制本次拖拽后的 click（避免误触导航）
+      // 松手在 AI/空白处时不会产生该行的 click，下一轮清掉标记，避免吞掉之后的正常单击。
+      window.setTimeout(() => {
+        if (node.dataset.justDragged === '1') delete node.dataset.justDragged;
+      }, 0);
 
-      // 按新序列重写 order
+      const pointerTarget = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+      const droppedOnAi = pointerTarget?.closest('.ai-chat__input-container') as HTMLElement | null;
+      const droppedInSourceList = !!pointerTarget && container.contains(pointerTarget);
+      if (droppedInSourceList && canSort) layout(ev.clientY);
+
+      // 清理视觉状态
+      aiDropTarget?.classList.remove('is-context-drop');
+      ghost?.remove();
+      indicator?.remove();
+      node.style.visibility = '';
+      node.classList.remove('is-ai-context-dragging');
+      rows().forEach(r => { r.style.transform = ''; });
+
+      if (droppedOnAi && node.dataset.aiContext) {
+        try {
+          const context = JSON.parse(node.dataset.aiContext) as AIComposerContext;
+          window.dispatchEvent(new CustomEvent(AI_CONTEXT_DROP_EVENT, { detail: { context } }));
+        } catch {
+          // 数据来自本插件渲染的侧边栏；解析失败时取消本次拖动。
+        }
+        return;
+      }
+
+      if (!droppedInSourceList || !canSort || insertIdx < 0) return;
+
+      // 仅在原列表内松手时按新序列重写 order。
       const others = rows().filter(r => r !== node);
       const newIds: string[] = [];
       others.forEach((r, i) => {
@@ -898,13 +963,6 @@ export default class ThingsPlugin extends Plugin {
         newIds.push(r.dataset.id!);
       });
       if (insertIdx >= others.length) newIds.push(node.dataset.id!);
-
-      // 清理视觉状态
-      ghost?.remove();
-      indicator?.remove();
-      node.style.visibility = '';
-      rows().forEach(r => { r.style.transform = ''; });
-
       await this.reorderSection(kind, newIds);
     };
 
@@ -1129,12 +1187,7 @@ export default class ThingsPlugin extends Plugin {
   }
 
   private async deleteTag(tagId: string) {
-    // 先把该标签从所有任务上摘掉，再删除
-    for (const t of this.store.tasks.getAll()) {
-      if (t.tags.includes(tagId)) {
-        await this.store.tasks.updateTask(t.id, { tags: t.tags.filter(id => id !== tagId) });
-      }
-    }
+    // TagStore 在数据层统一清理所有任务引用，任何删除入口都不会留下失效标签 ID。
     await this.store.tags.delete(tagId);
     showMessage('标签已删除');
     // 若当前停留在该标签视图，导航离开
@@ -1147,11 +1200,15 @@ export default class ThingsPlugin extends Plugin {
    * 设置选中状态
    */
   private setActive(element: HTMLElement, view: ViewType, id?: string) {
+    const isEntityView = view === 'project' || view === 'area' || view === 'tag';
     element.querySelectorAll('.things-nav__item').forEach(el => {
       el.classList.remove('is-active');
       const elView = (el as HTMLElement).dataset.view;
       const elId = (el as HTMLElement).dataset.id;
-      if (elView === view && (!id || elId === id)) {
+      // 项目/区域/标签必须同时匹配实体 ID。同步恢复时即使 ID 暂时缺失，
+      // 也不能把同 view 的所有行一起激活。
+      const matches = elView === view && (isEntityView ? !!id && elId === id : !id || elId === id);
+      if (matches) {
         el.classList.add('is-active');
       }
     });
@@ -1159,6 +1216,13 @@ export default class ThingsPlugin extends Plugin {
     element.querySelectorAll('.things-nav__header[data-view]').forEach(el => {
       el.classList.toggle('is-active', (el as HTMLElement).dataset.view === view);
     });
+  }
+
+  private restoreDockActiveState(element: HTMLElement) {
+    const hasLiveTab = this.hasLiveThingsTab();
+    const view = hasLiveTab ? this.currentThingsView : this.getConfiguredThingsView();
+    const viewId = hasLiveTab ? this.currentThingsViewId : undefined;
+    this.setActive(element, view, viewId);
   }
 
   /**
@@ -1186,6 +1250,7 @@ export default class ThingsPlugin extends Plugin {
   private async openThingsTab(view: ViewType, viewId?: string, searchQuery?: string) {
     console.log("[Things] Opening tab:", view, viewId);
     this.currentThingsView = view;
+    this.currentThingsViewId = viewId || undefined;
 
     const title = this.getViewTitle(view, viewId);
 

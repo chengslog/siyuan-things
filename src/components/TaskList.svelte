@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick, getContext } from "svelte";
   import { cubicOut } from "svelte/easing";
+  import { flip } from "svelte/animate";
   import { slide } from "svelte/transition";
   import TaskCard from "./TaskCard.svelte";
   import DragSort from "./DragSort.svelte";
@@ -187,16 +188,22 @@
       case "tags":
         return []; // 标签总览由 TagOverview 接管
       case "project":
-        return viewId ? sortByAnytimeRules(store.tasks.getProjectTasks(viewId)) : [];
+        return viewId
+          ? sortByAnytimeRules(store.tasks.getProjectTasks(viewId).filter((task) => task.status !== 'canceled'))
+          : [];
       case "area":
         if (!viewId) return [];
         const areaProjects = store.projects.getAreaProjects(viewId);
         const projectIds = new Set(areaProjects.map((p) => p.id));
         return sortByAnytimeRules(store.tasks
           .getAll()
-          .filter((t) => t.status === "todo" && !t.parentId && (t.areaId === viewId || (t.projectId && projectIds.has(t.projectId)))));
+          .filter((t) => t.status !== 'canceled' && !t.parentId && (t.areaId === viewId || (t.projectId && projectIds.has(t.projectId)))));
       case "tag":
-        return viewId ? sortByAnytimeRules(store.tasks.getTagTasks(viewId)) : [];
+        return viewId
+          ? sortByAnytimeRules(store.tasks.getAll().filter((task) =>
+              task.status !== 'canceled' && !task.parentId && task.tags.includes(viewId)
+            ))
+          : [];
       default:
         return [];
     }
@@ -1318,45 +1325,47 @@
             let:handleDragStart
           >
             {#each displayItems as task, ti (task.id)}
-              {#if activeCreateSlot && activeCreateSlot.group === group && activeCreateSlot.index === ti}
-                <TaskCard
-                  mode="create"
-                  {store}
-                  currentView={view}
-                  currentViewId={viewId}
-                  presetStartDate={createPreset.startDate}
-                  presetHeadingId={view === "project" && group !== "none" && group !== "all" ? group : undefined}
-                  presetView={createDestView}
-                  presetViewId={createDestViewId}
-                  on:created={handleTaskCreated}
-                  on:cancel={handleCancelCreate}
-                />
-              {/if}
-              <div
-                class="task-list__item-wrapper"
-                class:is-dragging={draggedId === task.id}
-                out:slideOut
-              >
-                {#if view === "search" && getSearchMatchLabels(task).length}
-                  <div class="task-list__search-matches">
-                    {#each getSearchMatchLabels(task) as label}
-                      <span>{label}</span>
-                    {/each}
-                  </div>
+              <div class="task-list__animated-slot" animate:flip={{ duration: 360, easing: cubicOut }}>
+                {#if activeCreateSlot && activeCreateSlot.group === group && activeCreateSlot.index === ti}
+                  <TaskCard
+                    mode="create"
+                    {store}
+                    currentView={view}
+                    currentViewId={viewId}
+                    presetStartDate={createPreset.startDate}
+                    presetHeadingId={view === "project" && group !== "none" && group !== "all" ? group : undefined}
+                    presetView={createDestView}
+                    presetViewId={createDestViewId}
+                    on:created={handleTaskCreated}
+                    on:cancel={handleCancelCreate}
+                  />
                 {/if}
-                <TaskCard
-                  mode="edit"
-                  {task}
-                  {store}
-                  inlineDate={view === "upcoming" && group.startsWith("m-")}
-                  isDragging={draggedId === task.id}
-                  currentView={view}
-                  {registerItem}
-                  {unregisterItem}
-                  on:dragstart={(e) => {
-                    if (view !== "search") handleDragStart(e.detail.event, task.id);
-                  }}
-                />
+                <div
+                  class="task-list__item-wrapper"
+                  class:is-dragging={draggedId === task.id}
+                  out:slideOut
+                >
+                  {#if view === "search" && getSearchMatchLabels(task).length}
+                    <div class="task-list__search-matches">
+                      {#each getSearchMatchLabels(task) as label}
+                        <span>{label}</span>
+                      {/each}
+                    </div>
+                  {/if}
+                  <TaskCard
+                    mode="edit"
+                    {task}
+                    {store}
+                    inlineDate={view === "upcoming" && group.startsWith("m-")}
+                    isDragging={draggedId === task.id}
+                    currentView={view}
+                    {registerItem}
+                    {unregisterItem}
+                    on:dragstart={(e) => {
+                      if (view !== "search") handleDragStart(e.detail.event, task.id);
+                    }}
+                  />
+                </div>
               </div>
             {/each}
             {#if activeCreateSlot && activeCreateSlot.group === group && activeCreateSlot.index >= displayItems.length}

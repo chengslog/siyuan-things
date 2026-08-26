@@ -14,7 +14,7 @@ A Things-inspired GTD task manager for SiYuan Note. It provides Inbox, Today, Up
 | **Projects and organization** | Organize work with projects, areas, headings, and tags. |
 | **Dates and reminders** | Set start dates and times, deadlines, reminders, and Someday tasks. |
 | **Recurring tasks** | Repeat daily, on weekdays, weekly, monthly, or yearly; completing a task creates its next occurrence. |
-| **Task details** | Add notes and checklists without exposing checklist items as top-level tasks. |
+| **Task details** | Add notes and checklists, and copy a task's complete data as Markdown with one click. |
 | **Quick Find** | Search titles, notes, checklists, assignments, tags, statuses, and dates directly in the task list. |
 | **AI task assistant** | Create, search, summarize, update, and delete tasks through a continuous conversation. |
 | **Theme and layout** | Follows SiYuan's light and dark themes with consistent cards across the sidebar, task list, and AI panel. |
@@ -31,9 +31,9 @@ Use natural language such as:
 
 > Find possible duplicate tasks and suggest which ones to keep.
 
-The AI assistant supports follow-up conversations, so you can refine the current draft or operate on tasks found in the previous response. AI is optional and requires an OpenAI-compatible service.
+The AI assistant supports follow-up conversations, so you can refine the current draft or operate on tasks found in the previous response. Generated tasks stay with their conversation round: pending tasks in the current round open by default, older rounds collapse automatically, and added tasks show their project, area, or Inbox destination. Ambiguous create-or-search requests also provide one-click choices. AI is optional and requires an OpenAI-compatible service.
 
-You can also drag Inbox, Today, Upcoming, Anytime, Someday, Logbook, or a specific project, area, or tag from the sidebar into the AI composer. Each item appears as a temporary constraint chip for the next request. Projects and areas replace each other, while multiple tags can be combined; the chips are cleared immediately after sending and are not included in the visible message text.
+You can also drag Inbox, Today, Upcoming, Anytime, Someday, Logbook, or a specific project, area, or tag from the sidebar into the AI composer. You do not need to grab a precise handle: dropping in the composer adds a temporary constraint chip, while dragging within the sidebar continues to reorder items. Projects and areas replace each other, multiple tags can be combined, and the chips clear after sending.
 
 ## Requirements
 
@@ -54,7 +54,7 @@ Download `package.zip` from GitHub Releases, extract it to `<SiYuan workspace>/d
 
 - Open Things from the SiYuan dock.
 - Use Inbox, Today, Upcoming, Anytime, Someday, and Log to manage the task lifecycle.
-- Set projects, areas, tags, dates, deadlines, reminders, recurrence, notes, and checklists on task cards.
+- Set projects, areas, tags, dates, deadlines, reminders, recurrence, notes, and checklists on task cards, or copy a complete task as Markdown.
 - Use natural language in the AI panel to create, find, update, or delete tasks. Deletions require confirmation.
 
 ## Local development
@@ -80,7 +80,7 @@ Task context required to answer a query is sent to the selected AI provider. The
 
 ## Data and sync
 
-Tasks and plugin settings are stored in the SiYuan workspace through the plugin data APIs. Whether these files sync to another device depends on the workspace synchronization configuration. Avoid editing the same task concurrently on multiple devices before synchronization completes.
+Tasks and plugin settings are stored in the SiYuan workspace through the plugin data APIs. Whether these files sync to another device depends on the workspace synchronization configuration. Deleting a tag also removes that tag reference from active, logged, and recoverable tasks. Avoid editing the same task concurrently on multiple devices before synchronization completes.
 
 ## Compatibility and feedback
 

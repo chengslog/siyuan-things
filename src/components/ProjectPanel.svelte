@@ -4,7 +4,7 @@
    * 改名/删除已移到侧边栏项目行（双击改名 / × 删除），菜单只保留面板专属操作：
    * 截止日期、移动区域、状态切换。截止日期/区域用独立浮动弹层，避免撑大菜单卡片。
    */
-  import { createEventDispatcher, onDestroy, tick } from "svelte";
+  import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
   import type { StoreManager } from "@/stores";
   import type { Project, ProjectStatus, Task } from "@/types";
   import { formatDateFull } from "@/utils/calendar";
@@ -29,6 +29,7 @@
   let notesArea: HTMLTextAreaElement;
   let notesExpanded = false;
   let notesContentEl: HTMLElement;
+  let areaStoreVersion = 0;
 
   $: renderedNotes = renderMarkdown(project.notes || "");
   // 检测备注内容是否超过 2 行（需要展开按钮）
@@ -44,12 +45,20 @@
     document.removeEventListener("mousedown", onNotesOutside);
   });
 
+  // 项目面板会在项目视图之间复用，store 引用不会随内部 Map 变化。
+  // 订阅区域事件，确保“移动到区域”立即包含刚创建的区域。
+  onMount(() => store.areas.on(() => areaStoreVersion++));
+
   $: total = tasks.filter((t) => !t.parentId).length;
   $: done = tasks.filter((t) => !t.parentId && t.status === "done").length;
   $: progress = total === 0 ? 0 : Math.round((done / total) * 100);
   $: statusMeta = getStatusMeta(project.status);
   $: deadlineOverdue = project.deadline ? isOverdue(project.deadline) && project.status === "active" : false;
-  $: areas = store.areas.getAll().sort((a, b) => a.order - b.order);
+  $: areas = readAreas(store, areaStoreVersion);
+
+  function readAreas(manager: StoreManager, _version: number) {
+    return manager.areas.getAll().sort((a, b) => a.order - b.order);
+  }
 
   function getStatusMeta(status: ProjectStatus): { label: string; klass: string } | null {
     switch (status) {

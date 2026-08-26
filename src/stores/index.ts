@@ -17,7 +17,7 @@ export class StoreManager {
     this.tasks = new TaskStore(plugin);
     this.projects = new ProjectStore(plugin);
     this.areas = new AreaStore(plugin);
-    this.tags = new TagStore(plugin);
+    this.tags = new TagStore(plugin, (tagId) => this.tasks.removeTagFromAll(tagId));
   }
 
   /**

@@ -16,6 +16,8 @@ import {
 } from "@/services/aiParser";
 import { parseDate } from "@/utils/date";
 import { normalizeRepeatRule } from "@/utils/recurrence";
+import { findExistingTagName, inferExistingTaskTags } from "@/utils/aiTagMatching";
+import { omitEchoedDraftsForCreate } from "@/utils/aiDrafts";
 
 export interface ChatRound {
   id: string;
@@ -35,6 +37,10 @@ export interface ChatRound {
   assistantMessage?: string;
   pendingOperation?: PendingOperation;
   queryScope?: AIResolvedScope;
+  /** 后续轮次明确修订了本轮草稿时，仅展示新版卡片，保留本轮对话文本。 */
+  supersededByRoundId?: string;
+  clarification?: 'create_or_search';
+  clarificationChoice?: 'create' | 'search';
 }
 
 export interface AIResolvedScope {
@@ -193,6 +199,17 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
       ? [{ id: previousSearchRound.searchResults[0].id, title: previousSearchRound.searchResults[0].title }]
       : [],
     pendingOperation,
+    availableClassifications: {
+      projects: taskStore.projects.getAll().map((project) => ({
+        name: project.name,
+        headings: project.headings.map((heading) => heading.title),
+      })),
+      areas: taskStore.areas.getAll().map((area) => area.name),
+      tags: taskStore.tags.getAll().map((tag) => ({
+        name: tag.name,
+        parent: tag.parentId ? taskStore!.tags.get(tag.parentId)?.name : undefined,
+      })),
+    },
   };
 
   const updateStream = {
@@ -208,6 +225,10 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
       get(aiThinkingLevel),
       updateStream,
     );
+
+    if (route.intent === 'create') {
+      route.tasks = omitEchoedDraftsForCreate(route.tasks, previousDraftRound?.parsedTasks);
+    }
 
     // The model decides task structure from the whole utterance. Local validation
     // only catches contradictions between that decision (or an explicit user count)
@@ -233,6 +254,9 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
         get(aiThinkingLevel),
         updateStream,
       );
+      if (route.intent === 'create') {
+        route.tasks = omitEchoedDraftsForCreate(route.tasks, previousDraftRound?.parsedTasks);
+      }
       const repairedStructure = resolveExpectedTaskStructure(text, route.structure || expectedStructure);
       if (route.intent !== 'create' || taskStructureMismatch(repairedStructure, route.tasks?.length || 0)) {
         throw new Error('AI 返回的任务结构与用户要求不一致，请换一种说法后重试');
@@ -279,13 +303,27 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
       round.assistantMessage = needsNarrative ? result.message : '';
     } else if (route.intent === 'create' || (route.intent === 'update' && route.tasks?.length)) {
       round.mode = 'organize';
+      const revisesPreviousDraft = route.intent === 'update' && !!route.tasks?.length;
       round.parsedTasks = parseTasksFromContent(JSON.stringify(route.tasks || [])).map((task, index) => ({
         ...task,
-        clientId: task.clientId || previousDraftRound?.parsedTasks[index]?.clientId || `draft-${round.id}-${index}`,
-      })).map((task) => applyComposerContexts(task, creationContexts));
+        // 独立 create 必须生成新身份，不能按数组位置继承上一轮任务；
+        // 只有明确 update 草稿时才延续 clientId。
+        clientId: revisesPreviousDraft
+          ? task.clientId || previousDraftRound?.parsedTasks[index]?.clientId || `draft-${round.id}-${index}`
+          : `draft-${round.id}-${index}`,
+      }))
+        .map((task) => applyComposerContexts(task, creationContexts))
+        .map((task) => ({
+          ...task,
+          tags: inferExistingTaskTags(
+            text,
+            taskStore!.tags.getAll().map((tag) => tag.name),
+            task.tags || [],
+          ),
+        }));
       if (!round.parsedTasks.length) throw new Error('AI 未返回有效任务草稿');
       // 已经写入任务库的草稿后续修改仍沿用原任务映射。
-      if (previousDraftRound) {
+      if (previousDraftRound && revisesPreviousDraft) {
         for (const [indexText, taskId] of Object.entries(previousDraftRound.createdTaskIds || {})) {
           const previousIndex = Number(indexText);
           const previousClientId = previousDraftRound.parsedTasks[previousIndex]?.clientId;
@@ -322,6 +360,9 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
             }
           }
         }
+        // 对话轮次仍保留，但旧版任务卡由本轮修订结果替代，避免同一任务重复出现。
+        previousDraftRound.supersededByRoundId = round.id;
+        bump(previousDraftRound);
       }
     } else if (route.intent === 'update') {
       const validIds = (route.targetIds || []).filter((id) => !!taskStore!.tasks.get(id));
@@ -360,6 +401,13 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
     } else {
       round.mode = 'answer';
       round.assistantMessage = route.message || (route.intent === 'clarify' ? '请再说明要操作的任务。' : '我明白了。');
+      if (route.intent === 'clarify') {
+        const message = round.assistantMessage;
+        const asksCreateOrSearch = /(创建|新建|添加).*(搜索|查询|查找)|(搜索|查询|查找).*(创建|新建|添加)/.test(message);
+        if (route.clarification === 'create_or_search' || asksCreateOrSearch) {
+          round.clarification = 'create_or_search';
+        }
+      }
     }
     round.phase = 'done';
   } catch (error: any) {
@@ -449,7 +497,8 @@ function resolveExpectedTaskStructure(text: string, aiStructure?: TaskStructure)
 }
 
 function taskStructureMismatch(structure: TaskStructure | undefined, taskCount: number): boolean {
-  if (!structure || taskCount === 0) return false;
+  if (taskCount === 0) return true;
+  if (!structure) return false;
   return structure === 'multiple_tasks' ? taskCount < 2 : taskCount !== 1;
 }
 
@@ -893,9 +942,8 @@ export function parsedToPrefill(parsed: ParsedTask) {
   if (taskStore && parsed.tags && parsed.tags.length > 0) {
     const allTags = taskStore.tags.getAll();
     for (const tagName of parsed.tags) {
-      const matched = allTags.find(t =>
-        t.name === tagName || t.name.toLowerCase() === tagName.toLowerCase()
-      );
+      const canonicalName = findExistingTagName(tagName, allTags.map((tag) => tag.name));
+      const matched = canonicalName ? allTags.find((tag) => tag.name === canonicalName) : undefined;
       if (matched) tagIds.push(matched.id);
       else unresolved.push(`标签“${tagName}”`);
     }

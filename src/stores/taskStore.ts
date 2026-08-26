@@ -3,6 +3,7 @@ import type { Task, TaskStatus, RepeatRule } from '@/types';
 import { BaseStore } from './base';
 import { genUUID } from '@/utils/id';
 import { initialRepeatStartDate, nextRepeatTimestamp } from '@/utils/recurrence';
+import { removeTagId } from '@/utils/tagCleanup';
 
 export class TaskStore extends BaseStore<Task> {
   private archiveFileName: string;
@@ -13,6 +14,49 @@ export class TaskStore extends BaseStore<Task> {
   constructor(plugin: Plugin) {
     super(plugin, 'tasks.json');
     this.archiveFileName = 'tasks-archive.json';
+  }
+
+  /** 删除标签前批量清理当前、归档和回收记录中的任务引用。 */
+  async removeTagFromAll(tagId: string): Promise<string[]> {
+    const changedIds = new Set<string>();
+    const now = Date.now();
+    let activeChanged = false;
+    let archiveChanged = false;
+    let trashChanged = false;
+
+    for (const task of this.items.values()) {
+      const tags = removeTagId(task.tags, tagId);
+      if (!tags) continue;
+      this.items.set(task.id, { ...task, tags, updated: now });
+      changedIds.add(task.id);
+      activeChanged = true;
+    }
+
+    for (const task of this.archivedItems.values()) {
+      const tags = removeTagId(task.tags, tagId);
+      if (!tags) continue;
+      this.archivedItems.set(task.id, { ...task, tags, updated: now });
+      changedIds.add(task.id);
+      archiveChanged = true;
+    }
+
+    for (const batch of this.trashBatches) {
+      batch.tasks = batch.tasks.map((task) => {
+        const tags = removeTagId(task.tags, tagId);
+        if (!tags) return task;
+        changedIds.add(task.id);
+        trashChanged = true;
+        return { ...task, tags, updated: now };
+      });
+    }
+
+    await Promise.all([
+      activeChanged ? this.save() : Promise.resolve(),
+      archiveChanged ? this.saveArchive() : Promise.resolve(),
+      trashChanged ? this.plugin.saveData(this.trashFileName, this.trashBatches) : Promise.resolve(),
+    ]);
+    if (changedIds.size > 0) this.emit({ type: 'update', ids: [...changedIds] });
+    return [...changedIds];
   }
 
   /** 清空当前、归档及回收记录中的全部任务。 */

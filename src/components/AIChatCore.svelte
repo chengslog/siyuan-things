@@ -1,6 +1,5 @@
 <script lang="ts">
   import { createEventDispatcher, onMount, onDestroy, tick } from "svelte";
-  import { showMessage } from "siyuan";
   import type { ViewType } from "@/types";
   import type { StoreManager } from "@/stores";
   import { THINKING_LEVELS, type AIConfig } from "@/services/aiParser";
@@ -23,6 +22,7 @@
   } from "@/stores/aiChat";
   import Icon from "@/icons/Icon.svelte";
   import TaskCard from "./TaskCard.svelte";
+  import { getTaskDestination } from "@/utils/taskDestination";
 
   export let store: StoreManager;
   export let currentView: ViewType = "inbox";
@@ -43,8 +43,11 @@
   let closingTaskKeys = new Set<string>();
   let clockNow = Date.now();
   let clockTimer: ReturnType<typeof setInterval> | undefined;
+  let copyResetTimer: ReturnType<typeof setTimeout> | undefined;
+  let copyFeedback: { key: string; status: 'copied' | 'failed' } | null = null;
   let inputDropActive = false;
   const AI_CONTEXT_MIME = 'application/x-siyuan-things-context';
+  const AI_CONTEXT_DROP_EVENT = 'things-ai-context-drop';
 
   function getAvailableModels(): Array<{ value: string; label: string }> {
     if (aiConfig.mode === 'custom') {
@@ -84,10 +87,7 @@
 
   $: rounds = $aiRounds;
   $: hasAnyRound = $aiRounds.length > 0;
-  // 同一会话只展示最新的有效任务集；前面的用户输入和思考记录仍保留。
-  $: latestSearchRoundId = [...rounds].reverse().find(
-    (round) => round.mode === 'search'
-  )?.id;
+  // 当前思考区只显示最新轮次；已完成的回复和任务结果按会话历史保留。
   $: latestRoundId = rounds[rounds.length - 1]?.id;
   $: inputText = $aiInputText;
   $: selectedModel = $aiSelectedModel || aiConfig.model;
@@ -106,19 +106,29 @@
     inputDropActive = false;
     try {
       const context = JSON.parse(event.dataTransfer?.getData(AI_CONTEXT_MIME) || '') as AIComposerContext;
-      const allowedViews = ['inbox', 'today', 'upcoming', 'anytime', 'someday', 'log'];
-      const valid = context?.label && context?.value && (
-        (context.kind === 'view' && allowedViews.includes(context.value)) ||
-        (context.kind === 'project' && !!context.id && !!store.projects.get(context.id)) ||
-        (context.kind === 'area' && !!context.id && !!store.areas.get(context.id)) ||
-        (context.kind === 'tag' && !!context.id && !!store.tags.get(context.id))
-      );
-      if (!valid) return;
-      addAiComposerContext(context);
-      tick().then(() => textareaEl?.focus());
+      acceptContextDrop(context);
     } catch {
       // 忽略来自其他应用的普通拖拽内容。
     }
+  }
+
+  function acceptContextDrop(context: AIComposerContext) {
+    const allowedViews = ['inbox', 'today', 'upcoming', 'anytime', 'someday', 'log'];
+    const valid = context?.label && context?.value && (
+      (context.kind === 'view' && allowedViews.includes(context.value)) ||
+      (context.kind === 'project' && !!context.id && !!store.projects.get(context.id)) ||
+      (context.kind === 'area' && !!context.id && !!store.areas.get(context.id)) ||
+      (context.kind === 'tag' && !!context.id && !!store.tags.get(context.id))
+    );
+    if (!valid) return;
+    addAiComposerContext(context);
+    tick().then(() => textareaEl?.focus());
+  }
+
+  function handleUnifiedContextDrop(event: Event) {
+    inputDropActive = false;
+    const context = (event as CustomEvent<{ context?: AIComposerContext }>).detail?.context;
+    if (context) acceptContextDrop(context);
   }
 
   function handleContextDragLeave(event: DragEvent) {
@@ -196,13 +206,40 @@
   function handleTaskCreated(round: any, index: number, e: CustomEvent) {
     const key = `${round.id}:${index}`;
     closingTaskKeys = new Set(closingTaskKeys).add(key);
-    showMessage(`✓ 已添加：${round.parsedTasks[index]?.title || ''}`, 2000);
     window.setTimeout(() => {
       markAiTaskAdopted(round, index, e.detail?.task?.id);
       const next = new Set(closingTaskKeys);
       next.delete(key);
       closingTaskKeys = next;
     }, 420);
+  }
+
+  // AI 卡片添加成功后的页面内位置提示。任务可能同时属于多个侧边栏视图，
+  // 按产品约定只展示一个主位置：项目 > 区域 > 时间/状态视图 > 收件箱。
+  function addedDestination(round: any, index: number): { label: string; icon: string } {
+    const taskId = round.createdTaskIds?.[index];
+    const task = taskId ? store.tasks.get(taskId) : undefined;
+    if (!task) return { label: '任务已添加', icon: 'iconThingsCheck' };
+    return getTaskDestination(task, {
+      projectName: (id) => store.projects.get(id)?.name,
+      areaName: (id) => store.areas.get(id)?.name,
+    });
+  }
+
+  async function handleClarificationChoice(round: any, choice: 'create' | 'search') {
+    if ($aiIsSending || round.clarificationChoice) return;
+    aiRounds.update((items) => items.map((item) => (
+      item.id === round.id ? { ...item, clarificationChoice: choice } : item
+    )));
+    const originalText = String(round.userText || '').trim();
+    const text = choice === 'create'
+      ? `请直接创建一个任务，不要查询现有任务。任务内容：${originalText}`
+      : `请只查询现有任务，不要创建新任务。查询与以下内容相关的任务：${originalText}`;
+    const sending = sendAiMessage(text, aiConfig, { view: currentView, viewId: currentViewId });
+    await scrollToLatest('smooth');
+    await sending;
+    await scrollToLatest('smooth');
+    tick().then(() => textareaEl?.focus());
   }
 
   function timestampParts(timestamp?: number): { date?: string; time?: string } {
@@ -291,6 +328,90 @@
     return message.replace(/^AI\s*服务调用失败[:：]?\s*/i, '');
   }
 
+  function taskDraftCopyText(task: any, index: number): string {
+    const details = [
+      task.project && `项目：${task.project}`,
+      task.area && `区域：${task.area}`,
+      task.heading && `分组：${task.heading}`,
+      task.startDate && `开始：${task.startDate}${task.startTime ? ` ${task.startTime}` : ''}`,
+      task.deadline && `截止：${task.deadline}${task.deadlineTime ? ` ${task.deadlineTime}` : ''}`,
+      task.someday && '时间：某天',
+      task.repeatRule && `重复：${task.repeatRule}`,
+      task.tags?.length && `标签：${task.tags.join('、')}`,
+      task.notes && `备注：${task.notes}`,
+    ].filter(Boolean) as string[];
+    const checklist = task.checklist?.length
+      ? ['检查清单：', ...task.checklist.map((item: string) => `- ${item}`)]
+      : [];
+    return [`${index + 1}. ${task.title}`, ...details.map((line) => `   ${line}`), ...checklist.map((line) => `   ${line}`)].join('\n');
+  }
+
+  function assistantCopyText(round: any): string {
+    if (round.phase === 'error') return friendlyErrorText(round);
+    if (round.mode === 'search') {
+      const results = round.searchResults || [];
+      return [
+        round.assistantMessage || '查询完成，我把结果整理在下面了。',
+        results.length ? '查询结果：' : '没有找到匹配的任务。',
+        ...results.map((task: any, index: number) => `${index + 1}. ${task.title}（${taskLocation(task)}）`),
+      ].filter(Boolean).join('\n');
+    }
+    if (round.mode === 'action' || round.mode === 'answer') {
+      const operation = round.pendingOperation;
+      const operationLines = operation ? [
+        `${operation.type === 'delete' ? '待确认删除' : '待确认修改'}：${operation.targetIds.length} 个任务`,
+        ...(operation.type === 'delete'
+          ? operation.targetIds.map((id: string) => `- ${store.tasks.get(id)?.title || id}`)
+          : Object.entries(operation.changes || {}).map(([field, value]) => `- ${field}：${String(value)}`)),
+      ] : [];
+      return [round.assistantMessage, ...operationLines].filter(Boolean).join('\n');
+    }
+    return [
+      round.assistantMessage || '可以，我会帮你整理成清晰的任务。',
+      round.parsedTasks.length ? '整理结果：' : '',
+      ...round.parsedTasks.map((task: any, index: number) => taskDraftCopyText(task, index)),
+    ].filter(Boolean).join('\n\n');
+  }
+
+  async function writeClipboardText(text: string) {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return;
+      } catch {
+        // 部分思源 WebView 暴露了 Clipboard API，但会因权限拒绝写入；继续使用兼容方案。
+      }
+    }
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const copied = document.execCommand('copy');
+    textarea.remove();
+    if (!copied) throw new Error('copy failed');
+  }
+
+  async function copyMessage(key: string, text: string) {
+    if (!text.trim()) return;
+    if (copyResetTimer) clearTimeout(copyResetTimer);
+    try {
+      await writeClipboardText(text);
+      copyFeedback = { key, status: 'copied' };
+    } catch {
+      copyFeedback = { key, status: 'failed' };
+    }
+    copyResetTimer = setTimeout(() => { copyFeedback = null; }, 1800);
+  }
+
+  function copyButtonLabel(key: string, defaultLabel: string): string {
+    if (copyFeedback?.key !== key) return defaultLabel;
+    return copyFeedback.status === 'copied' ? '已复制' : '复制失败';
+  }
+
   function taskLocation(task: any): string {
     if (task.projectId) return `项目：${store.projects.get(task.projectId)?.name || '未知项目'}`;
     if (task.areaId) return `区域：${store.areas.get(task.areaId)?.name || '未知区域'}`;
@@ -357,11 +478,14 @@
     autoGrow();
     clockTimer = setInterval(() => { clockNow = Date.now(); }, 1000);
     document.addEventListener('click', handleDocClick, true);
+    window.addEventListener(AI_CONTEXT_DROP_EVENT, handleUnifiedContextDrop);
   });
 
   onDestroy(() => {
     if (clockTimer) clearInterval(clockTimer);
+    if (copyResetTimer) clearTimeout(copyResetTimer);
     document.removeEventListener('click', handleDocClick, true);
+    window.removeEventListener(AI_CONTEXT_DROP_EVENT, handleUnifiedContextDrop);
   });
 </script>
 
@@ -394,9 +518,21 @@
         </div>
         <div class="ai-chat__user-text">{round.userText}</div>
       </div>
+      <div class="ai-chat__message-actions ai-chat__message-actions--user">
+        <button
+          class="ai-chat__message-copy-btn"
+          class:is-copied={copyFeedback?.key === `${round.id}:user` && copyFeedback.status === 'copied'}
+          class:is-failed={copyFeedback?.key === `${round.id}:user` && copyFeedback.status === 'failed'}
+          title={copyButtonLabel(`${round.id}:user`, '复制问题')}
+          aria-label={copyButtonLabel(`${round.id}:user`, '复制问题')}
+          on:click|stopPropagation={() => copyMessage(`${round.id}:user`, round.userText)}
+        >
+          {#if copyFeedback?.key === `${round.id}:user`}<span aria-hidden="true">{copyFeedback.status === 'copied' ? '✓' : '!'}</span>{:else}<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.5"></rect><path d="M3.5 10.5H3A1.5 1.5 0 0 1 1.5 9V3A1.5 1.5 0 0 1 3 1.5h6A1.5 1.5 0 0 1 10.5 3v.5"></path></svg>{/if}
+        </button>
+      </div>
 
       <!-- AI 思考卡片 -->
-      {#if round.id === latestRoundId}
+      {#if round.id === latestRoundId || round.phase === 'error'}
       <div class="ai-chat__card ai-chat__think-card">
         <div class="ai-chat__assistant-row">
           <div class="ai-chat__assistant-avatar"><Icon name="iconThingsSparkles" size={12} color="#ffffff" /></div>
@@ -425,9 +561,23 @@
         {/if}
 
       </div>
+      {#if round.phase === 'error'}
+        <div class="ai-chat__message-actions ai-chat__message-actions--assistant">
+          <button
+            class="ai-chat__message-copy-btn"
+            class:is-copied={copyFeedback?.key === `${round.id}:assistant` && copyFeedback.status === 'copied'}
+            class:is-failed={copyFeedback?.key === `${round.id}:assistant` && copyFeedback.status === 'failed'}
+            title={copyButtonLabel(`${round.id}:assistant`, '复制回复')}
+            aria-label={copyButtonLabel(`${round.id}:assistant`, '复制回复')}
+            on:click|stopPropagation={() => copyMessage(`${round.id}:assistant`, assistantCopyText(round))}
+          >
+            {#if copyFeedback?.key === `${round.id}:assistant`}<span aria-hidden="true">{copyFeedback.status === 'copied' ? '✓' : '!'}</span>{:else}<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.5"></rect><path d="M3.5 10.5H3A1.5 1.5 0 0 1 1.5 9V3A1.5 1.5 0 0 1 3 1.5h6A1.5 1.5 0 0 1 10.5 3v.5"></path></svg>{/if}
+          </button>
+        </div>
+      {/if}
       {/if}
 
-      {#if round.mode === 'search' && round.phase === 'done' && round.id === latestSearchRoundId}
+      {#if round.mode === 'search' && round.phase === 'done'}
         <section class="ai-chat__search-section">
           <div class="ai-chat__card-label"><span>查询结果</span><span class="ai-chat__count-badge">{round.searchResults?.length || 0}</span></div>
           {#if round.assistantMessage}<div class="ai-chat__search-answer">{round.assistantMessage}</div>{/if}
@@ -451,11 +601,43 @@
             <div class="ai-chat__search-empty">没有找到匹配的任务，可以换个关键词再问一次。</div>
           {/if}
         </section>
+        <div class="ai-chat__message-actions ai-chat__message-actions--assistant">
+          <button
+            class="ai-chat__message-copy-btn"
+            class:is-copied={copyFeedback?.key === `${round.id}:assistant` && copyFeedback.status === 'copied'}
+            class:is-failed={copyFeedback?.key === `${round.id}:assistant` && copyFeedback.status === 'failed'}
+            title={copyButtonLabel(`${round.id}:assistant`, '复制回复')}
+            aria-label={copyButtonLabel(`${round.id}:assistant`, '复制回复')}
+            on:click|stopPropagation={() => copyMessage(`${round.id}:assistant`, assistantCopyText(round))}
+          >
+            {#if copyFeedback?.key === `${round.id}:assistant`}<span aria-hidden="true">{copyFeedback.status === 'copied' ? '✓' : '!'}</span>{:else}<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.5"></rect><path d="M3.5 10.5H3A1.5 1.5 0 0 1 1.5 9V3A1.5 1.5 0 0 1 3 1.5h6A1.5 1.5 0 0 1 10.5 3v.5"></path></svg>{/if}
+          </button>
+        </div>
       {/if}
 
-      {#if (round.mode === 'action' || round.mode === 'answer') && round.phase === 'done' && round.id === latestRoundId}
+      {#if (round.mode === 'action' || round.mode === 'answer') && round.phase === 'done'}
         <section class="ai-chat__answer-card">
           <div class="ai-chat__answer-text">{round.assistantMessage}</div>
+          {#if round.clarification === 'create_or_search'}
+            {#if round.clarificationChoice}
+              <div class="ai-chat__clarification-selected" role="status">
+                已选择{round.clarificationChoice === 'create' ? '创建任务' : '查询任务'}
+              </div>
+            {:else}
+              <div class="ai-chat__clarification-actions" aria-label="选择操作方式">
+                <button
+                  class="ai-chat__clarification-btn ai-chat__clarification-btn--primary"
+                  disabled={$aiIsSending}
+                  on:click={() => handleClarificationChoice(round, 'create')}
+                >创建任务</button>
+                <button
+                  class="ai-chat__clarification-btn"
+                  disabled={$aiIsSending}
+                  on:click={() => handleClarificationChoice(round, 'search')}
+                >查询任务</button>
+              </div>
+            {/if}
+          {/if}
           {#if round.pendingOperation}
             <div class="ai-chat__change-preview">
               <div>{round.pendingOperation.type === 'delete' ? '将删除' : '将修改'} {round.pendingOperation.targetIds.length} 个任务</div>
@@ -476,10 +658,22 @@
             </div>
           {/if}
         </section>
+        <div class="ai-chat__message-actions ai-chat__message-actions--assistant">
+          <button
+            class="ai-chat__message-copy-btn"
+            class:is-copied={copyFeedback?.key === `${round.id}:assistant` && copyFeedback.status === 'copied'}
+            class:is-failed={copyFeedback?.key === `${round.id}:assistant` && copyFeedback.status === 'failed'}
+            title={copyButtonLabel(`${round.id}:assistant`, '复制回复')}
+            aria-label={copyButtonLabel(`${round.id}:assistant`, '复制回复')}
+            on:click|stopPropagation={() => copyMessage(`${round.id}:assistant`, assistantCopyText(round))}
+          >
+            {#if copyFeedback?.key === `${round.id}:assistant`}<span aria-hidden="true">{copyFeedback.status === 'copied' ? '✓' : '!'}</span>{:else}<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.5"></rect><path d="M3.5 10.5H3A1.5 1.5 0 0 1 1.5 9V3A1.5 1.5 0 0 1 3 1.5h6A1.5 1.5 0 0 1 10.5 3v.5"></path></svg>{/if}
+          </button>
+        </div>
       {/if}
 
       <!-- 整理结果卡片 -->
-      {#if round.phase === 'done' && round.parsedTasks.length > 0 && round.id === latestRoundId}
+      {#if round.phase === 'done' && round.parsedTasks.length > 0 && !round.supersededByRoundId}
         <section class="ai-chat__result-section">
           <div class="ai-chat__card-label">
             <span>整理结果</span>
@@ -488,6 +682,7 @@
           <div class="ai-chat__task-list">
             {#each round.parsedTasks as task, i (i)}
               {#if round.adopted.has(i)}
+                {@const destination = addedDestination(round, i)}
                 <div class="ai-chat__task-item ai-chat__task-item--adopted">
                   <TaskCard
                     mode="create"
@@ -495,6 +690,8 @@
                     currentView="inbox"
                     aiPreview={true}
                     collapsedPreview={true}
+                    collapsedStatusLabel={destination.label}
+                    collapsedStatusIcon={destination.icon}
                     prefilledData={parsedToPrefill(task)}
                   />
                 </div>
@@ -503,25 +700,46 @@
                   class="ai-chat__task-item"
                   class:is-closing={closingTaskKeys.has(`${round.id}:${i}`)}
                 >
-                  <TaskCard
-                    mode="create"
-                    {store}
-                    currentView="inbox"
-                    aiPreview={true}
-                    createOnBlur={false}
-                    createOnEnter={false}
-                    showCreateButton={true}
-                    createButtonLabel="添加任务"
-                    collapsibleCreate={true}
-                    prefilledData={parsedToPrefill(task)}
-                    on:draftchange={(e) => handleDraftChange(round, i, e)}
-                    on:created={(e) => handleTaskCreated(round, i, e)}
-                  />
+                  <!--
+                    最新轮次变化时重建所有“未添加”预览卡：当前轮按展开态挂载，
+                    历史轮按收起态挂载。key 在同一轮流式更新期间保持不变，
+                    因此历史卡片之后仍可由用户手动展开。
+                  -->
+                  {#key `${latestRoundId || 'empty'}:${round.id}:${i}`}
+                    <TaskCard
+                      mode="create"
+                      {store}
+                      currentView="inbox"
+                      aiPreview={true}
+                      createOnBlur={false}
+                      createOnEnter={false}
+                      showCreateButton={true}
+                      createButtonLabel="添加任务"
+                      collapsibleCreate={true}
+                      aiPreviewActive={round.id === latestRoundId}
+                      aiPreviewFocusKey={latestRoundId || ''}
+                      prefilledData={parsedToPrefill(task)}
+                      on:draftchange={(e) => handleDraftChange(round, i, e)}
+                      on:created={(e) => handleTaskCreated(round, i, e)}
+                    />
+                  {/key}
                 </div>
               {/if}
             {/each}
           </div>
         </section>
+        <div class="ai-chat__message-actions ai-chat__message-actions--assistant">
+          <button
+            class="ai-chat__message-copy-btn"
+            class:is-copied={copyFeedback?.key === `${round.id}:assistant` && copyFeedback.status === 'copied'}
+            class:is-failed={copyFeedback?.key === `${round.id}:assistant` && copyFeedback.status === 'failed'}
+            title={copyButtonLabel(`${round.id}:assistant`, '复制回复')}
+            aria-label={copyButtonLabel(`${round.id}:assistant`, '复制回复')}
+            on:click|stopPropagation={() => copyMessage(`${round.id}:assistant`, assistantCopyText(round))}
+          >
+            {#if copyFeedback?.key === `${round.id}:assistant`}<span aria-hidden="true">{copyFeedback.status === 'copied' ? '✓' : '!'}</span>{:else}<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.5"></rect><path d="M3.5 10.5H3A1.5 1.5 0 0 1 1.5 9V3A1.5 1.5 0 0 1 3 1.5h6A1.5 1.5 0 0 1 10.5 3v.5"></path></svg>{/if}
+          </button>
+        </div>
       {/if}
 
       {#if round.phase === 'done' && round.parsedTasks.length > 0 && round.id === latestRoundId}
@@ -811,6 +1029,7 @@
 
   // ===== 卡片 =====
   &__card {
+    position: relative;
     background: var(--b3-theme-background);
     border: 1px solid var(--b3-border-color);
     border-radius: 13px;
@@ -846,6 +1065,98 @@
     color: var(--b3-theme-on-surface);
     white-space: pre-wrap;
     word-break: break-word;
+    cursor: text;
+    user-select: text;
+  }
+
+  &__message-copy-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--b3-theme-on-surface-light);
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-2px);
+    user-select: none;
+    transition: opacity 160ms ease, transform 160ms ease, color 160ms ease, background 160ms ease, border-color 160ms ease;
+
+    svg {
+      width: 14px;
+      height: 14px;
+      fill: none;
+      stroke: currentColor;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 1.35;
+    }
+
+    &:hover,
+    &:focus-visible {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateY(0);
+      color: var(--b3-theme-primary);
+      border-color: var(--b3-border-color);
+      background: var(--b3-theme-background);
+      outline: none;
+    }
+
+    &.is-copied {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateY(0);
+      color: #4f9566;
+      background: rgba(82, 165, 110, 0.1);
+    }
+
+    &.is-failed {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateY(0);
+      color: #b42318;
+      background: rgba(180, 35, 24, 0.08);
+    }
+
+  }
+
+  &__message-actions {
+    display: flex;
+    align-items: center;
+    min-height: 24px;
+    margin-top: 3px;
+
+    &--user {
+      justify-content: flex-end;
+      padding-right: 4px;
+    }
+
+    &--assistant {
+      justify-content: flex-start;
+      margin-left: 32px;
+    }
+  }
+
+  // Codex 式消息操作：按钮平时隐藏，移入消息内容或其下方操作区时再淡入。
+  &__user-card:hover + &__message-actions &__message-copy-btn,
+  &__think-card:hover + &__message-actions &__message-copy-btn,
+  &__search-section:hover + &__message-actions &__message-copy-btn,
+  &__answer-card:hover + &__message-actions &__message-copy-btn,
+  &__result-section:hover + &__message-actions &__message-copy-btn,
+  &__message-actions:hover &__message-copy-btn {
+    opacity: 0.48;
+    pointer-events: auto;
+    transform: translateY(0);
+  }
+
+  &__message-actions:hover &__message-copy-btn:hover {
+    opacity: 1;
   }
 
   &__thread {
@@ -876,6 +1187,8 @@
     font-size: 11px;
     line-height: 1.65;
     color: #555e69;
+    cursor: text;
+    user-select: text;
 
     &--after {
       margin-top: 12px;
@@ -1098,17 +1411,20 @@
     font-size: 11px;
     line-height: 1.55;
     color: #b42318;
+    cursor: text;
+    user-select: text;
   }
 
   // ===== 结果卡片 =====
   &__result-section {
+    position: relative;
     padding-top: 4px;
     margin-left: 32px;
   }
 
-  &__search-section { margin: 12px 0 0 32px; padding-top: 4px; }
+  &__search-section { position: relative; margin: 12px 0 0 32px; padding-top: 4px; }
   &__search-list { display: flex; flex-direction: column; gap: 6px; }
-  &__search-answer { margin-bottom: 9px; font-size: 12px; line-height: 1.6; color: var(--b3-theme-on-surface); }
+  &__search-answer { margin-bottom: 9px; font-size: 12px; line-height: 1.6; color: var(--b3-theme-on-surface); cursor: text; user-select: text; }
   &__search-item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 10px; border: 1px solid var(--b3-border-color); border-radius: 9px; background: var(--b3-theme-background); color: inherit; cursor: pointer; text-align: left; }
   &__search-item:hover { border-color: var(--b3-theme-primary); background: var(--b3-list-hover); }
   &__search-status {
@@ -1135,8 +1451,15 @@
   &__search-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; }
   &__search-location { color: var(--b3-theme-on-surface-light); font-size: 10px; }
   &__search-empty { padding: 14px; border-radius: 9px; background: var(--b3-theme-surface-light); color: var(--b3-theme-on-surface-light); font-size: 12px; text-align: center; }
-  &__answer-card { margin-left: 32px; padding: 12px 14px; border-radius: 10px; background: var(--b3-theme-background); border: 1px solid var(--b3-border-color); }
-  &__answer-text { font-size: 13px; line-height: 1.65; color: var(--b3-theme-on-surface); }
+  &__answer-card { position: relative; margin-left: 32px; padding: 12px 14px; border-radius: 10px; background: var(--b3-theme-background); border: 1px solid var(--b3-border-color); }
+  &__answer-text { font-size: 13px; line-height: 1.65; color: var(--b3-theme-on-surface); white-space: pre-wrap; cursor: text; user-select: text; }
+  &__clarification-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  &__clarification-btn { min-width: 82px; padding: 7px 12px; border: 1px solid var(--b3-border-color); border-radius: 8px; background: var(--b3-theme-background); color: var(--b3-theme-on-surface); font-size: 11px; cursor: pointer; transition: color 160ms ease, border-color 160ms ease, background 160ms ease, transform 160ms ease; }
+  &__clarification-btn:hover:not(:disabled) { border-color: var(--b3-theme-primary); color: var(--b3-theme-primary); background: var(--b3-theme-primary-lighter); transform: translateY(-1px); }
+  &__clarification-btn--primary { border-color: var(--b3-theme-primary); background: var(--b3-theme-primary); color: var(--b3-theme-on-primary); }
+  &__clarification-btn--primary:hover:not(:disabled) { color: var(--b3-theme-on-primary); background: var(--b3-theme-primary); }
+  &__clarification-btn:disabled { opacity: 0.45; cursor: default; }
+  &__clarification-selected { width: fit-content; margin-top: 10px; padding: 5px 8px; border-radius: 7px; background: rgba(82, 165, 110, 0.1); color: #4f9566; font-size: 10px; }
   &__change-preview { margin-top: 10px; padding: 9px 10px; border-radius: 8px; background: var(--b3-theme-surface-light); font-size: 11px; color: var(--b3-theme-on-surface-light); }
   &__change-row { display: flex; justify-content: space-between; gap: 12px; margin-top: 5px; }
   &__confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
@@ -1314,7 +1637,11 @@
   }
 
   &__textarea {
+    display: block;
     width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
     border: none;
     outline: none;
     resize: none;
@@ -1326,6 +1653,12 @@
     padding: 14px 14px 8px;
     min-height: 72px;
     max-height: 132px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    text-indent: 0;
 
     &::placeholder {
       color: var(--b3-theme-on-surface-light);

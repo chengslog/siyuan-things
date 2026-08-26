@@ -83,6 +83,7 @@ export interface AIRouteResult {
   query?: AIQueryPlan;
   targetIds?: string[];
   changes?: Record<string, any>;
+  clarification?: 'create_or_search';
 }
 
 /**
@@ -291,12 +292,12 @@ export async function routeAiMessage(
   const system = `你是 Things 任务助手的意图路由器。今天是 ${date}。
 根据用户消息和会话上下文，只返回严格 JSON，不要附加文字。
 intent 只能是 create/search/update/confirm/cancel/clarify/answer。
-- create：用户要新建任务；同时返回完整 tasks 数组，字段与任务解析格式一致。
+- create：用户要新建任务；tasks 只能包含当前这条用户消息明确要求新建的任务，字段与任务解析格式一致。会话上下文中的 drafts 只用于理解指代和避免重复，不得把任何旧草稿再次复制进 create 的 tasks；即使旧草稿尚未添加，也必须留在原轮次，不得在当前轮重发。
 - search：用户要查询、回顾、寻找或总结已有任务；返回 query：status(todo/done/canceled/any)、dateScope(today/tomorrow/upcoming/someday/any)、keywords、project、area。
 - update：用户要修改已有草稿或真实任务；targetIds 必须取自上下文给出的稳定 ID，changes 只包含明确要求修改的字段。若修改当前草稿，也可以在 tasks 返回修改后的完整草稿列表，并保留 clientId。
 - 用户要修改的真实任务尚未出现在上下文时，先返回 search 查询计划定位任务，不得猜测 ID。
 - confirm/cancel：仅用于确认或取消上下文中的 pendingOperation。
-- clarify：目标或要求不明确，需要追问；message 给出问题。
+- clarify：目标或要求不明确，需要追问；message 给出问题。如果仅在“创建新任务”和“查询现有任务”之间不明确，必须额外返回 clarification="create_or_search"，让界面提供快捷选择按钮。
 - answer：无需操作即可根据上下文回答。
 不得把查询当创建，不得虚构上下文中不存在的任务 ID。“它、这个、第二个”等必须结合 focusedTasks、lastSearchResults、drafts 解析；不唯一时返回 clarify。
 任务字段：clientId,title,notes,checklist,startDate,startTime,deadline,deadlineTime,someday,repeatRule,project,area,heading,tags。repeatRule 只能是 daily/weekdays/weekly/monthly/yearly/null。`;
@@ -307,6 +308,7 @@ intent 只能是 create/search/update/confirm/cancel/clarify/answer。
       { role: 'system', content: 'Intent 还支持 delete。用户明确要删除真实任务时返回 {"intent":"delete","targetIds":["ID"],"message":"删除预览说明"}。targetIds 只能取自 lastSearchResults 或 focusedTasks；目标不明确时先 search 或 clarify，不得猜 ID。删除只生成待确认计划，不得声称已执行。查询重复内容的任务组时设置 query.duplicate=true；查询设置了重复规则的任务时设置 query.recurring=true。创建或修改重复规则使用 repeatRule=daily/weekdays/weekly/monthly/yearly/null。confirm/cancel 同时适用于修改和删除操作。' },
       { role: 'system', content: '视图名是精确产品术语：“计划”或“计划列表”必须映射为 search query.dateScope="upcoming"，不是所有待办；“今天”映射 today；“某天”映射 someday。对“全部”、“都有哪些”等追问，必须从 recentConversation 继承上一轮已明确的视图和筛选范围，不得重置为 any。' },
       { role: 'system', content: '查询计划必须优先返回结构化 query.view：all/inbox/today/upcoming/anytime/someday/log/projects/areas/tags/project/area/tag。产品术语映射：收件箱=inbox，今天=today，计划=upcoming，随时=anytime，某天=someday，日志或已完成=log。指定项目/区域/标签时返回 view=project/area/tag 并在 project/area/keywords 中给出名称；项目标题分组另返回 heading。用户说“当前、这里、这个列表”时使用 currentViewContext；说“全部”时继承 lastQueryScope，只移除关键词等内容限制，不得移除视图作用域。dateScope 只表示额外日期条件，不再用它表示侧边栏视图。会话上下文中的 creationConstraints 是用户拖入输入框的明确设定：创建任务时必须全部应用；查询时用作查询范围；不得自行忽略或改写。' },
+      { role: 'system', content: '会话上下文中的 availableClassifications 是当前真实存在的项目、区域和标签目录。创建任务时，如果用户语义明确符合其中已有分类，应在 project/area/tags 中返回目录里的精确名称；Bug、问题、缺陷、故障、异常或报错反馈应优先关联已有的问题类标签。不得虚构或创建目录之外的分类，也不要仅因关键词模糊相关就强行分类。' },
       { role: 'system', content: '创建任务时必须根据用户完整语义判断任务结构，并返回 structure：single_task（一个独立任务）、single_with_checklist（一个目标及其步骤/准备事项）、multiple_tasks（多个可独立完成和分别管理的结果）。不要仅凭“拆分、步骤、清单”等关键词决定数量：一个目标的准备事项或执行步骤应放入同一 task.checklist；多个独立目标应生成多个 tasks；多个目标分别要求步骤时，应生成多个 tasks，并在各自 checklist 中写步骤。用户明确指定任务数量、说“分别/各自/每个任务”时必须遵守。例如“明天上午 9 点开产品评审会，帮我拆分准备事项”是 single_with_checklist；“创建产品发布和季度复盘两个任务，分别拆分步骤”是 multiple_tasks。若无法判断事项是独立任务还是检查项，返回 clarify 追问，不得猜测。不得凭空增加日期、责任人、项目归属或用户未表达的具体要求。' },
       { role: 'user', content: `会话上下文：${JSON.stringify(sessionContext)}\n\n用户消息：${text}` },
     ],
@@ -327,6 +329,7 @@ intent 只能是 create/search/update/confirm/cancel/clarify/answer。
     query: parsed.query,
     targetIds: Array.isArray(parsed.targetIds) ? parsed.targetIds.map(String) : undefined,
     changes: parsed.changes,
+    clarification: parsed.clarification === 'create_or_search' ? 'create_or_search' : undefined,
   };
 }
 

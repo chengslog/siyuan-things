@@ -304,6 +304,15 @@
   border-radius: 6px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
   opacity: 0.95;
+
+  &.is-ai-context-target {
+    border: 1px solid var(--b3-theme-primary);
+    box-shadow: 0 10px 28px rgba(75, 91, 180, 0.25);
+
+    .things-nav-row__ai-drag {
+      visibility: visible;
+    }
+  }
 }
 
 // 拖拽插入位置指引线（侧边栏 + 任务列表共用）
@@ -408,7 +417,7 @@
     }
   }
 
-  // AI 拖拽把手：与排序区域彻底分离，悬停行时才显示。
+  // AI 拖拽提示：整行均可拖动，星芒仅用于提示可拖到 AI。
   &__ai-drag {
     visibility: hidden;
     display: flex;

@@ -4,8 +4,14 @@ import { BaseStore } from './base';
 import { genUUID } from '@/utils/id';
 
 export class TagStore extends BaseStore<Tag> {
-  constructor(plugin: Plugin) {
+  constructor(plugin: Plugin, private beforeDelete?: (tagId: string) => Promise<unknown>) {
     super(plugin, 'tags.json');
+  }
+
+  /** 标签删除是引用完整性操作：先清任务引用，再删除标签本身。 */
+  override async delete(id: string): Promise<void> {
+    await this.beforeDelete?.(id);
+    await super.delete(id);
   }
 
   /**
