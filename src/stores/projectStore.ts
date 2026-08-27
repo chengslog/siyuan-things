@@ -102,6 +102,44 @@ export class ProjectStore extends BaseStore<Project> {
   }
 
   /**
+   * 设置标题分组折叠状态
+   */
+  async setHeadingCollapsed(projectId: string, headingId: string, collapsed: boolean): Promise<void> {
+    const project = this.items.get(projectId);
+    if (!project) return;
+
+    const heading = project.headings.find(h => h.id === headingId);
+    if (heading && heading.collapsed !== collapsed) {
+      heading.collapsed = collapsed;
+      project.updated = Date.now();
+      await this.update(project);
+    }
+  }
+
+  /**
+   * 重排标题分组（数组顺序即显示顺序）
+   */
+  async reorderHeadings(projectId: string, headingIds: string[]): Promise<void> {
+    const project = this.items.get(projectId);
+    if (!project) return;
+
+    const byId = new Map(project.headings.map(h => [h.id, h]));
+    const next: ProjectHeading[] = [];
+    for (const id of headingIds) {
+      const heading = byId.get(id);
+      if (heading) {
+        next.push(heading);
+        byId.delete(id);
+      }
+    }
+    // 容错：未出现在新序列中的分组保留在尾部，避免丢数据
+    project.headings = [...next, ...byId.values()];
+    project.headings.forEach((h, i) => { h.order = i; });
+    project.updated = Date.now();
+    await this.update(project);
+  }
+
+  /**
    * 获取区域下的项目
    */
   getAreaProjects(areaId: string): Project[] {

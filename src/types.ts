@@ -45,6 +45,8 @@ export interface ProjectHeading {
   id: string;
   title: string;
   order: number;
+  /** 分组折叠状态（持久化） */
+  collapsed?: boolean;
 }
 
 export interface Project {

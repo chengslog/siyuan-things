@@ -303,6 +303,34 @@ export class TaskStore extends BaseStore<Task> {
     return updated;
   }
 
+  /**
+   * 批量更新任务：内存统一修改后单次落盘、单次通知。
+   * 逐条 updateTask 每次都会全量落盘并触发一次列表重排（拖动排序后列表连环抖动数秒），
+   * 重排、跨组移动等批量操作必须走这里。值未变化的任务自动跳过。
+   */
+  async updateTasksBatch(patches: Array<{ id: string; changes: Partial<Task> }>): Promise<void> {
+    if (patches.length === 0) return;
+    const now = Date.now();
+    await this.batch(() => {
+      for (const { id, changes } of patches) {
+        const task = this.items.get(id);
+        if (!task) continue;
+        let changed = false;
+        const next: Task = { ...task };
+        for (const key of Object.keys(changes) as Array<keyof Task>) {
+          const value = changes[key];
+          if (task[key] !== value) {
+            (next as Record<string, unknown>)[key] = value;
+            changed = true;
+          }
+        }
+        if (!changed) continue;
+        next.updated = now;
+        this.items.set(id, next);
+      }
+    });
+  }
+
   private async createRecurringOccurrence(source: Task): Promise<Task> {
     const base = source.startDate || source.deadline || source.completedDate || Date.now();
     const next = await this.createTask({

@@ -77,6 +77,7 @@
   let editingHeadingId: string | null = null;
   let addingHeading = false;
   let headingDraft = "";
+  let headingAddInputEl: HTMLInputElement;
 
   // 手动切换视图时置 true，抑制旧视图任务的退场动画（见下方视图切换块）
   let suppressOutro = false;
@@ -515,6 +516,11 @@
     addingHeading = true;
     headingDraft = "";
     setTimeout(() => document.addEventListener("mousedown", onHeadingInputOutside), 0);
+    // 输入框渲染在列表末尾：任务多时它在视口外，需主动滚过去并聚焦，而不是让用户手动找
+    tick().then(() => {
+      headingAddInputEl?.scrollIntoView({ block: "center", behavior: "smooth" });
+      headingAddInputEl?.focus();
+    });
   }
 
   function onHeadingInputOutside(e: MouseEvent) {
@@ -540,11 +546,12 @@
   }
 
   async function removeHeading(projectId: string, headingId: string) {
-    // 组内任务回到未分组，再删标题
-    for (const t of sortedTasks) {
-      if (t.headingId === headingId) {
-        await store.tasks.updateTask(t.id, { headingId: undefined });
-      }
+    // 组内任务回到未分组（批量一次提交），再删标题
+    const members = sortedTasks.filter((t) => t.headingId === headingId);
+    if (members.length) {
+      await store.tasks.updateTasksBatch(
+        members.map((t) => ({ id: t.id, changes: { headingId: undefined } })),
+      );
     }
     await store.projects.deleteHeading(projectId, headingId);
   }
@@ -557,6 +564,86 @@
     if (title && view === "project" && viewId) {
       await store.projects.addHeading(viewId, title);
     }
+  }
+
+  // —— 分组折叠 ——
+  // 标题分组的折叠状态持久化在分组数据上；未分组/已完成不是分组实体，用会话级状态
+  let collapsedGroups = new Map<string, boolean>();
+
+  function isGroupCollapsed(group: string): boolean {
+    if (group === COMPLETED_GROUP) {
+      if (view !== "project" && view !== "area" && view !== "tag") return false;
+      return !!collapsedGroups.get(`${view}::${viewId}::completed`);
+    }
+    if (view !== "project" || !viewId) return false;
+    if (group === "none") return !!collapsedGroups.get(`${viewId}::none`);
+    return !!projectObj?.headings.find((h) => h.id === group)?.collapsed;
+  }
+
+  function toggleGroupCollapse(group: string) {
+    if (group === COMPLETED_GROUP) {
+      if (view !== "project" && view !== "area" && view !== "tag") return;
+      const key = `${view}::${viewId}::completed`;
+      collapsedGroups.set(key, !collapsedGroups.get(key));
+      refreshKey++; // Map 变更不触发响应式，手动驱动重渲染
+      return;
+    }
+    if (view !== "project" || !viewId) return;
+    if (group === "none") {
+      const key = `${viewId}::none`;
+      collapsedGroups.set(key, !collapsedGroups.get(key));
+      refreshKey++; // Map 变更不触发响应式，手动驱动重渲染
+      return;
+    }
+    const heading = projectObj?.headings.find((h) => h.id === group);
+    if (heading) store.projects.setHeadingCollapsed(viewId, group, !heading.collapsed);
+  }
+
+  // —— 标题分组拖拽排序（HTML5 DnD；任务拖拽走 DragSort 的鼠标模拟，二者互不影响） ——
+  let headingDragId: string | null = null;
+  let headingDropTarget: { id: string; pos: "before" | "after" } | null = null;
+
+  function handleHeadingDragStart(e: DragEvent, group: string) {
+    if (editingHeadingId === group) return;
+    headingDragId = group;
+    e.dataTransfer?.setData("text/plain", group); // Firefox 需要 setData 才会启动拖拽
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+  }
+
+  function handleHeadingDragOver(e: DragEvent, group: string) {
+    if (!headingDragId || headingDragId === group) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const pos = e.clientY < rect.top + rect.height / 2 ? "before" : "after";
+    if (headingDropTarget?.id !== group || headingDropTarget?.pos !== pos) {
+      headingDropTarget = { id: group, pos };
+    }
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+  }
+
+  async function handleHeadingDrop() {
+    const dragId = headingDragId;
+    const target = headingDropTarget;
+    headingDragId = null;
+    headingDropTarget = null;
+    if (!projectObj || !viewId || !dragId || !target || dragId === target.id) return;
+
+    const headings = [...projectObj.headings];
+    const fromIdx = headings.findIndex((h) => h.id === dragId);
+    if (fromIdx < 0) return;
+    const [moved] = headings.splice(fromIdx, 1);
+    let toIdx = headings.findIndex((h) => h.id === target.id);
+    if (toIdx < 0) {
+      headings.push(moved);
+    } else {
+      if (target.pos === "after") toIdx += 1;
+      headings.splice(toIdx, 0, moved);
+    }
+    await store.projects.reorderHeadings(viewId, headings.map((h) => h.id));
+  }
+
+  function handleHeadingDragEnd() {
+    headingDragId = null;
+    headingDropTarget = null;
   }
 
   function handleCancelCreate() {
@@ -626,11 +713,7 @@
     const reordered = [...list];
     const [moved] = reordered.splice(curIdx, 1);
     reordered.splice(flatIdx, 0, moved);
-    for (let i = 0; i < reordered.length; i++) {
-      if (reordered[i].order !== i) {
-        await store.tasks.updateTask(reordered[i].id, { order: i });
-      }
-    }
+    await store.tasks.updateTasksBatch(reordered.map((t, i) => ({ id: t.id, changes: { order: i } })));
   }
 
   // 处理拖拽排序
@@ -650,10 +733,9 @@
     let gi = 0;
     const newTasks = [...sortedTasks].map((t) => (groupIds.has(t.id) ? reordered[gi++] : t));
 
-    // 更新所有任务的 order
-    for (let i = 0; i < newTasks.length; i++) {
-      await store.tasks.updateTask(newTasks[i].id, { order: i });
-    }
+    // 更新任务的 order：整批一次提交（单次落盘 + 单次通知）。
+    // 逐条 updateTask 会触发 N 次全量重渲染，中间态排序来回穿插，列表会抖动数秒。
+    await store.tasks.updateTasksBatch(newTasks.map((t, i) => ({ id: t.id, changes: { order: i } })));
   }
 
   // —— 跨组拖拽（今天视图：今天/今晚；计划视图：各日期分组）→ 任务日期随落点分组调整 ——
@@ -844,14 +926,12 @@
     let si = 0;
     const newTasks = [...sortedTasks].map((t) => (affected.has(t.id) ? newSeq[si++] : t));
 
-    for (let i = 0; i < newTasks.length; i++) {
-      const t = newTasks[i];
-      if (t.id === taskId) {
-        await store.tasks.updateTask(t.id, { ...changes, order: i });
-      } else if (t.order !== i) {
-        await store.tasks.updateTask(t.id, { order: i });
-      }
-    }
+    await store.tasks.updateTasksBatch(
+      newTasks.map((t, i) => ({
+        id: t.id,
+        changes: t.id === taskId ? { ...changes, order: i } : { order: i },
+      })),
+    );
   }
 
   // —— 悬浮 + 按钮：点击=当前视图新建；按住可拖到侧边栏视图 / 任务列表，松手即在对应视图新建 ——
@@ -1267,6 +1347,7 @@
           : groupItems}
         <div
           class="task-list__group-block"
+          class:task-list__group-block--sectioned={view === "project" || view === "area" || view === "tag"}
           class:is-drop-target={dragOverGroup === group && dragOverGroup !== dragFromGroup}
           bind:this={groupBlockRefs[group]}
         >
@@ -1298,18 +1379,36 @@
               <div class="task-list__day-line"></div>
             </div>
           {:else if group === COMPLETED_GROUP && (view === "project" || view === "area" || view === "tag")}
-            <div class="task-list__heading task-list__heading--completed">
+            <div
+              class="task-list__heading task-list__heading--completed"
+              title="点击折叠/展开"
+              on:click={() => toggleGroupCollapse(group)}
+            >
+              <svg class="task-list__heading-chevron" class:is-collapsed={isGroupCollapsed(group)} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6" /></svg>
               <span class="task-list__heading-static">已完成</span>
+              {#if isGroupCollapsed(group)}<span class="task-list__heading-count">{groupItems.length}</span>{/if}
               <div class="task-list__day-line"></div>
             </div>
           {:else if view === "project" && projectObj && group !== "all"}
             {#if group === "none"}
-              <div class="task-list__heading">
+              <div class="task-list__heading" title="点击折叠/展开" on:click={() => toggleGroupCollapse(group)}>
+                <svg class="task-list__heading-chevron" class:is-collapsed={isGroupCollapsed(group)} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6" /></svg>
                 <span class="task-list__heading-static">未分组</span>
+                {#if isGroupCollapsed(group)}<span class="task-list__heading-count">{groupItems.length}</span>{/if}
                 <div class="task-list__day-line"></div>
               </div>
             {:else if projectObj.headings.find((h) => h.id === group)}
-              <div class="task-list__heading">
+              <div
+                class="task-list__heading"
+                class:is-heading-dragging={headingDragId === group}
+                class:is-drop-before={headingDropTarget?.id === group && headingDropTarget?.pos === "before"}
+                class:is-drop-after={headingDropTarget?.id === group && headingDropTarget?.pos === "after"}
+                draggable={editingHeadingId !== group}
+                on:dragstart={(e) => handleHeadingDragStart(e, group)}
+                on:dragover|preventDefault={(e) => handleHeadingDragOver(e, group)}
+                on:drop|preventDefault={handleHeadingDrop}
+                on:dragend={handleHeadingDragEnd}
+              >
                 {#if editingHeadingId === group}
                   <input
                     class="task-list__heading-input"
@@ -1325,14 +1424,21 @@
                   />
                 {:else}
                   <button
-                    class="task-list__heading-title"
-                    title="点击重命名"
-                    on:click={() => startHeadingRename(projectObj.headings.find((h) => h.id === group))}
+                    class="task-list__heading-toggle"
+                    title="点击折叠/展开，拖动标题行调整分组顺序"
+                    on:click={() => toggleGroupCollapse(group)}
                   >
-                    {projectObj.headings.find((h) => h.id === group)?.title}
+                    <svg class="task-list__heading-chevron" class:is-collapsed={isGroupCollapsed(group)} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6" /></svg>
+                    <span class="task-list__heading-title">{projectObj.headings.find((h) => h.id === group)?.title}</span>
+                    {#if isGroupCollapsed(group)}<span class="task-list__heading-count">{groupItems.length}</span>{/if}
                   </button>
                 {/if}
                 <div class="task-list__day-line"></div>
+                <button
+                  class="task-list__heading-edit"
+                  title="重命名分组"
+                  on:click={() => startHeadingRename(projectObj.headings.find((h) => h.id === group))}
+                ><Icon name="iconThingsPencil" size={11} /></button>
                 <button
                   class="task-list__heading-del"
                   title="删除标题分组（任务移入未分组）"
@@ -1341,6 +1447,7 @@
               </div>
             {/if}
           {/if}
+          {#if !isGroupCollapsed(group)}
           <DragSort
             bind:this={dragSortRefs[group]}
             groupKey={group}
@@ -1416,6 +1523,7 @@
               />
             {/if}
           </DragSort>
+          {/if}
         </div>
       {/each}
 
@@ -1426,6 +1534,7 @@
             type="text"
             placeholder="标题分组名称"
             bind:value={headingDraft}
+            bind:this={headingAddInputEl}
             on:blur={commitAddHeading}
             on:keydown={(e) => {
               // 中文输入法组词中的回车是确认候选词，不提交
@@ -1537,6 +1646,12 @@
       &.is-drop-target {
         background: var(--b3-theme-primary-light);
       }
+    }
+
+    // 项目/区域/标签视图：分组之间的结构性留白，挂在块级元素上，
+    // 分组内没有任务（空分组）时间隔也不会塌陷。
+    &__group-block--sectioned + &__group-block--sectioned {
+      margin-top: 14px;
     }
 
     &__area-section-heading {
@@ -1651,14 +1766,88 @@
     }
 
     &__heading-title {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    // 分组折叠：箭头 + 标题 + 折叠时的任务数
+    &__heading-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
       border: none;
       background: transparent;
-      cursor: pointer;
       padding: 2px 0;
+      cursor: pointer;
 
-      &:hover {
+      &:hover .task-list__heading-title {
         color: var(--b3-theme-primary);
       }
+    }
+
+    &__heading-chevron {
+      flex-shrink: 0;
+      color: var(--b3-theme-on-surface-light);
+      transition: transform 0.15s ease;
+
+      &.is-collapsed {
+        transform: rotate(-90deg);
+      }
+    }
+
+    &__heading-count {
+      flex-shrink: 0;
+      padding-top: 1px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--b3-theme-on-surface-light);
+    }
+
+    // ✎ 重命名：与 × 删除同款悬浮按钮
+    &__heading-edit {
+      position: absolute;
+      right: 26px;
+      top: 50%;
+      transform: translateY(-50%);
+      visibility: hidden;
+      width: 22px;
+      height: 22px;
+      border: none;
+      border-radius: 4px;
+      background: var(--b3-theme-background);
+      cursor: pointer;
+      color: var(--b3-theme-on-surface-light);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+
+      &:hover {
+        background: var(--b3-theme-primary-light);
+        color: var(--b3-theme-primary);
+      }
+    }
+
+    &__heading:hover &__heading-edit {
+      visibility: visible;
+    }
+
+    // 分组拖拽排序：被拖行半透明；落点亮主色指引线（box-shadow 不占布局）
+    &__heading[draggable="true"] {
+      cursor: grab;
+    }
+
+    &__heading.is-heading-dragging {
+      opacity: 0.4;
+    }
+
+    &__heading.is-drop-before {
+      box-shadow: 0 -2px 0 0 var(--b3-theme-primary);
+    }
+
+    &__heading.is-drop-after {
+      box-shadow: 0 2px 0 0 var(--b3-theme-primary);
     }
 
     &__heading-input {
