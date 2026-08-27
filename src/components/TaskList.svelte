@@ -15,7 +15,8 @@
   import ProjectOverview from "./ProjectOverview.svelte";
   import AreaOverview from "./AreaOverview.svelte";
   import TagOverview from "./TagOverview.svelte";
-  import { normalizeProjectGroupOrder } from "@/utils/projectGrouping";
+  import { moveProjectGroup, normalizeProjectGroupOrder } from "@/utils/projectGrouping";
+  import { findViewportCreateTarget } from "@/utils/createPosition";
 
   export let view: ViewType;
   export let viewId: string | undefined;
@@ -32,6 +33,8 @@
   const plugin = getContext<any>("plugin");
 
   let showCreateForm = false;
+  // 创建卡片关闭时，下方任务只做即时补位；若同时执行 FLIP，会看到已有任务向上的拖影。
+  let suppressTaskLayoutMotion = false;
   let showEntityForm: "project" | "area" | null = null;
   const COMPLETED_GROUP = "__completed__";
 
@@ -320,6 +323,9 @@
     if (navKey !== lastNavKey) {
       lastNavKey = navKey;
       suppressOutro = true;
+      // 不同项目/标签可能复用相同任务 id；视图切换时若保留 FLIP，
+      // Svelte 会把它们误判为同一列表中的重排，产生“已完成任务再次插入”的动画。
+      suppressTaskLayoutMotion = true;
       // 切换侧边栏视图时关闭当前视图的临时编辑态，避免新建卡片被带到新页面。
       showCreateForm = false;
       createTarget = null;
@@ -330,7 +336,10 @@
       headingDraft = "";
       document.removeEventListener("mousedown", onHeadingInputOutside);
       if (itemsEl) itemsEl.scrollTop = 0;
-      tick().then(() => { suppressOutro = false; });
+      tick().then(() => {
+        suppressOutro = false;
+        requestAnimationFrame(() => { suppressTaskLayoutMotion = false; });
+      });
     }
   }
 
@@ -628,25 +637,26 @@
     if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
   }
 
-  async function handleHeadingDrop() {
+  async function handleHeadingDrop(e: DragEvent, group: string) {
+    if (group === COMPLETED_GROUP || !headingDragId || headingDragId === group) return;
+    e.preventDefault();
+    e.stopPropagation();
+
     const dragId = headingDragId;
-    const target = headingDropTarget;
+    // drop 可能被组内任务元素命中，直接用当前分组块重新计算落点，
+    // 不依赖最后一次 dragover 状态，确保有任务的分组也能稳定接收拖放。
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const target = {
+      id: group,
+      pos: e.clientY < rect.top + rect.height / 2 ? "before" as const : "after" as const,
+    };
     headingDragId = null;
     headingDropTarget = null;
-    if (!projectObj || !viewId || !dragId || !target || dragId === target.id) return;
+    if (!projectObj || !viewId || !dragId) return;
 
     const groups = [...groupedTasks.keys()].filter((id) => id !== COMPLETED_GROUP);
-    const fromIdx = groups.indexOf(dragId);
-    if (fromIdx < 0) return;
-    const [moved] = groups.splice(fromIdx, 1);
-    let toIdx = groups.indexOf(target.id);
-    if (toIdx < 0) {
-      groups.push(moved);
-    } else {
-      if (target.pos === "after") toIdx += 1;
-      groups.splice(toIdx, 0, moved);
-    }
-    await store.projects.reorderHeadings(viewId, groups);
+    const nextGroups = moveProjectGroup(groups, dragId, target.id, target.pos);
+    await store.projects.reorderHeadings(viewId, nextGroups);
   }
 
   function handleHeadingDragEnd() {
@@ -654,15 +664,24 @@
     headingDropTarget = null;
   }
 
-  function handleCancelCreate() {
+  function closeCreateFormWithoutTaskMotion() {
+    suppressTaskLayoutMotion = true;
     showCreateForm = false;
     createTarget = null;
+    createDestView = undefined;
+    createDestViewId = undefined;
+    tick().then(() => requestAnimationFrame(() => { suppressTaskLayoutMotion = false; }));
+  }
+
+  function handleCancelCreate() {
+    closeCreateFormWithoutTaskMotion();
   }
 
   // 创建卡片的目标视图上下文（显式携带，不从渲染状态推断——
   // 拖 + 切视图与卡片挂载存在时序差，靠 currentView 推断会让任务落错视图）
   let createDestView: ViewType | undefined = undefined;
   let createDestViewId: string | undefined = undefined;
+  let createCardHostEl: HTMLElement | null = null;
 
   // 打开创建卡片：target=null → 顶部；否则插入到指定分组/索引处
   function openCreate(target: { group: string; index: number } | null, dest?: { view: ViewType; viewId?: string }) {
@@ -676,6 +695,35 @@
   // 而不是出现在区域备注上方。其他视图维持原有顶部新建行为。
   function getDefaultCreateTarget(targetView: ViewType): { group: string; index: number } | null {
     return targetView === "area" ? { group: "all", index: 0 } : null;
+  }
+
+  // 项目/标签视图点击“+”时，以当前滚动位置为锚点选择分组和插入索引，
+  // 避免任务多、页面已下滚时创建卡片仍回到整个页面最上方。
+  function getViewportCreateTarget(targetView: ViewType): { group: string; index: number } | null {
+    if (!itemsEl || (targetView !== "project" && targetView !== "tag")) {
+      return getDefaultCreateTarget(targetView);
+    }
+    const viewport = itemsEl.getBoundingClientRect();
+    const groups = Object.entries(groupBlockRefs)
+      .filter(([group, el]) => group !== COMPLETED_GROUP && !!el)
+      .map(([group, el]) => {
+        const rect = el.getBoundingClientRect();
+        const rows = Array.from(el.querySelectorAll(".task-list__item-wrapper")).map((row) => {
+          const rowRect = row.getBoundingClientRect();
+          return { top: rowRect.top, bottom: rowRect.bottom };
+        });
+        return { group, top: rect.top, bottom: rect.bottom, rows };
+      });
+    return findViewportCreateTarget(groups, viewport.top, viewport.bottom)
+      || getDefaultCreateTarget(targetView);
+  }
+
+  async function openCreateAtCurrentPosition(dest: { view: ViewType; viewId?: string }) {
+    const target = getViewportCreateTarget(dest.view);
+    if (target && isGroupCollapsed(target.group)) await toggleGroupCollapse(target.group);
+    openCreate(target, dest);
+    await tick();
+    createCardHostEl?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 
   // ========== AI 创建器入口：派发事件，由 App 外壳打开浮窗 ==========
@@ -700,8 +748,7 @@
   async function handleTaskCreated(e: CustomEvent) {
     const created = e?.detail?.task;
     const target = createTarget;
-    showCreateForm = false;
-    createTarget = null;
+    closeCreateFormWithoutTaskMotion();
     if (!created || !target) return;
     await tick(); // 等待列表把新任务纳入
     const list = sortedTasks;
@@ -1129,7 +1176,11 @@
 
   // "+" 按钮拖拽
   function handleFabMouseDown(e: MouseEvent) {
-    handleFabDragDown(e, fabBtnEl, (target, dest) => openCreate(target || getDefaultCreateTarget(dest.view), dest));
+    handleFabDragDown(e, fabBtnEl, (target, dest) => {
+      const isCurrentView = dest.view === view && dest.viewId === viewId;
+      if (!target && isCurrentView) openCreateAtCurrentPosition(dest);
+      else openCreate(target || getDefaultCreateTarget(dest.view), dest);
+    });
   }
 
   // "✨" 按钮拖拽
@@ -1226,7 +1277,7 @@
   }
 </script>
 
-<div class="task-list" class:is-compact={aiMode === 'compact'}>
+<div class="task-list" class:is-compact={aiMode === 'compact'} class:is-tag-view={view === 'tag'}>
   <!-- 大标题 -->
   <div class="task-list__header">
     <div class="task-list__header-top has-border">
@@ -1249,7 +1300,7 @@
             <svg><use xlink:href="#iconThingsSparkles" /></svg>
             <span>AI</span>
           </button>
-          <button class="task-list__header-btn" title="新建任务" on:click={() => openCreate(getDefaultCreateTarget(view), { view, viewId })}>
+          <button class="task-list__header-btn" title="新建任务" on:click={() => openCreateAtCurrentPosition({ view, viewId })}>
             <svg><use xlink:href="#iconThingsAdd" /></svg>
           </button>
         </div>
@@ -1315,7 +1366,7 @@
   {/if}
 
   <!-- 任务列表 -->
-  <div class="task-list__items" bind:this={itemsEl}>
+  <div class="task-list__items" class:is-create-closing={suppressTaskLayoutMotion} bind:this={itemsEl}>
     {#if view === "search" && !searchQuery.trim()}
       <div class="task-list__empty task-list__empty--search">
         <Icon name="iconThingsSearch" size={42} klass="task-list__empty-icon" />
@@ -1372,13 +1423,8 @@
           class:task-list__group-block--sectioned={view === "project" || view === "area" || view === "tag"}
           class:is-drop-target={dragOverGroup === group && dragOverGroup !== dragFromGroup}
           bind:this={groupBlockRefs[group]}
-          on:dragover={(event) => view === "project" && handleHeadingDragOver(event, group)}
-          on:drop={(event) => {
-            if (view === "project" && group !== COMPLETED_GROUP) {
-              event.preventDefault();
-              handleHeadingDrop();
-            }
-          }}
+          on:dragover|capture={(event) => view === "project" && handleHeadingDragOver(event, group)}
+          on:drop|capture={(event) => view === "project" && handleHeadingDrop(event, group)}
         >
           {#if (view === "upcoming" || view === "log") && hd}
             {#if group.startsWith("m-") || view === "log"}
@@ -1440,7 +1486,14 @@
                 on:dragstart={(event) => handleHeadingDragStart(event, group)}
                 on:dragend={handleHeadingDragEnd}
               >
-                <button class="task-list__heading-toggle" title="点击折叠/展开，拖动标题行调整分组顺序" on:click={() => toggleGroupCollapse(group)}>
+                <button
+                  class="task-list__heading-toggle"
+                  title="点击折叠/展开，拖动标题行调整分组顺序"
+                  draggable="true"
+                  on:dragstart|stopPropagation={(event) => handleHeadingDragStart(event, group)}
+                  on:dragend|stopPropagation={handleHeadingDragEnd}
+                  on:click={() => toggleGroupCollapse(group)}
+                >
                   <svg class="task-list__heading-chevron" class:is-collapsed={isGroupCollapsed(group)} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6" /></svg>
                   <span class="task-list__heading-static">进行中</span>
                   {#if isGroupCollapsed(group)}<span class="task-list__heading-count">{groupItems.length}</span>{/if}
@@ -1474,6 +1527,9 @@
                   <button
                     class="task-list__heading-toggle"
                     title="点击折叠/展开，拖动标题行调整分组顺序"
+                    draggable="true"
+                    on:dragstart|stopPropagation={(event) => handleHeadingDragStart(event, group)}
+                    on:dragend|stopPropagation={handleHeadingDragEnd}
                     on:click={() => toggleGroupCollapse(group)}
                   >
                     <svg class="task-list__heading-chevron" class:is-collapsed={isGroupCollapsed(group)} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6" /></svg>
@@ -1515,20 +1571,22 @@
             let:handleDragStart
           >
             {#each displayItems as task, ti (task.id)}
-              <div class="task-list__animated-slot" animate:flip={{ duration: 360, easing: cubicOut }}>
+              <div class="task-list__animated-slot" animate:flip={{ duration: suppressTaskLayoutMotion ? 0 : 360, easing: cubicOut }}>
                 {#if activeCreateSlot && activeCreateSlot.group === group && activeCreateSlot.index === ti}
-                  <TaskCard
-                    mode="create"
-                    {store}
-                    currentView={view}
-                    currentViewId={viewId}
-                    presetStartDate={createPreset.startDate}
-                    presetHeadingId={view === "project" && group !== "none" && group !== "all" && group !== COMPLETED_GROUP ? group : undefined}
-                    presetView={createDestView}
-                    presetViewId={createDestViewId}
-                    on:created={handleTaskCreated}
-                    on:cancel={handleCancelCreate}
-                  />
+                  <div class="task-list__create-slot" bind:this={createCardHostEl}>
+                    <TaskCard
+                      mode="create"
+                      {store}
+                      currentView={view}
+                      currentViewId={viewId}
+                      presetStartDate={createPreset.startDate}
+                      presetHeadingId={view === "project" && group !== "none" && group !== "all" && group !== COMPLETED_GROUP ? group : undefined}
+                      presetView={createDestView}
+                      presetViewId={createDestViewId}
+                      on:created={handleTaskCreated}
+                      on:cancel={handleCancelCreate}
+                    />
+                  </div>
                 {/if}
                 <div
                   class="task-list__item-wrapper"
@@ -1559,18 +1617,20 @@
               </div>
             {/each}
             {#if activeCreateSlot && activeCreateSlot.group === group && activeCreateSlot.index >= displayItems.length}
-              <TaskCard
-                mode="create"
-                {store}
-                currentView={view}
-                currentViewId={viewId}
-                presetStartDate={createPreset.startDate}
-                presetHeadingId={view === "project" && group !== "none" && group !== "all" && group !== COMPLETED_GROUP ? group : undefined}
-                presetView={createDestView}
-                presetViewId={createDestViewId}
-                on:created={handleTaskCreated}
-                on:cancel={handleCancelCreate}
-              />
+              <div class="task-list__create-slot" bind:this={createCardHostEl}>
+                <TaskCard
+                  mode="create"
+                  {store}
+                  currentView={view}
+                  currentViewId={viewId}
+                  presetStartDate={createPreset.startDate}
+                  presetHeadingId={view === "project" && group !== "none" && group !== "all" && group !== COMPLETED_GROUP ? group : undefined}
+                  presetView={createDestView}
+                  presetViewId={createDestViewId}
+                  on:created={handleTaskCreated}
+                  on:cancel={handleCancelCreate}
+                />
+              </div>
             {/if}
           </DragSort>
           {/if}
@@ -1771,6 +1831,11 @@
       margin-top: 8px;
     }
 
+    // 标签详情没有项目/区域说明面板，首个“进行中”与大标题分割线之间需要更舒展的留白。
+    &.is-tag-view &__group-block:first-child &__heading {
+      margin-top: 20px;
+    }
+
     &__heading-static,
     &__heading-title {
       font-size: 13px;
@@ -1820,14 +1885,20 @@
       color: var(--b3-theme-on-surface-light);
     }
 
-    // 操作区始终占据独立空间，横线止于按钮之前，避免重命名/删除按钮压在线上。
+    // 隐藏时不占布局，横线与“进行中/已完成”等长；显示时用底色遮住线，避免视觉重叠。
     &__heading-actions {
+      position: absolute;
+      right: 0;
+      top: 50%;
+      transform: translateY(-50%);
       display: flex;
       align-items: center;
       gap: 4px;
-      flex-shrink: 0;
+      padding-left: 8px;
+      background: var(--b3-theme-background);
       visibility: hidden;
       opacity: 0;
+      pointer-events: none;
       transition: opacity 0.15s ease;
     }
 
@@ -1835,6 +1906,7 @@
     &__heading:focus-within &__heading-actions {
       visibility: visible;
       opacity: 1;
+      pointer-events: auto;
     }
 
     // ✎ 重命名：与 × 删除同款悬浮按钮
@@ -2084,6 +2156,12 @@
         opacity: 0;
         pointer-events: none;
       }
+    }
+
+    // 关闭新建卡片时禁止已有任务补位动画，避免半透明卡片上出现向上移动的任务拖影。
+    &__items.is-create-closing &__animated-slot {
+      animation: none !important;
+      transition: none !important;
     }
 
     &__search-matches {

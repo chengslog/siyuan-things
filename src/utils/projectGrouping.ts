@@ -1,4 +1,5 @@
 type OrderedHeading = { id: string; order: number };
+export type ProjectGroupDropPosition = "before" | "after";
 
 /**
  * 生成项目详情的完整可排序分组序列。
@@ -15,4 +16,19 @@ export function normalizeProjectGroupOrder(headings: OrderedHeading[], storedOrd
   }
   if (!normalized.includes("none")) normalized.push("none");
   return normalized;
+}
+
+/** 按明确落点移动项目分组；用于标题行和包含任务的整块分组拖放。 */
+export function moveProjectGroup(
+  order: string[],
+  draggedId: string,
+  targetId: string,
+  position: ProjectGroupDropPosition,
+): string[] {
+  if (draggedId === targetId || !order.includes(draggedId) || !order.includes(targetId)) return [...order];
+
+  const next = order.filter((id) => id !== draggedId);
+  const targetIndex = next.indexOf(targetId);
+  next.splice(targetIndex + (position === "after" ? 1 : 0), 0, draggedId);
+  return next;
 }

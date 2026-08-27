@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { normalizeProjectGroupOrder } from "../src/utils/projectGrouping.ts";
+import { moveProjectGroup, normalizeProjectGroupOrder } from "../src/utils/projectGrouping.ts";
 
 test("legacy projects place active group after ordered headings", () => {
   const headings = [
@@ -33,4 +33,11 @@ test("a newly prepended heading remains above the previous persisted groups", ()
   const previousOrder = normalizeProjectGroupOrder([{ id: "first", order: 0 }], ["none", "first"]);
 
   assert.deepEqual(normalizeProjectGroupOrder(headings, ["new", ...previousOrder]), ["new", "none", "first"]);
+});
+
+test("moves the active group before a populated heading group", () => {
+  assert.deepEqual(
+    moveProjectGroup(["group-1", "group-2", "none"], "none", "group-2", "before"),
+    ["group-1", "none", "group-2"],
+  );
 });

@@ -54,6 +54,7 @@ Download `package.zip` from GitHub Releases, extract it to `<SiYuan workspace>/d
 
 - Open Things from the SiYuan dock.
 - Use Inbox, Today, Upcoming, Anytime, Someday, and Log to manage the task lifecycle.
+- In project and tag details, clicking `+` opens the new-task card near the current reading position. Project headings can be reordered and collapsed, while Completed stays fixed at the bottom.
 - Set projects, areas, tags, dates, deadlines, reminders, recurrence, notes, and checklists on task cards, or copy a complete task as Markdown.
 - Use natural language in the AI panel to create, find, update, or delete tasks. Deletions require confirmation.
 
@@ -86,7 +87,7 @@ Tasks and plugin settings are stored in the SiYuan workspace through the plugin 
 
 - Requires SiYuan Note 3.7.0 or later.
 - Development and validation currently focus on Windows desktop. Compatibility reports for other declared platforms are welcome.
-- The current Things version appears at the bottom of the sidebar; click it to open the bundled changelog.
+- The current Things version appears at the bottom of the sidebar; click it to open the changelog grouped by date and separated into features and bug fixes.
 - The plugin settings page provides a dedicated Support and Feedback section.
 - Report problems through [GitHub Issues](https://github.com/chengslog/siyuan-things/issues) with the SiYuan version, plugin version, reproduction steps, and safe screenshots. Never include API keys or private task content.
 
