@@ -699,6 +699,9 @@
   $: isNotesOverflowing = checkOverflow(notesContentEl);
   // 显示今天/今晚标识的视图（随时、标签、项目、区域）
   $: showTodayIndicator = currentView === 'anytime' || currentView === 'tag' || currentView === 'project' || currentView === 'area';
+  // 已完成任务的行首完成日期列（日志、项目、区域、标签视图）；这些视图不再叠加今天图标或开始日期
+  $: doneDateColumn = mode === 'edit' && task?.status === 'done'
+    && (currentView === 'log' || currentView === 'project' || currentView === 'area' || currentView === 'tag');
   // 今天任务（⭐️）和今晚任务（🌙）检测
   $: isTodayInAnytime = showTodayIndicator && task?.startDate && isTodayTask(task.startDate) && !isEveningTime(task.startDate);
   $: isTonightInAnytime = showTodayIndicator && task?.startDate && isTodayTask(task.startDate) && isEveningTime(task.startDate);
@@ -708,12 +711,15 @@
     return el.scrollHeight > el.clientHeight + 2;
   }
 
-  // 判断任务日期是否是今天
+  // 判断任务日期是否是今天（与 sortByAnytimeRules 的今天判断一致：须落在今天 0 点至 24 点之间，
+  // 单独用 <= 今天末尾会把所有过期任务也标成今天）
   function isTodayTask(startDate: number): boolean {
     const now = new Date();
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
     const todayEnd = new Date(now);
     todayEnd.setHours(23, 59, 59, 999);
-    return startDate <= todayEnd.getTime();
+    return startDate >= todayStart.getTime() && startDate <= todayEnd.getTime();
   }
 
   function startEditNotes() {
@@ -1262,7 +1268,7 @@
   <!-- 标题区域 -->
   <div class="task-card__header">
     <!-- 日志、项目、区域和标签视图：已完成任务在行首显示完成日期，仅收缩态显示 -->
-    {#if mode === 'edit' && !expanded && task?.status === 'done' && (currentView === 'log' || currentView === 'project' || currentView === 'area' || currentView === 'tag')}
+    {#if doneDateColumn && !expanded}
       <span class="task-card__log-date">{formatLogDate(task?.completedDate || task?.updated)}</span>
     {/if}
     <!-- 计划视图月度组：行首固定宽度开始日期列（同日志样式，x月x日），仅收缩态显示 -->
@@ -1296,8 +1302,8 @@
       {/if}
     {/if}
 
-    <!-- 日期/图标（有日期或今天图标时显示，无日期不渲染） -->
-    {#if !expanded && showTodayIndicator}
+    <!-- 日期/图标（有日期或今天图标时显示，无日期不渲染；已完成任务由行首完成日期列呈现时间线） -->
+    {#if !expanded && showTodayIndicator && task?.status !== 'done'}
       {#if isTodayInAnytime}
         <span class="task-card__date-col"><Icon name="iconThingsStarFilled" size={14} color="#FFB900" klass="task-card__today-indicator" /></span>
       {:else if isTonightInAnytime}
@@ -1305,7 +1311,7 @@
       {:else if showCollapsedDate}
         <span class="task-card__date-col task-card__inline-date">{formatMonthDay(task?.startDate)}</span>
       {/if}
-    {:else if showCollapsedDate && !expanded}
+    {:else if showCollapsedDate && !expanded && !doneDateColumn}
       <span class="task-card__date-col task-card__inline-date">{formatMonthDay(task?.startDate)}</span>
     {/if}
 
