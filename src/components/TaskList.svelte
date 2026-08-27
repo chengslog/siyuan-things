@@ -15,6 +15,7 @@
   import ProjectOverview from "./ProjectOverview.svelte";
   import AreaOverview from "./AreaOverview.svelte";
   import TagOverview from "./TagOverview.svelte";
+  import { normalizeProjectGroupOrder } from "@/utils/projectGrouping";
 
   export let view: ViewType;
   export let viewId: string | undefined;
@@ -319,6 +320,15 @@
     if (navKey !== lastNavKey) {
       lastNavKey = navKey;
       suppressOutro = true;
+      // 切换侧边栏视图时关闭当前视图的临时编辑态，避免新建卡片被带到新页面。
+      showCreateForm = false;
+      createTarget = null;
+      createDestView = undefined;
+      createDestViewId = undefined;
+      addingHeading = false;
+      editingHeadingId = null;
+      headingDraft = "";
+      document.removeEventListener("mousedown", onHeadingInputOutside);
       if (itemsEl) itemsEl.scrollTop = 0;
       tick().then(() => { suppressOutro = false; });
     }
@@ -358,9 +368,9 @@
       const headings = project?.headings?.length
         ? [...project.headings].sort((a, b) => a.order - b.order)
         : [];
+      const displayOrder = normalizeProjectGroupOrder(headings, project?.groupOrder);
       const groups = new Map<string, Task[]>();
-      for (const h of headings) groups.set(h.id, []);
-      const ungrouped: Task[] = [];
+      for (const groupId of displayOrder) groups.set(groupId, []);
       const completed: Task[] = [];
       for (const t of tasks) {
         if (t.status === "done") {
@@ -368,9 +378,8 @@
           continue;
         }
         if (t.headingId && groups.has(t.headingId)) groups.get(t.headingId)!.push(t);
-        else ungrouped.push(t);
+        else groups.get("none")!.push(t);
       }
-      groups.set("none", ungrouped);
       for (const arr of groups.values()) {
         arr.sort((a, b) => {
           if (a.order !== b.order) return a.order - b.order;
@@ -516,11 +525,8 @@
     addingHeading = true;
     headingDraft = "";
     setTimeout(() => document.addEventListener("mousedown", onHeadingInputOutside), 0);
-    // 输入框渲染在列表末尾：任务多时它在视口外，需主动滚过去并聚焦，而不是让用户手动找
-    tick().then(() => {
-      headingAddInputEl?.scrollIntoView({ block: "center", behavior: "smooth" });
-      headingAddInputEl?.focus();
-    });
+    // 输入框渲染在项目内容最上方，只需等待 DOM 挂载后聚焦。
+    tick().then(() => headingAddInputEl?.focus());
   }
 
   function onHeadingInputOutside(e: MouseEvent) {
@@ -566,37 +572,38 @@
     }
   }
 
-  // —— 分组折叠 ——
-  // 标题分组的折叠状态持久化在分组数据上；未分组/已完成不是分组实体，用会话级状态
-  let collapsedGroups = new Map<string, boolean>();
+  // —— 分组折叠：真实标题写入 heading.collapsed；进行中/已完成写入所属实体 ——
 
   function isGroupCollapsed(group: string): boolean {
-    if (group === COMPLETED_GROUP) {
-      if (view !== "project" && view !== "area" && view !== "tag") return false;
-      return !!collapsedGroups.get(`${view}::${viewId}::completed`);
+    if (!viewId) return false;
+    if (view === "project" && group !== "none" && group !== COMPLETED_GROUP) {
+      return !!projectObj?.headings.find((heading) => heading.id === group)?.collapsed;
     }
-    if (view !== "project" || !viewId) return false;
-    if (group === "none") return !!collapsedGroups.get(`${viewId}::none`);
-    return !!projectObj?.headings.find((h) => h.id === group)?.collapsed;
+    const stateKey = group === COMPLETED_GROUP ? "completed" : "active";
+    if (view === "project") return !!projectObj?.collapsedGroups?.[stateKey];
+    if (view === "area") return !!areaObj?.collapsedGroups?.[stateKey];
+    if (view === "tag") return !!store.tags.get(viewId)?.collapsedGroups?.[stateKey];
+    return false;
   }
 
-  function toggleGroupCollapse(group: string) {
-    if (group === COMPLETED_GROUP) {
-      if (view !== "project" && view !== "area" && view !== "tag") return;
-      const key = `${view}::${viewId}::completed`;
-      collapsedGroups.set(key, !collapsedGroups.get(key));
-      refreshKey++; // Map 变更不触发响应式，手动驱动重渲染
+  async function toggleGroupCollapse(group: string) {
+    if (!viewId) return;
+    if (view === "project" && group !== "none" && group !== COMPLETED_GROUP) {
+      const heading = projectObj?.headings.find((item) => item.id === group);
+      if (heading) await store.projects.setHeadingCollapsed(viewId, group, !heading.collapsed);
       return;
     }
-    if (view !== "project" || !viewId) return;
-    if (group === "none") {
-      const key = `${viewId}::none`;
-      collapsedGroups.set(key, !collapsedGroups.get(key));
-      refreshKey++; // Map 变更不触发响应式，手动驱动重渲染
-      return;
+
+    const stateKey = group === COMPLETED_GROUP ? "completed" : "active";
+    const collapsed = !isGroupCollapsed(group);
+    if (view === "project" && projectObj) {
+      await store.projects.updateProject(viewId, { collapsedGroups: { ...(projectObj.collapsedGroups || {}), [stateKey]: collapsed } });
+    } else if (view === "area" && areaObj) {
+      await store.areas.updateArea(viewId, { collapsedGroups: { ...(areaObj.collapsedGroups || {}), [stateKey]: collapsed } });
+    } else if (view === "tag") {
+      const tag = store.tags.get(viewId);
+      if (tag) await store.tags.updateTag(viewId, { collapsedGroups: { ...(tag.collapsedGroups || {}), [stateKey]: collapsed } });
     }
-    const heading = projectObj?.headings.find((h) => h.id === group);
-    if (heading) store.projects.setHeadingCollapsed(viewId, group, !heading.collapsed);
   }
 
   // —— 标题分组拖拽排序（HTML5 DnD；任务拖拽走 DragSort 的鼠标模拟，二者互不影响） ——
@@ -604,14 +611,15 @@
   let headingDropTarget: { id: string; pos: "before" | "after" } | null = null;
 
   function handleHeadingDragStart(e: DragEvent, group: string) {
-    if (editingHeadingId === group) return;
+    if (group === COMPLETED_GROUP || editingHeadingId === group) return;
     headingDragId = group;
     e.dataTransfer?.setData("text/plain", group); // Firefox 需要 setData 才会启动拖拽
     if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
   }
 
   function handleHeadingDragOver(e: DragEvent, group: string) {
-    if (!headingDragId || headingDragId === group) return;
+    if (group === COMPLETED_GROUP || !headingDragId || headingDragId === group) return;
+    e.preventDefault();
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const pos = e.clientY < rect.top + rect.height / 2 ? "before" : "after";
     if (headingDropTarget?.id !== group || headingDropTarget?.pos !== pos) {
@@ -627,18 +635,18 @@
     headingDropTarget = null;
     if (!projectObj || !viewId || !dragId || !target || dragId === target.id) return;
 
-    const headings = [...projectObj.headings];
-    const fromIdx = headings.findIndex((h) => h.id === dragId);
+    const groups = [...groupedTasks.keys()].filter((id) => id !== COMPLETED_GROUP);
+    const fromIdx = groups.indexOf(dragId);
     if (fromIdx < 0) return;
-    const [moved] = headings.splice(fromIdx, 1);
-    let toIdx = headings.findIndex((h) => h.id === target.id);
+    const [moved] = groups.splice(fromIdx, 1);
+    let toIdx = groups.indexOf(target.id);
     if (toIdx < 0) {
-      headings.push(moved);
+      groups.push(moved);
     } else {
       if (target.pos === "after") toIdx += 1;
-      headings.splice(toIdx, 0, moved);
+      groups.splice(toIdx, 0, moved);
     }
-    await store.projects.reorderHeadings(viewId, headings.map((h) => h.id));
+    await store.projects.reorderHeadings(viewId, groups);
   }
 
   function handleHeadingDragEnd() {
@@ -1320,10 +1328,6 @@
     {/if}
     {#if view === "area" && areaObj}
       <AreaPanel store={store} area={areaObj} projects={areaProjects} showProjects={false} />
-      <div class="task-list__area-section-heading">
-        <span>任务</span>
-        <div></div>
-      </div>
     {/if}
     {#if view === "projects"}
       <ProjectOverview store={store} version={refreshKey} />
@@ -1340,6 +1344,24 @@
         <p>{view === "area" ? "此区域暂无直属任务" : emptyState.text}</p>
       </div>
     {:else}
+      {#if view === "project" && projectObj && addingHeading}
+        <div class="task-list__heading-add task-list__heading-add--top">
+          <input
+            class="task-list__heading-input"
+            type="text"
+            placeholder="标题分组名称"
+            bind:value={headingDraft}
+            bind:this={headingAddInputEl}
+            on:blur={commitAddHeading}
+            on:keydown={(e) => {
+              // 中文输入法组词中的回车是确认候选词，不提交
+              if (e.isComposing || e.keyCode === 229) return;
+              if (e.key === "Enter") commitAddHeading();
+              if (e.key === "Escape") { addingHeading = false; headingDraft = ""; }
+            }}
+          />
+        </div>
+      {/if}
       {#each [...groupedTasks.entries()] as [group, groupItems], gi (group)}
         {@const hd = view === "upcoming" || view === "log" ? groupHeader(group) : null}
         {@const orderedItems = view === "upcoming"
@@ -1350,6 +1372,13 @@
           class:task-list__group-block--sectioned={view === "project" || view === "area" || view === "tag"}
           class:is-drop-target={dragOverGroup === group && dragOverGroup !== dragFromGroup}
           bind:this={groupBlockRefs[group]}
+          on:dragover={(event) => view === "project" && handleHeadingDragOver(event, group)}
+          on:drop={(event) => {
+            if (view === "project" && group !== COMPLETED_GROUP) {
+              event.preventDefault();
+              handleHeadingDrop();
+            }
+          }}
         >
           {#if (view === "upcoming" || view === "log") && hd}
             {#if group.startsWith("m-") || view === "log"}
@@ -1378,6 +1407,17 @@
               <span>{group}</span>
               <div class="task-list__day-line"></div>
             </div>
+          {:else if group === "all" && (view === "area" || view === "tag")}
+            <div
+              class="task-list__heading task-list__heading--active"
+              title="点击折叠/展开"
+              on:click={() => toggleGroupCollapse(group)}
+            >
+              <svg class="task-list__heading-chevron" class:is-collapsed={isGroupCollapsed(group)} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6" /></svg>
+              <span class="task-list__heading-static">进行中</span>
+              {#if isGroupCollapsed(group)}<span class="task-list__heading-count">{groupItems.length}</span>{/if}
+              <div class="task-list__day-line"></div>
+            </div>
           {:else if group === COMPLETED_GROUP && (view === "project" || view === "area" || view === "tag")}
             <div
               class="task-list__heading task-list__heading--completed"
@@ -1391,10 +1431,20 @@
             </div>
           {:else if view === "project" && projectObj && group !== "all"}
             {#if group === "none"}
-              <div class="task-list__heading" title="点击折叠/展开" on:click={() => toggleGroupCollapse(group)}>
-                <svg class="task-list__heading-chevron" class:is-collapsed={isGroupCollapsed(group)} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6" /></svg>
-                <span class="task-list__heading-static">未分组</span>
-                {#if isGroupCollapsed(group)}<span class="task-list__heading-count">{groupItems.length}</span>{/if}
+              <div
+                class="task-list__heading"
+                class:is-heading-dragging={headingDragId === group}
+                class:is-drop-before={headingDropTarget?.id === group && headingDropTarget?.pos === "before"}
+                class:is-drop-after={headingDropTarget?.id === group && headingDropTarget?.pos === "after"}
+                draggable="true"
+                on:dragstart={(event) => handleHeadingDragStart(event, group)}
+                on:dragend={handleHeadingDragEnd}
+              >
+                <button class="task-list__heading-toggle" title="点击折叠/展开，拖动标题行调整分组顺序" on:click={() => toggleGroupCollapse(group)}>
+                  <svg class="task-list__heading-chevron" class:is-collapsed={isGroupCollapsed(group)} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6" /></svg>
+                  <span class="task-list__heading-static">进行中</span>
+                  {#if isGroupCollapsed(group)}<span class="task-list__heading-count">{groupItems.length}</span>{/if}
+                </button>
                 <div class="task-list__day-line"></div>
               </div>
             {:else if projectObj.headings.find((h) => h.id === group)}
@@ -1405,8 +1455,6 @@
                 class:is-drop-after={headingDropTarget?.id === group && headingDropTarget?.pos === "after"}
                 draggable={editingHeadingId !== group}
                 on:dragstart={(e) => handleHeadingDragStart(e, group)}
-                on:dragover|preventDefault={(e) => handleHeadingDragOver(e, group)}
-                on:drop|preventDefault={handleHeadingDrop}
                 on:dragend={handleHeadingDragEnd}
               >
                 {#if editingHeadingId === group}
@@ -1434,16 +1482,18 @@
                   </button>
                 {/if}
                 <div class="task-list__day-line"></div>
-                <button
-                  class="task-list__heading-edit"
-                  title="重命名分组"
-                  on:click={() => startHeadingRename(projectObj.headings.find((h) => h.id === group))}
-                ><Icon name="iconThingsPencil" size={11} /></button>
-                <button
-                  class="task-list__heading-del"
-                  title="删除标题分组（任务移入未分组）"
-                  on:click={() => removeHeading(projectObj.id, group)}
-                >×</button>
+                <div class="task-list__heading-actions">
+                  <button
+                    class="task-list__heading-edit"
+                    title="重命名分组"
+                    on:click={() => startHeadingRename(projectObj.headings.find((h) => h.id === group))}
+                  ><Icon name="iconThingsPencil" size={11} /></button>
+                  <button
+                    class="task-list__heading-del"
+                    title="删除标题分组（任务移入进行中）"
+                    on:click={() => removeHeading(projectObj.id, group)}
+                  >×</button>
+                </div>
               </div>
             {/if}
           {/if}
@@ -1473,7 +1523,7 @@
                     currentView={view}
                     currentViewId={viewId}
                     presetStartDate={createPreset.startDate}
-                    presetHeadingId={view === "project" && group !== "none" && group !== "all" ? group : undefined}
+                    presetHeadingId={view === "project" && group !== "none" && group !== "all" && group !== COMPLETED_GROUP ? group : undefined}
                     presetView={createDestView}
                     presetViewId={createDestViewId}
                     on:created={handleTaskCreated}
@@ -1515,7 +1565,7 @@
                 currentView={view}
                 currentViewId={viewId}
                 presetStartDate={createPreset.startDate}
-                presetHeadingId={view === "project" && group !== "none" && group !== "all" ? group : undefined}
+                presetHeadingId={view === "project" && group !== "none" && group !== "all" && group !== COMPLETED_GROUP ? group : undefined}
                 presetView={createDestView}
                 presetViewId={createDestViewId}
                 on:created={handleTaskCreated}
@@ -1527,24 +1577,6 @@
         </div>
       {/each}
 
-      {#if view === "project" && projectObj && addingHeading}
-        <div class="task-list__heading-add">
-          <input
-            class="task-list__heading-input"
-            type="text"
-            placeholder="标题分组名称"
-            bind:value={headingDraft}
-            bind:this={headingAddInputEl}
-            on:blur={commitAddHeading}
-            on:keydown={(e) => {
-              // 中文输入法组词中的回车是确认候选词，不提交
-              if (e.isComposing || e.keyCode === 229) return;
-              if (e.key === "Enter") commitAddHeading();
-              if (e.key === "Escape") { addingHeading = false; headingDraft = ""; }
-            }}
-          />
-        </div>
-      {/if}
       {/if}
     {/if}
     {#if view === "area" && areaObj}
@@ -1652,23 +1684,6 @@
     // 分组内没有任务（空分组）时间隔也不会塌陷。
     &__group-block--sectioned + &__group-block--sectioned {
       margin-top: 14px;
-    }
-
-    &__area-section-heading {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin: 14px 0 8px;
-      color: var(--b3-theme-on-surface-light);
-      font-size: 13px;
-      font-weight: 600;
-      letter-spacing: 0.03em;
-
-      div {
-        flex: 1;
-        height: 1px;
-        background: var(--b3-border-color);
-      }
     }
 
     // 计划视图日期分组头：左侧大数字 + 右侧（描述 + 其下延伸细线，二者左对齐）
@@ -1805,13 +1820,25 @@
       color: var(--b3-theme-on-surface-light);
     }
 
+    // 操作区始终占据独立空间，横线止于按钮之前，避免重命名/删除按钮压在线上。
+    &__heading-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+      visibility: hidden;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+
+    &__heading:hover &__heading-actions,
+    &__heading:focus-within &__heading-actions {
+      visibility: visible;
+      opacity: 1;
+    }
+
     // ✎ 重命名：与 × 删除同款悬浮按钮
     &__heading-edit {
-      position: absolute;
-      right: 26px;
-      top: 50%;
-      transform: translateY(-50%);
-      visibility: hidden;
       width: 22px;
       height: 22px;
       border: none;
@@ -1827,10 +1854,6 @@
         background: var(--b3-theme-primary-light);
         color: var(--b3-theme-primary);
       }
-    }
-
-    &__heading:hover &__heading-edit {
-      visibility: visible;
     }
 
     // 分组拖拽排序：被拖行半透明；落点亮主色指引线（box-shadow 不占布局）
@@ -1862,14 +1885,8 @@
       color: var(--b3-theme-on-surface);
     }
 
-    // × 删除：退出布局流（否则分割线被它截短，各标题线长随名称+按钮变得参差不齐），
-    // 悬停标题行时浮现在行尾，底色盖住下方分割线
+    // × 删除
     &__heading-del {
-      position: absolute;
-      right: 0;
-      top: 50%;
-      transform: translateY(-50%);
-      visibility: hidden;
       width: 22px;
       height: 22px;
       border: none;
@@ -1886,10 +1903,6 @@
         background: var(--b3-theme-error-light);
         color: var(--b3-theme-error);
       }
-    }
-
-    &__heading:hover &__heading-del {
-      visibility: visible;
     }
 
     &__heading-addbtn {
@@ -1910,6 +1923,10 @@
 
     &__heading-add {
       margin-top: 20px;
+
+      &--top {
+        margin: 8px 0 6px;
+      }
     }
 
     &__title-icon {

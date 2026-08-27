@@ -20,6 +20,7 @@ export class AreaStore extends BaseStore<Area> {
       order: partial.order ?? this.getNextOrder(),
       created: now,
       updated: now,
+      collapsedGroups: partial.collapsedGroups,
     };
     await this.add(area);
     return area;

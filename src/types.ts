@@ -60,6 +60,10 @@ export interface Project {
   updated: number;
   order: number;
   headings: ProjectHeading[];
+  /** 项目详情中的分组显示顺序，包含特殊分组 "none"（进行中） */
+  groupOrder?: string[];
+  /** 非标题实体分组（进行中、已完成）的折叠状态 */
+  collapsedGroups?: Record<string, boolean>;
 }
 
 // ===== 区域 =====
@@ -70,6 +74,8 @@ export interface Area {
   order: number;
   created: number;
   updated: number;
+  /** 区域详情中进行中、已完成分组的折叠状态 */
+  collapsedGroups?: Record<string, boolean>;
 }
 
 // ===== 标签 =====
@@ -79,6 +85,8 @@ export interface Tag {
   color?: string;
   parentId?: string;
   order: number;
+  /** 标签详情中进行中、已完成分组的折叠状态 */
+  collapsedGroups?: Record<string, boolean>;
 }
 
 // ===== 视图类型 =====

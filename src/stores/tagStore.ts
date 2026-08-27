@@ -24,6 +24,7 @@ export class TagStore extends BaseStore<Tag> {
       color: partial.color,
       parentId: partial.parentId,
       order: partial.order ?? this.getNextOrder(),
+      collapsedGroups: partial.collapsedGroups,
     };
     await this.add(tag);
     return tag;

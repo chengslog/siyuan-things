@@ -11,7 +11,7 @@ A Things-inspired GTD task manager for SiYuan Note. It provides Inbox, Today, Up
 | Capability | Description |
 | --- | --- |
 | **GTD workflow** | Manage the task lifecycle with Inbox, Today, Upcoming, Anytime, Someday, and Log. |
-| **Projects and organization** | Organize work with projects, areas, headings, and tags. |
+| **Projects and organization** | Organize work with projects, areas, reorderable and collapsible headings, and tags, with active and completed tasks shown separately. |
 | **Dates and reminders** | Set start dates and times, deadlines, reminders, and Someday tasks. |
 | **Recurring tasks** | Repeat daily, on weekdays, weekly, monthly, or yearly; completing a task creates its next occurrence. |
 | **Task details** | Add notes (Markdown rendering with image preview) and checklists, and copy a task's complete data as Markdown with one click. |

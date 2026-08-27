@@ -1,6 +1,6 @@
 {
   "name": "siyuan-things",
-  "version": "0.2.16",
+  "version": "0.2.17",
   "type": "module",
   "description": "A GTD task management plugin inspired by Things for SiYuan Note",
   "repository": {
