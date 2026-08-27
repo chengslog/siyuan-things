@@ -35,6 +35,8 @@ export default class ThingsPlugin extends Plugin {
   private dockElement: HTMLElement | null = null;
   private thingsDockType = "things_nav";
   private dockRestoreTimers: number[] = [];
+  private dockRestoreInterval: number | null = null;
+  private syncInProgress = false;
   private layoutResetTimers: number[] = [];
   private pluginMenuObserver: MutationObserver | null = null;
   private unsubTaskChange: (() => void) | null = null;
@@ -44,17 +46,26 @@ export default class ThingsPlugin extends Plugin {
   private currentThingsView: ViewType = "today";
   private currentThingsViewId: string | undefined = undefined;
   private handleSyncStart = () => {
+    this.syncInProgress = true;
+    this.dockRestoreTimers.forEach((timer) => window.clearTimeout(timer));
+    this.dockRestoreTimers = [];
     if (this.isThingsDockOpen()) {
       sessionStorage.setItem(SYNC_DOCK_RESTORE_KEY, "1");
+      this.startDockRestoreGuard();
     } else {
       sessionStorage.removeItem(SYNC_DOCK_RESTORE_KEY);
+      this.stopDockRestoreGuard();
     }
   };
   private handleSyncEnd = async () => {
-    // 同步可能替换插件数据文件，先刷新内存和侧边栏内容。
-    await this.store.loadAll();
-    if (this.dockElement) this.renderDock(this.dockElement);
-    this.scheduleDockRestoreAfterSync();
+    try {
+      // 同步可能替换插件数据文件，先刷新内存和侧边栏内容。
+      await this.store.loadAll();
+      if (this.dockElement) this.renderDock(this.dockElement);
+    } finally {
+      this.syncInProgress = false;
+      this.scheduleDockRestoreAfterSync();
+    }
   };
   private handleThingsDockButtonClick = (event: MouseEvent) => {
     const target = event.target as HTMLElement | null;
@@ -64,6 +75,13 @@ export default class ThingsPlugin extends Plugin {
     if (!dockButton || (dockType !== "things_nav" && !dockType.endsWith("things_nav"))) return;
 
     const wasDockOpen = dockButton.classList.contains("dock__item--active");
+    // 守护期间用户主动点击已展开的 Dock，视为明确要求关闭，不再自动拉回。
+    if (wasDockOpen && sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) === "1") {
+      sessionStorage.removeItem(SYNC_DOCK_RESTORE_KEY);
+      this.stopDockRestoreGuard();
+      this.dockRestoreTimers.forEach((timer) => window.clearTimeout(timer));
+      this.dockRestoreTimers = [];
+    }
 
     // Let SiYuan finish its own dock toggle first. If a Things tab is already
     // open, focus it and preserve its view; otherwise open the configured default.
@@ -107,6 +125,68 @@ export default class ThingsPlugin extends Plugin {
     const head = this.thingsTab.headElement as HTMLElement | undefined;
     const element = this.thingsTab.element as HTMLElement | undefined;
     return !!(head?.isConnected || element?.isConnected);
+  }
+
+  /**
+   * 同步或布局恢复期间，SiYuan 可能暂时重建 Dock/Tab 模型，导致内存引用丢失，
+   * 但页签头仍然存在。通过稳定标记和 SiYuan 自定义页签属性兜底查找，
+   * 避免把“引用暂时丢失”误判成“页签不存在”。
+   */
+  private findExistingThingsTabHead(): HTMLElement | null {
+    const customId = `${this.name}${TAB_TYPE}`;
+    const selectors = [
+      '[data-things-tab="true"]',
+      `.layout-tab-bar .item[data-type="${TAB_TYPE}"]`,
+      `.layout-tab-bar .item[data-type="${customId}"]`,
+      `.layout-tab-bar .item[data-id="${customId}"]`,
+      `[data-type="${TAB_TYPE}"]`,
+      `[data-type="${customId}"]`,
+      `[data-id="${customId}"]`,
+    ];
+    const heads: HTMLElement[] = [];
+
+    document.querySelectorAll<HTMLElement>(selectors.join(",")).forEach((element) => {
+      const head = element.matches(".item") ? element : element.closest<HTMLElement>(".item");
+      if (head?.isConnected && !heads.includes(head)) heads.push(head);
+    });
+
+    return heads.find((head) => head.classList.contains("item--focus")) || heads[0] || null;
+  }
+
+  private markThingsTab(tab: any, modelElement?: HTMLElement, app?: any) {
+    const head = tab?.headElement as HTMLElement | undefined;
+    if (head) head.dataset.thingsTab = "true";
+    if (modelElement) {
+      modelElement.dataset.thingsTabContent = "true";
+      (modelElement as any).__thingsPlugin = this;
+      (modelElement as any).__thingsTab = tab || null;
+      if (app) (modelElement as any).__thingsApp = app;
+    }
+  }
+
+  /** 尝试从当前插件实例创建的内容节点恢复被布局重建清掉的内存引用。 */
+  private recoverThingsTabReferences(): boolean {
+    const elements = document.querySelectorAll<HTMLElement>('[data-things-tab-content="true"]');
+    for (const element of elements) {
+      if (!element.isConnected || (element as any).__thingsPlugin !== this) continue;
+      const app = (element as any).__thingsApp;
+      if (!app) continue;
+      this.thingsApp = app;
+      this.thingsTab = (element as any).__thingsTab || this.thingsTab;
+      return true;
+    }
+    return false;
+  }
+
+  /** 聚焦仍存在的 Things 页签；返回 true 表示不得再创建新页签。 */
+  private focusExistingThingsTab(): boolean {
+    const head = this.findExistingThingsTabHead();
+    if (!head) return false;
+    head.dataset.thingsTab = "true";
+    if (!head.classList.contains("item--focus")) {
+      head.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    }
+    return true;
   }
 
   /** Ensure SiYuan does not restore old tabs before Things opens its default view. */
@@ -175,12 +255,14 @@ export default class ThingsPlugin extends Plugin {
         });
 
         (this.element as any).__thingsApp = app;
+        pluginInstance.markThingsTab((this as any).parent, this.element as HTMLElement, app);
         pluginInstance.thingsApp = app;
         pluginInstance.currentThingsView = view as ViewType;
         pluginInstance.currentThingsViewId = viewId || undefined;
         // this.parent 是实际的 Tab 实例（拥有 updateTitle, headElement 等方法）
         if ((this as any).parent) {
           pluginInstance.thingsTab = (this as any).parent;
+          pluginInstance.markThingsTab(pluginInstance.thingsTab, this.element as HTMLElement, app);
           console.log("[Things] Tab captured via parent:", !!pluginInstance.thingsTab);
         }
       },
@@ -217,6 +299,10 @@ export default class ThingsPlugin extends Plugin {
         this.dockElement = dock.element;
         dock.element.classList.add("things-dock-surface");
         this.renderDock(dock.element);
+        // 同步重建 Dock 模型后尽早恢复，不等待下一次轮询。
+        if (sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) === "1") {
+          window.setTimeout(() => this.restoreThingsDockIfNeeded(), 0);
+        }
       },
       destroy() {
         this.dockElement = null;
@@ -377,6 +463,7 @@ export default class ThingsPlugin extends Plugin {
     this.eventBus.off("sync-fail", this.handleSyncEnd);
     this.dockRestoreTimers.forEach((timer) => window.clearTimeout(timer));
     this.dockRestoreTimers = [];
+    this.stopDockRestoreGuard();
     this.layoutResetTimers.forEach((timer) => window.clearTimeout(timer));
     this.layoutResetTimers = [];
 
@@ -462,14 +549,49 @@ export default class ThingsPlugin extends Plugin {
     }
   }
 
+  private restoreThingsDockIfNeeded(): boolean {
+    if (sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1") return false;
+    const restored = this.isThingsDockOpen() || this.openThingsDock();
+    if (restored && this.dockElement) {
+      this.setActive(this.dockElement, this.currentThingsView, this.currentThingsViewId);
+    }
+    return restored;
+  }
+
+  /**
+   * 同步期间持续守护 Dock 展开状态。思源若重建布局导致 Dock 短暂关闭，
+   * 最迟在下一次 100ms 轮询恢复；Dock init 时另有一次即时恢复以减少闪烁。
+   */
+  private startDockRestoreGuard() {
+    if (sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1") return;
+    if (this.dockRestoreInterval !== null) return;
+    this.restoreThingsDockIfNeeded();
+    this.dockRestoreInterval = window.setInterval(() => {
+      this.restoreThingsDockIfNeeded();
+    }, 100);
+  }
+
+  private stopDockRestoreGuard() {
+    if (this.dockRestoreInterval === null) return;
+    window.clearInterval(this.dockRestoreInterval);
+    this.dockRestoreInterval = null;
+  }
+
   private scheduleDockRestoreAfterSync() {
     if (sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1") return;
+    this.startDockRestoreGuard();
     this.dockRestoreTimers.forEach((timer) => window.clearTimeout(timer));
-    this.dockRestoreTimers = [120, 500, 1400].map((delay) => window.setTimeout(() => {
+    const delays = [0, 120, 400, 900, 1800, 3000];
+    this.dockRestoreTimers = delays.map((delay, index) => window.setTimeout(() => {
       if (sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1") return;
-      if (this.openThingsDock()) {
+      this.restoreThingsDockIfNeeded();
+
+      // 不在第一次成功时撤掉标记：思源可能仍在继续重建布局。
+      // 等最后一次延迟校准结束且没有新同步，再解除守护。
+      if (index === delays.length - 1 && !this.syncInProgress) {
         sessionStorage.removeItem(SYNC_DOCK_RESTORE_KEY);
-        if (this.dockElement) this.setActive(this.dockElement, this.currentThingsView, this.currentThingsViewId);
+        this.stopDockRestoreGuard();
+        this.dockRestoreTimers = [];
       }
     }, delay));
   }
@@ -1282,7 +1404,7 @@ export default class ThingsPlugin extends Plugin {
 
     // 如果已有界面，直接更新内容。自定义页签 init 时应用可能先于 Tab 引用就绪，
     // 这段窗口期同样必须复用，否则区域内点击项目会额外创建一个项目页签。
-    if (this.thingsApp) {
+    if (this.hasLiveThingsTab()) {
       this.thingsApp.$set({
         view: view,
         viewId: viewId || undefined,
@@ -1303,6 +1425,23 @@ export default class ThingsPlugin extends Plugin {
       } catch {
         /* 静默降级 */
       }
+      return;
+    }
+
+    // 同步后的布局恢复可能只留下页签 DOM，而暂时丢失 Custom/Tab 内存引用。
+    // 先尝试从稳定内容标记恢复；若只能找到页签头，也只聚焦它并等待 SiYuan
+    // 恢复对应模型，绝不能在已有页签旁再创建一个重复页签。
+    if (this.recoverThingsTabReferences() && this.hasLiveThingsTab()) {
+      return this.openThingsTab(view, viewId, searchQuery);
+    }
+    if (this.focusExistingThingsTab()) {
+      // 聚焦页签会触发 SiYuan 恢复自定义模型；短暂等待后若引用已回来，
+      // 再把本次目标视图同步进去。无论恢复是否完成，当前调用都不会进入
+      // openTab 创建分支，因此不会生成重复页签。
+      window.setTimeout(() => {
+        this.recoverThingsTabReferences();
+        if (this.hasLiveThingsTab()) void this.openThingsTab(view, viewId, searchQuery);
+      }, 80);
       return;
     }
 
@@ -1331,6 +1470,7 @@ export default class ThingsPlugin extends Plugin {
     });
     try {
       this.thingsTab = await this.openingThingsTab;
+      this.markThingsTab(this.thingsTab);
     } finally {
       this.openingThingsTab = null;
     }

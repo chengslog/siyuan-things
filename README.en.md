@@ -11,7 +11,7 @@ A Things-inspired GTD task manager for SiYuan Note. It provides Inbox, Today, Up
 | Capability | Description |
 | --- | --- |
 | **GTD workflow** | Manage the task lifecycle with Inbox, Today, Upcoming, Anytime, Someday, and Log. |
-| **Projects and organization** | Organize work with projects, areas, reorderable and collapsible headings, and tags, with active and completed tasks shown separately. |
+| **Projects and organization** | Organize work with projects, areas, reorderable and collapsible headings, and tags; filter an area's active and completed tasks with project chips. |
 | **Dates and reminders** | Set start dates and times, deadlines, reminders, and Someday tasks. |
 | **Recurring tasks** | Repeat daily, on weekdays, weekly, monthly, or yearly; completing a task creates its next occurrence. |
 | **Task details** | Add notes (Markdown rendering with image preview) and checklists, and copy a task's complete data as Markdown with one click. |
@@ -54,7 +54,7 @@ Download `package.zip` from GitHub Releases, extract it to `<SiYuan workspace>/d
 
 - Open Things from the SiYuan dock.
 - Use Inbox, Today, Upcoming, Anytime, Someday, and Log to manage the task lifecycle.
-- In project and tag details, clicking `+` opens the new-task card near the current reading position. Project headings can be reordered and collapsed, while Completed stays fixed at the bottom.
+- In an area, use the project chips below the title to filter the whole task page. In project and tag details, clicking `+` opens the new-task card near the current reading position. Project headings can be reordered and collapsed, while Completed stays fixed at the bottom.
 - Set projects, areas, tags, dates, deadlines, reminders, recurrence, notes, and checklists on task cards, or copy a complete task as Markdown.
 - Use natural language in the AI panel to create, find, update, or delete tasks. Deletions require confirmation.
 - Click `Things Task Manager` in SiYuan's plugin menu to open settings directly; open the task manager itself from the Things Dock on the left.

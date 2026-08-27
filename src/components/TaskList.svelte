@@ -10,13 +10,14 @@
   import { showMessage } from "siyuan";
   import { Icon, getViewIconId, ICON_COLORS } from "@/icons";
   import ProjectPanel from "./ProjectPanel.svelte";
-  import AreaPanel from "./AreaPanel.svelte";
+  import ProjectMenu from "./ProjectMenu.svelte";
   import EntityForm from "./EntityForm.svelte";
   import ProjectOverview from "./ProjectOverview.svelte";
   import AreaOverview from "./AreaOverview.svelte";
   import TagOverview from "./TagOverview.svelte";
   import { moveProjectGroup, normalizeProjectGroupOrder } from "@/utils/projectGrouping";
   import { findViewportCreateTarget } from "@/utils/createPosition";
+  import { selectAreaTasks } from "@/utils/areaTasks";
 
   export let view: ViewType;
   export let viewId: string | undefined;
@@ -33,6 +34,7 @@
   const plugin = getContext<any>("plugin");
 
   let showCreateForm = false;
+  let selectedAreaProjectId: string | undefined;
   // 创建卡片关闭时，下方任务只做即时补位；若同时执行 FLIP，会看到已有任务向上的拖影。
   let suppressTaskLayoutMotion = false;
   let showEntityForm: "project" | "area" | null = null;
@@ -119,7 +121,7 @@
   }
 
   // 根据视图获取任务列表 - 使用响应式声明确保视图切换时刷新
-  $: tasks = getTasks(view, viewId, searchQuery, refreshKey, store.tasks.count);
+  $: tasks = getTasks(view, viewId, searchQuery, refreshKey, store.tasks.count, selectedAreaProjectId);
 
   // 随时视图排序逻辑（也用于标签/项目/区域视图）
   // 顺序：今天白天⭐️ → 今晚🌙 → 其他有日期（升序） → 无日期（保留order） → 已完成沉底
@@ -169,7 +171,14 @@
     });
   }
 
-  function getTasks(view: ViewType, viewId?: string, query?: string, _key?: number, _count?: number): Task[] {
+  function getTasks(
+    view: ViewType,
+    viewId?: string,
+    query?: string,
+    _key?: number,
+    _count?: number,
+    areaProjectFilter?: string,
+  ): Task[] {
     if (view === "search") {
       return searchTasks(query || "");
     }
@@ -199,9 +208,12 @@
           : [];
       case "area":
         if (!viewId) return [];
-        return sortByAnytimeRules(store.tasks
-          .getAll()
-          .filter((t) => t.status !== 'canceled' && !t.parentId && t.areaId === viewId && !t.projectId));
+        return sortByAnytimeRules(selectAreaTasks(
+          store.tasks.getAll(),
+          viewId,
+          store.projects.getAreaProjects(viewId).map((project) => project.id),
+          areaProjectFilter,
+        ));
       case "tag":
         return viewId
           ? sortByAnytimeRules(store.tasks.getAll().filter((task) =>
@@ -334,6 +346,7 @@
       addingHeading = false;
       editingHeadingId = null;
       headingDraft = "";
+      selectedAreaProjectId = undefined;
       document.removeEventListener("mousedown", onHeadingInputOutside);
       if (itemsEl) itemsEl.scrollTop = 0;
       tick().then(() => {
@@ -1194,9 +1207,12 @@
   // 项目视图：项目对象与全部任务（供 ProjectPanel 显示进度）
   $: projectObj = readProject(view, viewId, refreshKey, store);
   $: projectTasks = readProjectTasks(view, viewId, refreshKey, store);
-  // 区域视图：区域对象与区域内项目（供 AreaPanel 显示）
+  // 区域视图：区域对象与作为整页筛选条件的区域内项目
   $: areaObj = readArea(view, viewId, refreshKey, store);
   $: areaProjects = readAreaProjects(view, viewId, refreshKey, store);
+  $: if (selectedAreaProjectId && !areaProjects.some((project) => project.id === selectedAreaProjectId)) {
+    selectedAreaProjectId = undefined;
+  }
 
   function readProject(v: ViewType, id: string | undefined, _key: number, s: typeof store) {
     return v === "project" && id ? s.projects.get(id) : undefined;
@@ -1280,16 +1296,16 @@
 <div class="task-list" class:is-compact={aiMode === 'compact'} class:is-tag-view={view === 'tag'}>
   <!-- 大标题 -->
   <div class="task-list__header">
-    <div class="task-list__header-top has-border">
+    <div class="task-list__header-top has-border" class:has-project-menu={view === "project" && !!projectObj}>
       {#if view === "tag" && viewId}
         {@const tagObj = store.tags.get(viewId)}
         {#if tagObj?.color}
           <span class="task-list__tag-dot" style="background: {tagObj.color}"></span>
         {:else}
-          <Icon name={viewIcon} size={22} klass="task-list__title-icon" />
+          <Icon name={viewIcon} size={22} color="var(--b3-theme-on-background)" />
         {/if}
       {:else}
-        <Icon name={viewIcon} size={22} klass="task-list__title-icon" />
+        <Icon name={viewIcon} size={22} color="var(--b3-theme-on-background)" />
       {/if}
       <h1 class="task-list__title">{viewTitle}</h1>
 
@@ -1311,7 +1327,33 @@
           </button>
         </div>
       {/if}
+      {#if view === "project" && projectObj}
+        <ProjectMenu store={store} project={projectObj} on:addheading={startAddHeading} />
+      {/if}
     </div>
+    {#if view === "area" && areaObj}
+      <div class="task-list__area-tabs" role="tablist" aria-label="项目筛选">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={!selectedAreaProjectId}
+          class="task-list__area-tab"
+          class:is-active={!selectedAreaProjectId}
+          on:click={() => (selectedAreaProjectId = undefined)}
+        >全部</button>
+        {#each areaProjects as project (project.id)}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={selectedAreaProjectId === project.id}
+            class="task-list__area-tab"
+            class:is-active={selectedAreaProjectId === project.id}
+            title={project.name}
+            on:click={() => (selectedAreaProjectId = project.id)}
+          >{project.name}</button>
+        {/each}
+      </div>
+    {/if}
     {#if getViewDescription(view)}
       <p class="task-list__description">{getViewDescription(view)}</p>
     {/if}
@@ -1375,10 +1417,7 @@
       </div>
     {:else}
     {#if view === "project" && projectObj}
-      <ProjectPanel store={store} project={projectObj} tasks={projectTasks} on:addheading={startAddHeading} />
-    {/if}
-    {#if view === "area" && areaObj}
-      <AreaPanel store={store} area={areaObj} projects={areaProjects} showProjects={false} />
+      <ProjectPanel store={store} project={projectObj} tasks={projectTasks} />
     {/if}
     {#if view === "projects"}
       <ProjectOverview store={store} version={refreshKey} />
@@ -1392,7 +1431,7 @@
     {#if sortedTasks.length === 0 && !activeCreateSlot && view !== "today" && view !== "upcoming" && view !== "projects" && view !== "areas" && view !== "tags" && view !== "project"}
       <div class="task-list__empty" class:task-list__empty--area={view === "area"}>
         {#if view !== "area"}<Icon name={emptyState.icon} size={48} klass="task-list__empty-icon" />{/if}
-        <p>{view === "area" ? "此区域暂无直属任务" : emptyState.text}</p>
+        <p>{view === "area" ? (selectedAreaProjectId ? "此项目暂无任务" : "此区域暂无任务") : emptyState.text}</p>
       </div>
     {:else}
       {#if view === "project" && projectObj && addingHeading}
@@ -1461,7 +1500,7 @@
             >
               <svg class="task-list__heading-chevron" class:is-collapsed={isGroupCollapsed(group)} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6" /></svg>
               <span class="task-list__heading-static">进行中</span>
-              {#if isGroupCollapsed(group)}<span class="task-list__heading-count">{groupItems.length}</span>{/if}
+              {#if view === "area" || isGroupCollapsed(group)}<span class="task-list__heading-count">{groupItems.length}</span>{/if}
               <div class="task-list__day-line"></div>
             </div>
           {:else if group === COMPLETED_GROUP && (view === "project" || view === "area" || view === "tag")}
@@ -1472,7 +1511,7 @@
             >
               <svg class="task-list__heading-chevron" class:is-collapsed={isGroupCollapsed(group)} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6" /></svg>
               <span class="task-list__heading-static">已完成</span>
-              {#if isGroupCollapsed(group)}<span class="task-list__heading-count">{groupItems.length}</span>{/if}
+              {#if view === "area" || isGroupCollapsed(group)}<span class="task-list__heading-count">{groupItems.length}</span>{/if}
               <div class="task-list__day-line"></div>
             </div>
           {:else if view === "project" && projectObj && group !== "all"}
@@ -1639,9 +1678,6 @@
 
       {/if}
     {/if}
-    {#if view === "area" && areaObj}
-      <AreaPanel store={store} area={areaObj} projects={areaProjects} showNotes={false} />
-    {/if}
   </div>
 
   <!-- 悬浮按钮组（状态机）：full=仅＋；button=✧＋；header/compact=隐藏（按钮移到 Header） -->
@@ -1718,7 +1754,7 @@
 
       &-top {
         display: flex;
-        align-items: flex-start;
+        align-items: center;
         gap: 10px;
         padding-bottom: 14px;
 
@@ -1727,6 +1763,61 @@
           border-bottom: 1px solid var(--b3-border-color);
           padding-bottom: 14px;
         }
+
+        &.has-project-menu .task-list__title {
+          flex: 1;
+          min-width: 0;
+        }
+      }
+    }
+
+    // 区域页面的项目筛选：保持单行，项目较多时横向滚动。
+    &__area-tabs {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      padding: 10px 0 1px 5px;
+      margin-bottom: 8px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      white-space: nowrap;
+      scrollbar-width: thin;
+    }
+
+    &__area-tab {
+      flex: 0 0 auto;
+      max-width: 220px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      border: 1px solid color-mix(in srgb, #3b7ff0 18%, var(--b3-border-color));
+      border-radius: 999px;
+      padding: 3px 10px;
+      background: color-mix(in srgb, #3b7ff0 9%, var(--b3-theme-background));
+      color: color-mix(in srgb, #3b7ff0 72%, var(--b3-theme-on-surface));
+      font: inherit;
+      font-size: 12px;
+      line-height: 18px;
+      cursor: pointer;
+      transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+
+      &:hover {
+        color: #3b7ff0;
+        border-color: color-mix(in srgb, #3b7ff0 32%, var(--b3-border-color));
+        background: color-mix(in srgb, #3b7ff0 10%, var(--b3-theme-background));
+      }
+
+      &.is-active {
+        color: #ffffff;
+        border-color: #3b7ff0;
+        background: #3b7ff0;
+        font-weight: 600;
+        box-shadow: 0 1px 4px rgba(59, 127, 240, 0.2);
+      }
+
+      &:focus-visible {
+        outline: 2px solid color-mix(in srgb, #3b7ff0 72%, white);
+        outline-offset: 2px;
       }
     }
 
@@ -2001,18 +2092,11 @@
       }
     }
 
-    &__title-icon {
-      color: var(--b3-theme-on-background);
-      line-height: 1;
-      margin-top: 2px;
-    }
-
     &__tag-dot {
       width: 14px;
       height: 14px;
       border-radius: 50%;
       flex-shrink: 0;
-      margin-top: 4px;
     }
 
     &__empty-icon {
