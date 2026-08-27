@@ -86,6 +86,12 @@ export default class ThingsPlugin extends Plugin {
       }
     }, 0);
   };
+  private handleThingsNavigate = async (event: Event) => {
+    const detail = (event as CustomEvent).detail || {};
+    if (!detail.view) return;
+    await this.openThingsTab(detail.view, detail.viewId);
+    if (this.dockElement) this.setActive(this.dockElement, detail.view, detail.viewId);
+  };
 
   private getConfiguredThingsView(): ViewType {
     const configured = this.settingUtils?.get("defaultView") || "today";
@@ -93,7 +99,10 @@ export default class ThingsPlugin extends Plugin {
   }
 
   private hasLiveThingsTab(): boolean {
-    if (!this.thingsApp || !this.thingsTab) return false;
+    if (!this.thingsApp) return false;
+    // 自定义页签初始化时，Svelte 应用会先挂载，Tab parent 可能稍后才可用。
+    // 此时应用已经可以安全复用，不能误判为需要再创建一个页签。
+    if (!this.thingsTab) return true;
     const head = this.thingsTab.headElement as HTMLElement | undefined;
     const element = this.thingsTab.element as HTMLElement | undefined;
     return !!(head?.isConnected || element?.isConnected);
@@ -190,9 +199,10 @@ export default class ThingsPlugin extends Plugin {
           app.$destroy();
           (this.element as any).__thingsApp = null;
         }
-        // 只有当前标签页被销毁时才清空引用
+        // 只有当前标签页（或当前挂载的应用）被销毁时才清空引用。
+        // parent 尚未捕获时也要清理，避免残留的应用引用被误判为可复用。
         const tab = (this as any).parent;
-        if (pluginInstance.thingsTab === tab) {
+        if (pluginInstance.thingsApp === app || pluginInstance.thingsTab === tab) {
           pluginInstance.thingsApp = null;
           pluginInstance.thingsTab = null;
         }
@@ -239,13 +249,7 @@ export default class ThingsPlugin extends Plugin {
     this.eventBus.on("sync-fail", this.handleSyncEnd);
 
     // 面板级导航（如项目删除后跳回收件箱）：组件 dispatch window 事件，外壳执行切换
-    window.addEventListener("things-navigate", ((e: CustomEvent) => {
-      const detail = e.detail || {};
-      if (detail.view) {
-        this.openThingsTab(detail.view, detail.viewId);
-        if (this.dockElement) this.setActive(this.dockElement, detail.view, detail.viewId);
-      }
-    }) as EventListener);
+    window.addEventListener("things-navigate", this.handleThingsNavigate);
 
     // 项目/区域变更 → 侧边栏实时刷新（改名、删除、完成、暂停都同步）
     const refreshDock = () => {
@@ -343,6 +347,7 @@ export default class ThingsPlugin extends Plugin {
     await this.store.loadAll();
     await this.settingUtils.load();
     this.thingsApp?.$set?.({ aiEnabled: this.settingUtils.get("aiEnabled") !== false });
+    window.dispatchEvent(new Event("things-ai-config-change"));
     console.log("[Things] Data loaded, tasks:", this.store.tasks.count);
 
     if (this.dockElement) {
@@ -373,6 +378,7 @@ export default class ThingsPlugin extends Plugin {
   async onunload() {
     console.log("[Things] Plugin unloaded");
     document.removeEventListener("click", this.handleThingsDockButtonClick, true);
+    window.removeEventListener("things-navigate", this.handleThingsNavigate);
     this.eventBus.off("sync-start", this.handleSyncStart);
     this.eventBus.off("sync-end", this.handleSyncEnd);
     this.eventBus.off("sync-fail", this.handleSyncEnd);
@@ -608,7 +614,6 @@ export default class ThingsPlugin extends Plugin {
         <div class="things-nav__item things-nav__item--sub things-nav-row" data-view="project" data-id="${p.id}" title="单击打开 · 拖动排序或添加到 AI">
           <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsFolder"></use></svg>
           <span class="things-nav__label things-nav-row__name">${p.name}</span>
-          <span class="things-nav-row__ai-drag" title="拖到 AI 输入框"><svg><use xlink:href="#iconThingsSparkles"></use></svg></span>
           <span class="things-nav-row__edit" title="重命名项目"><svg><use xlink:href="#iconThingsPencil"></use></svg></span>
           <span class="things-nav-row__del" title="删除项目">×</span>
         </div>
@@ -629,7 +634,7 @@ export default class ThingsPlugin extends Plugin {
       node.addEventListener('click', (e) => {
         if (node.dataset.justDragged) { delete node.dataset.justDragged; return; }
         const target = e.target as HTMLElement;
-        if (target.closest('.things-nav-row__ai-drag') || target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
+        if (target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
         this.openThingsTab('project' as ViewType, id);
         this.setActive(element, 'project' as ViewType, id);
       });
@@ -641,9 +646,8 @@ export default class ThingsPlugin extends Plugin {
       });
 
       this.bindRowDelete(node, id, 'project');
-      const label = node.querySelector('.things-nav-row__ai-drag') as HTMLElement | null;
       const project = this.store.projects.get(id);
-      if (label && project) this.bindAiContextDrag(label, { kind: 'project', id, value: project.name, label: `项目 · ${project.name}` }, node);
+      if (project) node.dataset.aiContext = JSON.stringify({ kind: 'project', id, value: project.name, label: `项目 · ${project.name}` });
     });
     this.bindSectionDragSort(container, 'project');
   }
@@ -663,7 +667,6 @@ export default class ThingsPlugin extends Plugin {
         <div class="things-nav__item things-nav__item--sub things-nav-row" data-view="area" data-id="${a.id}" title="单击打开 · 拖动排序或添加到 AI">
           <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsLayers"></use></svg>
           <span class="things-nav__label things-nav-row__name">${a.name}</span>
-          <span class="things-nav-row__ai-drag" title="拖到 AI 输入框"><svg><use xlink:href="#iconThingsSparkles"></use></svg></span>
           <span class="things-nav-row__edit" title="重命名区域"><svg><use xlink:href="#iconThingsPencil"></use></svg></span>
           <span class="things-nav-row__del" title="删除区域">×</span>
         </div>
@@ -684,7 +687,7 @@ export default class ThingsPlugin extends Plugin {
       node.addEventListener('click', (e) => {
         if (node.dataset.justDragged) { delete node.dataset.justDragged; return; }
         const target = e.target as HTMLElement;
-        if (target.closest('.things-nav-row__ai-drag') || target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
+        if (target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
         this.openThingsTab('area' as ViewType, id);
         this.setActive(element, 'area' as ViewType, id);
       });
@@ -696,9 +699,8 @@ export default class ThingsPlugin extends Plugin {
       });
 
       this.bindRowDelete(node, id, 'area');
-      const label = node.querySelector('.things-nav-row__ai-drag') as HTMLElement | null;
       const area = this.store.areas.get(id);
-      if (label && area) this.bindAiContextDrag(label, { kind: 'area', id, value: area.name, label: `区域 · ${area.name}` }, node);
+      if (area) node.dataset.aiContext = JSON.stringify({ kind: 'area', id, value: area.name, label: `区域 · ${area.name}` });
     });
     this.bindSectionDragSort(container, 'area');
   }
@@ -724,7 +726,6 @@ export default class ThingsPlugin extends Plugin {
                style="padding-left: ${12 + depth * 16}px" title="单击打开 · 拖动排序或添加到 AI">
             ${dot}
             <span class="things-nav__label things-nav-row__name">${t.name}</span>
-            <span class="things-nav-row__ai-drag" title="拖到 AI 输入框"><svg><use xlink:href="#iconThingsSparkles"></use></svg></span>
             <span class="things-nav-row__edit" title="重命名标签"><svg><use xlink:href="#iconThingsPencil"></use></svg></span>
             <span class="things-nav-row__del" title="删除标签">×</span>
           </div>
@@ -749,7 +750,7 @@ export default class ThingsPlugin extends Plugin {
       row.addEventListener('click', (e) => {
         if (row.dataset.justDragged) { delete row.dataset.justDragged; return; }
         const target = e.target as HTMLElement;
-        if (target.closest('.things-tag-row__dot') || target.closest('.things-nav-row__ai-drag') || target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
+        if (target.closest('.things-tag-row__dot') || target.closest('.things-nav-row__edit') || target.closest('.things-nav-row__del') || target.closest('.things-nav-row__input')) return;
         this.openThingsTab('tag' as ViewType, id);
         this.setActive(element, 'tag' as ViewType, id);
       });
@@ -767,9 +768,8 @@ export default class ThingsPlugin extends Plugin {
       });
 
       this.bindRowDelete(row, id, 'tag');
-      const label = row.querySelector('.things-nav-row__ai-drag') as HTMLElement | null;
       const tag = this.store.tags.get(id);
-      if (label && tag) this.bindAiContextDrag(label, { kind: 'tag', id, value: tag.name, label: `标签 · ${tag.name}` }, row);
+      if (tag) row.dataset.aiContext = JSON.stringify({ kind: 'tag', id, value: tag.name, label: `标签 · ${tag.name}` });
     });
     this.bindSectionDragSort(container, 'tag');
   }
@@ -803,8 +803,7 @@ export default class ThingsPlugin extends Plugin {
     row.dataset.aiContext = JSON.stringify(context);
     source.addEventListener('click', (event) => event.stopPropagation());
 
-    // 项目/区域/标签由整行自定义拖动统一处理；星芒仅作为可拖动提示。
-    // 主导航没有排序行为，继续使用原生拖放。
+    // 项目/区域/标签由整行自定义拖动统一处理；主导航没有排序行为，继续使用原生拖放。
     if (source !== row) return;
     source.draggable = true;
     if (!source.title.includes('拖到 AI 输入框')) {
@@ -1254,20 +1253,23 @@ export default class ThingsPlugin extends Plugin {
 
     const title = this.getViewTitle(view, viewId);
 
-    // 如果已有标签页，直接更新内容
-    if (this.thingsApp && this.thingsTab) {
+    // 如果已有界面，直接更新内容。自定义页签 init 时应用可能先于 Tab 引用就绪，
+    // 这段窗口期同样必须复用，否则区域内点击项目会额外创建一个项目页签。
+    if (this.thingsApp) {
       this.thingsApp.$set({
         view: view,
         viewId: viewId || undefined,
         searchQuery: searchQuery || "",
       });
-      this.updateTabTitle(title);
-      this.updateTabIcon(this.getViewIcon(view));
+      if (this.thingsTab) {
+        this.updateTabTitle(title);
+        this.updateTabIcon(this.getViewIcon(view));
+      }
       // 把标签页切到前台：复用路径只更新内容、不会聚焦标签页，
       // 停留在文档页时点侧边栏会"没反应"。思源 Layout 没有公开的 focusTab，
       // 模拟点击页签头元素（等效于用户直接点该标签页），跨版本可靠
       try {
-        const head = this.thingsTab.headElement as HTMLElement;
+        const head = this.thingsTab?.headElement as HTMLElement | undefined;
         if (head && !head.classList.contains("item--focus")) {
           head.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
         }
@@ -1480,19 +1482,15 @@ export default class ThingsPlugin extends Plugin {
         }
 
         const wrapper = document.createElement("div");
-        wrapper.style.marginBottom = "16px";
+        wrapper.className = "things-settings__section things-settings__section--first";
 
         const label = document.createElement("label");
-        label.style.display = "block";
-        label.style.marginBottom = "4px";
-        label.style.fontWeight = "500";
+        label.className = "things-settings__section-title";
         label.textContent = "启动时默认显示";
         wrapper.appendChild(label);
 
         const desc = document.createElement("div");
-        desc.style.fontSize = "12px";
-        desc.style.color = "#666";
-        desc.style.marginBottom = "8px";
+        desc.className = "things-settings__section-desc";
         desc.textContent = "选择具体页面后，Things 会将思源的“启动行为”自动设为“关闭所有页签”，以确保启动时只打开这里设置的页面。选择“不打开”不会修改思源设置。";
         wrapper.appendChild(desc);
 
@@ -1521,6 +1519,7 @@ export default class ThingsPlugin extends Plugin {
           console.log(`[Things] Setting ${defaultViewKey} saved:`, value);
         });
 
+        defaultViewEl.classList.add("things-settings__section-control");
         wrapper.appendChild(defaultViewEl);
         wrapper.appendChild(startupStatus);
         settingsEl.appendChild(wrapper);
@@ -1529,36 +1528,39 @@ export default class ThingsPlugin extends Plugin {
       // AI 功能总开关
       const aiEnabledKey = "aiEnabled";
       const aiEnabledEl = this.settingUtils.getElement(aiEnabledKey) as HTMLInputElement | undefined;
+      const aiSection = document.createElement("section");
+      aiSection.className = "things-settings__section things-settings__ai-section";
       const aiConfigSection = document.createElement("div");
+      aiConfigSection.id = "things-ai-config-section";
+      aiConfigSection.className = "things-settings__ai-config";
+      settingsEl.appendChild(aiSection);
       if (aiEnabledEl) {
         const item = this.settingUtils.settings.get(aiEnabledKey);
         item?.setEleVal?.(aiEnabledEl, item.value);
 
         const wrapper = document.createElement("div");
-        wrapper.style.marginBottom = "16px";
-        wrapper.style.display = "flex";
-        wrapper.style.alignItems = "center";
-        wrapper.style.justifyContent = "space-between";
-        wrapper.style.gap = "16px";
+        wrapper.className = "things-settings__ai-toggle";
 
         const copy = document.createElement("div");
+        copy.className = "things-settings__ai-toggle-copy";
         const label = document.createElement("div");
-        label.style.fontWeight = "500";
+        label.className = "things-settings__ai-toggle-title";
         label.textContent = "启用 AI 功能";
         const desc = document.createElement("div");
-        desc.style.marginTop = "4px";
-        desc.style.fontSize = "12px";
-        desc.style.color = "var(--b3-theme-on-surface-light)";
+        desc.className = "things-settings__ai-toggle-desc";
         desc.textContent = "关闭后隐藏 AI 面板和所有 AI 入口，已有配置会保留";
         copy.append(label, desc);
         wrapper.append(copy, aiEnabledEl);
-        settingsEl.appendChild(wrapper);
+        aiSection.appendChild(wrapper);
 
-        aiConfigSection.style.display = aiEnabledEl.checked ? "block" : "none";
+        aiEnabledEl.setAttribute("aria-controls", aiConfigSection.id);
+        aiEnabledEl.setAttribute("aria-expanded", String(aiEnabledEl.checked));
+        aiConfigSection.hidden = !aiEnabledEl.checked;
         aiEnabledEl.addEventListener("change", async () => {
           const enabled = aiEnabledEl.checked;
           await this.settingUtils.setAndSave(aiEnabledKey, enabled);
-          aiConfigSection.style.display = enabled ? "block" : "none";
+          aiConfigSection.hidden = !enabled;
+          aiEnabledEl.setAttribute("aria-expanded", String(enabled));
           this.thingsApp?.$set?.({ aiEnabled: enabled });
         });
       }
@@ -1573,7 +1575,7 @@ export default class ThingsPlugin extends Plugin {
         }
 
         const wrapper = document.createElement("div");
-        wrapper.style.marginBottom = "16px";
+        wrapper.className = "things-settings__ai-field";
 
         const label = document.createElement("label");
         label.style.display = "block";
@@ -1584,7 +1586,7 @@ export default class ThingsPlugin extends Plugin {
 
         const desc = document.createElement("div");
         desc.style.fontSize = "12px";
-        desc.style.color = "#666";
+        desc.style.color = "var(--b3-theme-on-surface-light)";
         desc.style.marginBottom = "8px";
         desc.textContent = "选择复用思源内置 AI 设置，或自定义 API 配置";
         wrapper.appendChild(desc);
@@ -1595,11 +1597,8 @@ export default class ThingsPlugin extends Plugin {
         // 自定义配置容器
         const customConfigContainer = document.createElement("div");
         customConfigContainer.id = "custom-ai-config";
-        customConfigContainer.style.marginTop = "16px";
-        customConfigContainer.style.padding = "16px";
-        customConfigContainer.style.border = "1px solid var(--b3-border-color)";
-        customConfigContainer.style.borderRadius = "6px";
-        customConfigContainer.style.display = (aiModeEl as HTMLSelectElement).value === "custom" ? "block" : "none";
+        customConfigContainer.className = "things-settings__ai-custom";
+        customConfigContainer.hidden = (aiModeEl as HTMLSelectElement).value !== "custom";
 
         // 添加自定义配置项
         const customKeys = ["aiApiEndpoint", "aiApiKey", "aiModel"];
@@ -1612,7 +1611,7 @@ export default class ThingsPlugin extends Plugin {
             }
 
             const itemWrapper = document.createElement("div");
-            itemWrapper.style.marginBottom = "12px";
+            itemWrapper.className = "things-settings__ai-custom-field";
 
             const itemLabel = document.createElement("label");
             itemLabel.style.display = "block";
@@ -1625,7 +1624,7 @@ export default class ThingsPlugin extends Plugin {
             if (item?.description) {
               const itemDesc = document.createElement("div");
               itemDesc.style.fontSize = "12px";
-              itemDesc.style.color = "#666";
+              itemDesc.style.color = "var(--b3-theme-on-surface-light)";
               itemDesc.style.marginBottom = "6px";
               itemDesc.textContent = item.description;
               itemWrapper.appendChild(itemDesc);
@@ -1635,6 +1634,7 @@ export default class ThingsPlugin extends Plugin {
             el.addEventListener(eventType, async () => {
               const value = (el as HTMLInputElement | HTMLSelectElement).value;
               await this.settingUtils.setAndSave(key, value);
+              window.dispatchEvent(new Event("things-ai-config-change"));
               console.log(`[Things] Setting ${key} saved:`, value);
             });
 
@@ -1649,16 +1649,17 @@ export default class ThingsPlugin extends Plugin {
         aiModeEl.addEventListener('change', async () => {
           const value = (aiModeEl as HTMLSelectElement).value;
           await this.settingUtils.setAndSave(aiModeKey, value);
+          window.dispatchEvent(new Event("things-ai-config-change"));
           console.log(`[Things] Setting ${aiModeKey} saved:`, value);
           
           // 显示/隐藏自定义配置
-          customConfigContainer.style.display = value === "custom" ? "block" : "none";
+          customConfigContainer.hidden = value !== "custom";
         });
       }
-      settingsEl.appendChild(aiConfigSection);
+      aiSection.appendChild(aiConfigSection);
 
       const dangerSection = document.createElement("div");
-      dangerSection.className = "things-settings__action-section";
+      dangerSection.className = "things-settings__section things-settings__action-section";
 
       const dangerTitle = document.createElement("div");
       dangerTitle.className = "things-settings__action-title";
@@ -1689,6 +1690,7 @@ export default class ThingsPlugin extends Plugin {
               resetAiChat();
               await this.settingUtils.resetToDefaults();
               this.thingsApp?.$set?.({ aiEnabled: true });
+              window.dispatchEvent(new Event("things-ai-config-change"));
               if (this.dockElement) {
                 this.renderDock(this.dockElement);
                 this.setActive(this.dockElement, "today");
@@ -1709,7 +1711,7 @@ export default class ThingsPlugin extends Plugin {
       settingsEl.appendChild(dangerSection);
 
       const supportSection = document.createElement("div");
-      supportSection.className = "things-settings__action-section";
+      supportSection.className = "things-settings__section things-settings__action-section";
 
       const supportTitle = document.createElement("div");
       supportTitle.className = "things-settings__action-title";

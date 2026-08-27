@@ -4,6 +4,7 @@
  */
 
 import type { ParsedTask } from '@/types';
+import { resolveSiYuanAIConfig, type ResolvedSiYuanAIConfig } from '@/utils/aiConfig';
 
 export interface AIConfig {
   mode: 'siyuan' | 'custom';
@@ -89,36 +90,26 @@ export interface AIRouteResult {
 /**
  * 从思源全局配置获取 AI 配置
  */
-function getSiYuanAIConfig(): { endpoint: string; apiKey: string; model: string } | null {
+async function getSiYuanAIConfig(preferredModel?: string): Promise<ResolvedSiYuanAIConfig | null> {
+  const inMemoryConfig = resolveSiYuanAIConfig(
+    (window as any).siyuan?.config?.ai,
+    preferredModel,
+  );
+  if (inMemoryConfig?.apiKey && inMemoryConfig.endpoint) return inMemoryConfig;
+
   try {
-    const siyuanConfig = (window as any).siyuan?.config;
-    if (!siyuanConfig?.ai) {
-      return null;
-    }
+    const response = await fetch('/api/system/getConf', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    if (!response.ok) return inMemoryConfig;
 
-    const aiConfig = siyuanConfig.ai;
-    const provider = aiConfig.providers?.[0];
-
-    if (!provider || !provider.apiKey || !provider.baseURL) {
-      return null;
-    }
-
-    // baseURL 可能是 https://api.openai.com/v1，需要拼接 /chat/completions
-    let endpoint = provider.baseURL;
-    if (!endpoint.endsWith('/chat/completions') && !endpoint.endsWith('/completions')) {
-      endpoint = endpoint.replace(/\/$/, '') + '/chat/completions';
-    }
-
-    const model = provider.models?.find((m: any) => m.enabled)?.name || 'gpt-4o-mini';
-
-    return {
-      endpoint: endpoint,
-      apiKey: provider.apiKey,
-      model: model
-    };
+    const result = await response.json();
+    return resolveSiYuanAIConfig(result?.data?.conf?.ai, preferredModel) || inMemoryConfig;
   } catch (error) {
-    console.error('[AI Parser] Failed to get SiYuan AI config:', error);
-    return null;
+    console.warn('[AI Parser] Failed to refresh SiYuan AI config:', error);
+    return inMemoryConfig;
   }
 }
 
@@ -185,7 +176,7 @@ export async function parseTasksWithAIStream(
   let actualConfig: { endpoint: string; apiKey: string; model: string };
 
   if (config.mode === 'siyuan') {
-    const siyuanConfig = getSiYuanAIConfig();
+    const siyuanConfig = await getSiYuanAIConfig(config.model);
     if (!siyuanConfig) {
       throw new Error('未找到思源 AI 配置，请在思源设置中配置 AI 服务');
     }
@@ -236,7 +227,7 @@ export async function queryTasksWithAI(
   thinkingLevel: ThinkingLevel,
   callbacks: StreamCallbacks,
 ): Promise<AITaskQueryResult> {
-  const actualConfig = config.mode === 'siyuan' ? getSiYuanAIConfig() : {
+  const actualConfig = config.mode === 'siyuan' ? await getSiYuanAIConfig(config.model) : {
     endpoint: config.endpoint,
     apiKey: config.apiKey,
     model: config.model,
@@ -280,7 +271,7 @@ export async function routeAiMessage(
   thinkingLevel: ThinkingLevel,
   callbacks: StreamCallbacks,
 ): Promise<AIRouteResult> {
-  const actualConfig = config.mode === 'siyuan' ? getSiYuanAIConfig() : {
+  const actualConfig = config.mode === 'siyuan' ? await getSiYuanAIConfig(config.model) : {
     endpoint: config.endpoint,
     apiKey: config.apiKey,
     model: config.model,

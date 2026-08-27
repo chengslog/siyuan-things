@@ -335,7 +335,7 @@
     return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
   }
 
-  // 日志视图的完成日期列：今天完成显示"今天"，其余"M月D日"
+  // 已完成任务的完成日期列：今天完成显示"今天"，其余"M月D日"
   function formatLogDate(ts?: number): string {
     if (!ts) return "";
     const d = new Date(ts);
@@ -691,6 +691,9 @@
   let editingNotes = false;
   let notesArea: HTMLTextAreaElement;
   let notesContentEl: HTMLElement;
+  let imagePreviewDialog: HTMLDialogElement;
+  let previewImageUrl = "";
+  let previewImageAlt = "图片预览";
   $: renderedNotes = renderMarkdown(notes);
   // 检测备注内容是否超过 2 行（需要展开按钮）
   $: isNotesOverflowing = checkOverflow(notesContentEl);
@@ -721,6 +724,28 @@
         notesArea.selectionStart = notesArea.selectionEnd = notesArea.value.length;
       }
     });
+  }
+
+  function handleNotesDisplayClick(event: MouseEvent) {
+    const target = event.target as HTMLElement;
+    const image = target.closest("img") as HTMLImageElement | null;
+    if (!image || !notesContentEl?.contains(image)) {
+      startEditNotes();
+      return;
+    }
+
+    previewImageUrl = image.currentSrc || image.src;
+    previewImageAlt = image.alt || "图片预览";
+    imagePreviewDialog?.showModal();
+  }
+
+  function closeImagePreview() {
+    imagePreviewDialog?.close();
+    previewImageUrl = "";
+  }
+
+  function handlePreviewBackdropClick(event: MouseEvent) {
+    if (event.target === event.currentTarget) closeImagePreview();
   }
 
   function handleNotesBlur() {
@@ -1236,8 +1261,8 @@
 >
   <!-- 标题区域 -->
   <div class="task-card__header">
-    <!-- 日志视图：行首固定宽度完成日期列（今天完成的显示"今天"，其余"M月D日"），仅收缩态显示 -->
-    {#if currentView === 'log' && mode === 'edit' && !expanded}
+    <!-- 日志、项目、区域和标签视图：已完成任务在行首显示完成日期，仅收缩态显示 -->
+    {#if mode === 'edit' && !expanded && task?.status === 'done' && (currentView === 'log' || currentView === 'project' || currentView === 'area' || currentView === 'tag')}
       <span class="task-card__log-date">{formatLogDate(task?.completedDate || task?.updated)}</span>
     {/if}
     <!-- 计划视图月度组：行首固定宽度开始日期列（同日志样式，x月x日），仅收缩态显示 -->
@@ -1399,7 +1424,7 @@
             <button class="task-card__notes-done" on:click|stopPropagation={saveAndCloseNotes} title="完成编辑">✓</button>
           </div>
         {:else}
-          <div class="task-card__notes-wrap" class:task-card__notes-wrap--has-content={notes.trim()} on:mousedown|stopPropagation on:mouseup|stopPropagation on:click|stopPropagation={startEditNotes}>
+          <div class="task-card__notes-wrap" class:task-card__notes-wrap--has-content={notes.trim()} on:mousedown|stopPropagation on:mouseup|stopPropagation on:click|stopPropagation={handleNotesDisplayClick}>
             {#if notes.trim()}
               <div class="task-card__notes-md" class:is-expanded={notesExpanded} bind:this={notesContentEl}>{@html renderedNotes}</div>
               <button class="task-card__notes-edit" on:click|stopPropagation={startEditNotes} title="编辑备注">
@@ -1775,7 +1800,72 @@
   {/if}
 </div>
 
+<dialog
+  class="task-card__image-preview"
+  bind:this={imagePreviewDialog}
+  aria-label={previewImageAlt}
+  on:click|stopPropagation={handlePreviewBackdropClick}
+  on:close={() => previewImageUrl = ""}
+>
+  <button class="task-card__image-preview-close" type="button" aria-label="关闭图片预览" title="关闭" on:click={closeImagePreview}>×</button>
+  {#if previewImageUrl}
+    <img src={previewImageUrl} alt={previewImageAlt} />
+  {/if}
+</dialog>
+
 <style lang="scss">
+  .task-card__image-preview {
+    width: 100vw;
+    max-width: none;
+    height: 100vh;
+    max-height: none;
+    margin: 0;
+    padding: 40px;
+    border: 0;
+    background: rgba(0, 0, 0, 0.78);
+    box-sizing: border-box;
+    overflow: hidden;
+
+    &[open] {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    &::backdrop {
+      background: transparent;
+    }
+
+    img {
+      display: block;
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      border-radius: 8px;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.38);
+    }
+  }
+
+  .task-card__image-preview-close {
+    position: fixed;
+    top: 16px;
+    right: 20px;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.16);
+    color: #fff;
+    font-size: 28px;
+    line-height: 34px;
+    cursor: pointer;
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.28);
+    }
+  }
+
   .task-card {
     background: transparent;
     border: none;
@@ -2026,7 +2116,7 @@
       font-variant-numeric: tabular-nums;
     }
 
-    // 日志视图行首完成日期列：固定宽度保证各行复选框对齐
+    // 日志、项目、区域和标签视图行首完成日期列：固定宽度保证各行复选框对齐
     &__log-date {
       flex-shrink: 0;
       width: 56px;
@@ -2327,6 +2417,7 @@
         max-width: 100%;
         border-radius: 6px;
         margin: 4px 0;
+        cursor: zoom-in;
       }
 
       :global(a) {

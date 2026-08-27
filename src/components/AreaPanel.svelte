@@ -14,6 +14,8 @@
   export let store: StoreManager;
   export let area: Area;
   export let projects: Project[];
+  export let showNotes = true;
+  export let showProjects = true;
 
   let editingNotes = false;
   let notesDraft = "";
@@ -79,7 +81,7 @@
 
 <div class="area-panel" on:click|stopPropagation>
   <!-- 区域备注：置于项目列表上方（Things 3 的备注在标题下方，不压在子项后面） -->
-  <div class="area-panel__notes-section">
+  {#if showNotes}<div class="area-panel__notes-section">
     {#if editingNotes}
       <div class="area-panel__notes-wrap area-panel__notes-wrap--editing" on:mousedown|stopPropagation on:mouseup|stopPropagation>
         <textarea
@@ -110,27 +112,30 @@
         {/if}
       </div>
     {/if}
-  </div>
+  </div>{/if}
 
-  <div class="area-panel__header">
-    <span class="area-panel__section-title">项目</span>
-  </div>
+  {#if showProjects}
+    <div class="area-panel__header">
+      <span class="area-panel__section-title">项目</span>
+      <div class="area-panel__section-line"></div>
+    </div>
 
-  {#each projects as p (p.id)}
-    {@const prog = projectProgress(p)}
-    <button class="area-panel__project" on:click={() => openProject(p.id)}>
-      <Icon name="iconThingsProject" size={16} />
-      <span class="area-panel__project-name">{p.name}</span>
-      {#if p.deadline}
-        <span class="area-panel__project-deadline" class:is-overdue={p.status === "active" && isOverdue(p.deadline)}>
-          <Icon name="iconThingsFlag" size={11} />{formatDateFull(p.deadline)}
-        </span>
-      {/if}
-      <span class="area-panel__project-count">{prog.done}/{prog.total}</span>
-    </button>
-  {:else}
-    <div class="area-panel__empty">此区域暂无项目</div>
-  {/each}
+    {#each projects as p (p.id)}
+      {@const prog = projectProgress(p)}
+      <button class="area-panel__project" on:click={() => openProject(p.id)}>
+        <Icon name="iconThingsProject" size={16} />
+        <span class="area-panel__project-name">{p.name}</span>
+        {#if p.deadline}
+          <span class="area-panel__project-deadline" class:is-overdue={p.status === "active" && isOverdue(p.deadline)}>
+            <Icon name="iconThingsFlag" size={11} />{formatDateFull(p.deadline)}
+          </span>
+        {/if}
+        <span class="area-panel__project-count">{prog.done}/{prog.total}</span>
+      </button>
+    {:else}
+      <div class="area-panel__empty">此区域暂无项目</div>
+    {/each}
+  {/if}
 </div>
 
 <style lang="scss">
@@ -141,7 +146,14 @@
       display: flex;
       align-items: center;
       gap: 8px;
+      margin-top: 18px;
       margin-bottom: 8px;
+    }
+
+    &__section-line {
+      flex: 1;
+      height: 1px;
+      background: var(--b3-border-color);
     }
 
     &__section-title {

@@ -160,6 +160,10 @@
     viewportWidth = window.innerWidth;
   }
 
+  function handleAIConfigChange() {
+    aiConfig = getAIConfig();
+  }
+
   onMount(() => {
     if (rootEl) {
       measureWidth();
@@ -173,6 +177,7 @@
     window.addEventListener("things-open-ai", handleOpenAI as EventListener);
     window.addEventListener("things-navigate", onNavigate as EventListener);
     window.addEventListener("things-reset-layout", handleResetLayout);
+    window.addEventListener("things-ai-config-change", handleAIConfigChange);
   });
 
   onDestroy(() => {
@@ -182,6 +187,7 @@
     window.removeEventListener("things-open-ai", handleOpenAI as EventListener);
     window.removeEventListener("things-navigate", onNavigate as EventListener);
     window.removeEventListener("things-reset-layout", handleResetLayout);
+    window.removeEventListener("things-ai-config-change", handleAIConfigChange);
   });
 
   // 诊断日志
@@ -225,7 +231,7 @@
       model: plugin.settingUtils.get("aiModel") || "gpt-4o-mini"
     };
   }
-  $: aiConfig = getAIConfig();
+  let aiConfig = getAIConfig();
 
   // 首次进入 FULL 时初始化 AI 面板宽度：有保存值则用保存值，
   // 否则让 AI 面板略窄于任务列表（约 45:55）。

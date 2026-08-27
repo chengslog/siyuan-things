@@ -38,6 +38,10 @@
   // ========== 本地 UI 状态（会话数据在共享 store 中） ==========
   let textareaEl: HTMLTextAreaElement;
   let contentEl: HTMLElement;
+  let contentResizeObserver: ResizeObserver | undefined;
+  let contentMutationObserver: MutationObserver | undefined;
+  let followScrollFrame: number | undefined;
+  let autoFollowLatest = true;
   let showModelPicker = false;
   let showThinkingPicker = false;
   let closingTaskKeys = new Set<string>();
@@ -49,11 +53,25 @@
   const AI_CONTEXT_MIME = 'application/x-siyuan-things-context';
   const AI_CONTEXT_DROP_EVENT = 'things-ai-context-drop';
 
-  function getAvailableModels(): Array<{ value: string; label: string }> {
-    if (aiConfig.mode === 'custom') {
+  interface AIModelOption {
+    value: string;
+    modelName: string;
+    label: string;
+    providerId: string;
+    providerName: string;
+  }
+
+  function getAvailableModels(config: AIConfig): AIModelOption[] {
+    if (config.mode === 'custom') {
       // 自定义模式：只用用户配置的模型
-      if (aiConfig.model) {
-        return [{ value: aiConfig.model, label: aiConfig.model }];
+      if (config.model) {
+        return [{
+          value: config.model,
+          modelName: config.model,
+          label: config.model,
+          providerId: 'custom',
+          providerName: '自定义服务',
+        }];
       }
       return [];
     }
@@ -61,15 +79,24 @@
     try {
       const siyuanConfig = (window as any).siyuan?.config;
       if (siyuanConfig?.ai?.providers) {
-        const models: Array<{ value: string; label: string }> = [];
+        const models: AIModelOption[] = [];
+        const configuredModelId = String(siyuanConfig.ai.agent?.modelId || '');
         for (const provider of siyuanConfig.ai.providers) {
           if (provider.enabled && provider.models) {
             for (const model of provider.models) {
               if (model.enabled) {
-                models.push({
-                  value: model.name,
-                  label: model.displayName || model.name
-                });
+                const option = {
+                  value: String(model.id || model.name),
+                  modelName: String(model.name || model.id),
+                  label: String(model.displayName || model.name || model.id),
+                  providerId: String(provider.id || provider.name || 'provider'),
+                  providerName: String(provider.name || provider.displayName || provider.id || 'AI 服务'),
+                };
+                if (configuredModelId && (model.id === configuredModelId || model.name === configuredModelId)) {
+                  models.unshift(option);
+                } else {
+                  models.push(option);
+                }
               }
             }
           }
@@ -82,8 +109,22 @@
     return [];
   }
 
+  function groupModels(models: AIModelOption[]) {
+    const groups = new Map<string, { id: string; name: string; models: AIModelOption[] }>();
+    for (const model of models) {
+      let group = groups.get(model.providerId);
+      if (!group) {
+        group = { id: model.providerId, name: model.providerName, models: [] };
+        groups.set(model.providerId, group);
+      }
+      group.models.push(model);
+    }
+    return Array.from(groups.values());
+  }
+
   // 注意：availableModels 必须声明在使用它的响应式语句之前（响应式按声明顺序执行）
-  $: availableModels = getAvailableModels();
+  $: availableModels = getAvailableModels(aiConfig);
+  $: modelGroups = groupModels(availableModels);
 
   $: rounds = $aiRounds;
   $: hasAnyRound = $aiRounds.length > 0;
@@ -91,6 +132,9 @@
   $: latestRoundId = rounds[rounds.length - 1]?.id;
   $: inputText = $aiInputText;
   $: selectedModel = $aiSelectedModel || aiConfig.model;
+  $: selectedModelOption = availableModels.find(
+    (model) => model.value === selectedModel || model.modelName === selectedModel,
+  ) || availableModels[0];
   $: thinkingLevel = $aiThinkingLevel;
   $: isSending = $aiIsSending;
 
@@ -151,9 +195,15 @@
     return icons[context.value] || 'iconThingsInbox';
   }
 
-  // 模型列表未选中时取第一个可用
-  $: if (!$aiSelectedModel && (availableModels?.length || 0) > 0) {
-    aiSelectedModel.set(availableModels[0].value);
+  // 配置来源或模型列表变化时，不能继续沿用上一来源的模型。
+  $: {
+    const currentModel = $aiSelectedModel;
+    const currentStillAvailable = availableModels.some(
+      (model) => model.value === currentModel || model.modelName === currentModel,
+    );
+    if (!currentStillAvailable) {
+      aiSelectedModel.set(availableModels[0]?.value || '');
+    }
   }
 
   // ========== 示例 prompts ==========
@@ -178,10 +228,38 @@
     textareaEl.style.height = Math.min(textareaEl.scrollHeight, 100) + 'px';
   }
 
-  async function scrollToLatest(behavior: ScrollBehavior = 'smooth') {
+  function isNearLatest(): boolean {
+    if (!contentEl) return true;
+    return contentEl.scrollHeight - contentEl.scrollTop - contentEl.clientHeight <= 56;
+  }
+
+  function handleContentScroll() {
+    autoFollowLatest = isNearLatest();
+  }
+
+  function scheduleFollowLatest() {
+    if (!autoFollowLatest || !contentEl) return;
+    if (followScrollFrame !== undefined) cancelAnimationFrame(followScrollFrame);
+    followScrollFrame = requestAnimationFrame(() => {
+      followScrollFrame = undefined;
+      if (autoFollowLatest && contentEl) {
+        contentEl.scrollTo({ top: contentEl.scrollHeight, behavior: 'auto' });
+      }
+    });
+  }
+
+  function observeConversationBlocks() {
+    if (!contentEl || !contentResizeObserver) return;
+    Array.from(contentEl.children).forEach((child) => contentResizeObserver?.observe(child));
+  }
+
+  async function scrollToLatest(behavior: ScrollBehavior = 'auto', force = true) {
+    if (force) autoFollowLatest = true;
     await tick();
     requestAnimationFrame(() => {
-      contentEl?.scrollTo({ top: contentEl.scrollHeight, behavior });
+      if (autoFollowLatest && contentEl) {
+        contentEl.scrollTo({ top: contentEl.scrollHeight, behavior });
+      }
     });
   }
 
@@ -193,9 +271,9 @@
     }
     // 命令式地在发送开始/完成各滚动一次，不订阅流式 store，避免此前的响应式滚动死循环。
     const sending = sendAiMessage(text, aiConfig, { view: currentView, viewId: currentViewId });
-    await scrollToLatest('smooth');
+    await scrollToLatest('auto');
     await sending;
-    await scrollToLatest('smooth');
+    await scrollToLatest('auto', false);
     tick().then(() => {
       autoGrow();
       textareaEl?.focus();
@@ -233,12 +311,12 @@
     )));
     const originalText = String(round.userText || '').trim();
     const text = choice === 'create'
-      ? `请直接创建一个任务，不要查询现有任务。任务内容：${originalText}`
-      : `请只查询现有任务，不要创建新任务。查询与以下内容相关的任务：${originalText}`;
+      ? `原问题：${originalText}\n\n用户已明确选择“创建任务”。请按创建意图处理原问题，不要查询现有任务。`
+      : `原问题：${originalText}\n\n用户已明确选择“查询任务”。请按查询意图处理原问题，不要创建新任务。`;
     const sending = sendAiMessage(text, aiConfig, { view: currentView, viewId: currentViewId });
-    await scrollToLatest('smooth');
+    await scrollToLatest('auto');
     await sending;
-    await scrollToLatest('smooth');
+    await scrollToLatest('auto', false);
     tick().then(() => textareaEl?.focus());
   }
 
@@ -476,6 +554,14 @@
 
   onMount(() => {
     autoGrow();
+    contentResizeObserver = new ResizeObserver(scheduleFollowLatest);
+    contentMutationObserver = new MutationObserver(() => {
+      observeConversationBlocks();
+      scheduleFollowLatest();
+    });
+    observeConversationBlocks();
+    if (contentEl) contentMutationObserver.observe(contentEl, { childList: true, subtree: true });
+    scheduleFollowLatest();
     clockTimer = setInterval(() => { clockNow = Date.now(); }, 1000);
     document.addEventListener('click', handleDocClick, true);
     window.addEventListener(AI_CONTEXT_DROP_EVENT, handleUnifiedContextDrop);
@@ -484,6 +570,9 @@
   onDestroy(() => {
     if (clockTimer) clearInterval(clockTimer);
     if (copyResetTimer) clearTimeout(copyResetTimer);
+    if (followScrollFrame !== undefined) cancelAnimationFrame(followScrollFrame);
+    contentResizeObserver?.disconnect();
+    contentMutationObserver?.disconnect();
     document.removeEventListener('click', handleDocClick, true);
     window.removeEventListener(AI_CONTEXT_DROP_EVENT, handleUnifiedContextDrop);
   });
@@ -491,7 +580,7 @@
 
 <div class="ai-chat">
   <!-- 内容区（卡片流） -->
-  <div class="ai-chat__content" bind:this={contentEl}>
+  <div class="ai-chat__content" bind:this={contentEl} on:scroll={handleContentScroll}>
     {#if !hasAnyRound}
       <!-- 引导区 -->
       <div class="ai-chat__guide">
@@ -618,26 +707,6 @@
       {#if (round.mode === 'action' || round.mode === 'answer') && round.phase === 'done'}
         <section class="ai-chat__answer-card">
           <div class="ai-chat__answer-text">{round.assistantMessage}</div>
-          {#if round.clarification === 'create_or_search'}
-            {#if round.clarificationChoice}
-              <div class="ai-chat__clarification-selected" role="status">
-                已选择{round.clarificationChoice === 'create' ? '创建任务' : '查询任务'}
-              </div>
-            {:else}
-              <div class="ai-chat__clarification-actions" aria-label="选择操作方式">
-                <button
-                  class="ai-chat__clarification-btn ai-chat__clarification-btn--primary"
-                  disabled={$aiIsSending}
-                  on:click={() => handleClarificationChoice(round, 'create')}
-                >创建任务</button>
-                <button
-                  class="ai-chat__clarification-btn"
-                  disabled={$aiIsSending}
-                  on:click={() => handleClarificationChoice(round, 'search')}
-                >查询任务</button>
-              </div>
-            {/if}
-          {/if}
           {#if round.pendingOperation}
             <div class="ai-chat__change-preview">
               <div>{round.pendingOperation.type === 'delete' ? '将删除' : '将修改'} {round.pendingOperation.targetIds.length} 个任务</div>
@@ -658,6 +727,29 @@
             </div>
           {/if}
         </section>
+        {#if round.clarification === 'create_or_search'}
+          <div class="ai-chat__clarification-panel" aria-label="选择操作方式">
+            {#if round.clarificationChoice}
+              <div class="ai-chat__clarification-selected" role="status">
+                已选择：{round.clarificationChoice === 'create' ? '创建任务' : '查询任务'}
+              </div>
+            {:else}
+              <div class="ai-chat__clarification-prompt">你希望我怎么处理？</div>
+              <div class="ai-chat__clarification-actions">
+                <button
+                  class="ai-chat__clarification-btn"
+                  disabled={$aiIsSending}
+                  on:click={() => handleClarificationChoice(round, 'create')}
+                >创建任务</button>
+                <button
+                  class="ai-chat__clarification-btn"
+                  disabled={$aiIsSending}
+                  on:click={() => handleClarificationChoice(round, 'search')}
+                >查询任务</button>
+              </div>
+            {/if}
+          </div>
+        {/if}
         <div class="ai-chat__message-actions ai-chat__message-actions--assistant">
           <button
             class="ai-chat__message-copy-btn"
@@ -840,7 +932,7 @@
               <path d="M473.088 866.816l1.536 1.024c23.04 11.776 52.736 11.776 74.752-1.024l262.144-145.408 1.536-1.024c24.064-12.8 36.864-36.352 36.864-63.488v-291.84c-0.512-25.088-15.872-48.128-38.4-62.464l-262.144-145.408-1.536-1.024c-23.04-11.776-52.736-11.776-74.752 1.024L210.944 302.592l-1.536 1.024c-22.016 12.8-36.864 36.352-36.864 63.488v293.888c0.512 25.088 15.872 48.128 38.4 62.464l262.144 143.36z m157.184-505.856h62.464v285.184h-62.464V360.96z m-221.184 1.536h73.728l109.056 285.184h-69.12l-22.528-65.024h-107.52l-22.528 65.024H301.056l108.032-285.184z"/>
               <path d="M987.648 410.112V305.664c0-36.864-20.992-69.632-53.248-88.064L565.248 13.824c-32.256-18.432-74.752-18.432-107.008 0L89.088 217.6C56.832 236.032 35.84 269.312 35.84 305.664v69.632c0 14.848 13.312 27.648 28.672 27.648 15.36 0 28.672-12.8 28.672-27.648V305.664c0-16.384 9.728-31.232 25.088-40.448l368.64-203.776c15.36-9.216 34.304-9.216 49.664 0l367.104 205.824c15.36 7.168 25.088 24.064 25.088 40.448v104.96h1.024c-18.944 10.752-31.744 30.208-31.744 53.248 0 33.792 28.16 61.44 62.976 61.44 34.816 0 62.976-27.648 62.976-61.44 0-24.576-14.848-46.08-36.352-55.808z"/>
             </svg>
-            <span>{availableModels.length === 0 ? '无' : ($aiSelectedModel || availableModels[0]?.value || '选择模型')}</span>
+            <span>{availableModels.length === 0 ? '无' : (selectedModelOption?.label || '选择模型')}</span>
             {#if availableModels.length > 0}
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M6 9l6 6 6-6"/>
@@ -849,15 +941,23 @@
           </button>
 
           {#if showModelPicker && availableModels.length > 0}
-            <div class="ai-chat__dropdown ai-chat__dropdown--up">
-              {#each availableModels as model}
-                <button
-                  class="ai-chat__dropdown-item"
-                  class:is-active={($aiSelectedModel || availableModels[0]?.value) === model.value}
-                  on:click={() => { aiSelectedModel.set(model.value); showModelPicker = false; }}
-                >
-                  <span class="ai-chat__dropdown-item-label">{model.label}</span>
-                </button>
+            <div class="ai-chat__dropdown ai-chat__dropdown--models ai-chat__dropdown--up">
+              {#each modelGroups as group}
+                <div class="ai-chat__model-group">
+                  <div class="ai-chat__model-provider">{group.name}</div>
+                  {#each group.models as model}
+                    <button
+                      class="ai-chat__dropdown-item ai-chat__model-option"
+                      class:is-active={selectedModelOption?.value === model.value}
+                      on:click={() => { aiSelectedModel.set(model.value); showModelPicker = false; }}
+                    >
+                      <span class="ai-chat__dropdown-item-label">{model.label}</span>
+                      {#if model.modelName !== model.label}
+                        <span class="ai-chat__dropdown-item-desc">{model.modelName}</span>
+                      {/if}
+                    </button>
+                  {/each}
+                </div>
               {/each}
             </div>
           {/if}
@@ -1453,13 +1553,13 @@
   &__search-empty { padding: 14px; border-radius: 9px; background: var(--b3-theme-surface-light); color: var(--b3-theme-on-surface-light); font-size: 12px; text-align: center; }
   &__answer-card { position: relative; margin-left: 32px; padding: 12px 14px; border-radius: 10px; background: var(--b3-theme-background); border: 1px solid var(--b3-border-color); }
   &__answer-text { font-size: 13px; line-height: 1.65; color: var(--b3-theme-on-surface); white-space: pre-wrap; cursor: text; user-select: text; }
-  &__clarification-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-  &__clarification-btn { min-width: 82px; padding: 7px 12px; border: 1px solid var(--b3-border-color); border-radius: 8px; background: var(--b3-theme-background); color: var(--b3-theme-on-surface); font-size: 11px; cursor: pointer; transition: color 160ms ease, border-color 160ms ease, background 160ms ease, transform 160ms ease; }
-  &__clarification-btn:hover:not(:disabled) { border-color: var(--b3-theme-primary); color: var(--b3-theme-primary); background: var(--b3-theme-primary-lighter); transform: translateY(-1px); }
-  &__clarification-btn--primary { border-color: var(--b3-theme-primary); background: var(--b3-theme-primary); color: var(--b3-theme-on-primary); }
-  &__clarification-btn--primary:hover:not(:disabled) { color: var(--b3-theme-on-primary); background: var(--b3-theme-primary); }
+  &__clarification-panel { margin: 14px 0 2px 32px; padding: 0; background: transparent; border: 0; }
+  &__clarification-prompt { margin-bottom: 9px; color: var(--b3-theme-on-surface-light); font-size: 11px; line-height: 1.5; }
+  &__clarification-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
+  &__clarification-btn { min-height: 30px; padding: 5px 12px; border: 1px solid var(--b3-border-color); border-radius: 999px; background: var(--b3-theme-surface-light); color: var(--b3-theme-on-surface); font-size: 11px; line-height: 1.45; cursor: pointer; box-shadow: none; transition: color 160ms ease, border-color 160ms ease, background 160ms ease, transform 160ms ease; }
+  &__clarification-btn:hover:not(:disabled) { border-color: color-mix(in srgb, var(--b3-theme-primary) 36%, var(--b3-border-color)); color: var(--b3-theme-primary); background: color-mix(in srgb, var(--b3-theme-primary-light) 55%, var(--b3-theme-background)); transform: translateY(-1px); }
   &__clarification-btn:disabled { opacity: 0.45; cursor: default; }
-  &__clarification-selected { width: fit-content; margin-top: 10px; padding: 5px 8px; border-radius: 7px; background: rgba(82, 165, 110, 0.1); color: #4f9566; font-size: 10px; }
+  &__clarification-selected { color: var(--b3-theme-on-surface-light); font-size: 10px; line-height: 1.5; }
   &__change-preview { margin-top: 10px; padding: 9px 10px; border-radius: 8px; background: var(--b3-theme-surface-light); font-size: 11px; color: var(--b3-theme-on-surface-light); }
   &__change-row { display: flex; justify-content: space-between; gap: 12px; margin-top: 5px; }
   &__confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
@@ -1728,6 +1828,33 @@
     min-width: 170px;
     max-height: 260px;
     overflow-y: auto;
+  }
+
+  &__dropdown--models {
+    min-width: 220px;
+    max-width: 300px;
+    padding: 6px;
+  }
+
+  &__model-group + &__model-group {
+    margin-top: 5px;
+    padding-top: 5px;
+    border-top: 1px solid var(--b3-border-color);
+  }
+
+  &__model-provider {
+    padding: 4px 9px 3px;
+    color: var(--b3-theme-on-surface-light);
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 1.4;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__model-option {
+    padding-left: 12px;
   }
 
   &__dropdown-item {

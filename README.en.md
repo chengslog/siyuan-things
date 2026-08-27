@@ -14,7 +14,7 @@ A Things-inspired GTD task manager for SiYuan Note. It provides Inbox, Today, Up
 | **Projects and organization** | Organize work with projects, areas, headings, and tags. |
 | **Dates and reminders** | Set start dates and times, deadlines, reminders, and Someday tasks. |
 | **Recurring tasks** | Repeat daily, on weekdays, weekly, monthly, or yearly; completing a task creates its next occurrence. |
-| **Task details** | Add notes and checklists, and copy a task's complete data as Markdown with one click. |
+| **Task details** | Add notes (Markdown rendering with image preview) and checklists, and copy a task's complete data as Markdown with one click. |
 | **Quick Find** | Search titles, notes, checklists, assignments, tags, statuses, and dates directly in the task list. |
 | **AI task assistant** | Create, search, summarize, update, and delete tasks through a continuous conversation. |
 | **Theme and layout** | Follows SiYuan's light and dark themes with consistent cards across the sidebar, task list, and AI panel. |
@@ -69,7 +69,7 @@ Copy the contents of `dist/` to `<SiYuan workspace>/data/plugins/siyuan-things/`
 
 ## AI configuration and privacy
 
-The plugin can reuse the AI provider configured in SiYuan, or use a custom OpenAI-compatible endpoint, API key, and model name from the plugin settings.
+The plugin can reuse the AI provider configured in SiYuan (the model picker is grouped by provider and follows the model currently selected in SiYuan's AI settings), or use a custom OpenAI-compatible endpoint, API key, and model name from the plugin settings.
 
 Task context required to answer a query is sent to the selected AI provider. The plugin does not include an AI account or proxy service. Review the privacy and retention policy of your selected provider before enabling AI features.
 

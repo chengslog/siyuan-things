@@ -32,6 +32,7 @@
 
   let showCreateForm = false;
   let showEntityForm: "project" | "area" | null = null;
+  const COMPLETED_GROUP = "__completed__";
 
   // 创建卡片在列表中的插入位置（null = 顶部）；仅当对应分组存在时生效
   let createTarget: { group: string; index: number } | null = null;
@@ -193,11 +194,9 @@
           : [];
       case "area":
         if (!viewId) return [];
-        const areaProjects = store.projects.getAreaProjects(viewId);
-        const projectIds = new Set(areaProjects.map((p) => p.id));
         return sortByAnytimeRules(store.tasks
           .getAll()
-          .filter((t) => t.status !== 'canceled' && !t.parentId && (t.areaId === viewId || (t.projectId && projectIds.has(t.projectId)))));
+          .filter((t) => t.status !== 'canceled' && !t.parentId && t.areaId === viewId && !t.projectId));
       case "tag":
         return viewId
           ? sortByAnytimeRules(store.tasks.getAll().filter((task) =>
@@ -307,7 +306,7 @@
     });
   }
 
-  // 分组：今天=今天/今晚；计划=日期+月份骨架；项目=标题分组（headings）；其余单组
+  // 分组：今天=今天/今晚；计划=日期+月份骨架；项目=标题分组；项目/区域/标签另设已完成组
   $: groupedTasks = groupTasks(sortedTasks, view, viewId);
 
   // 视图切换（侧边栏点击走 thingsApp.$set，组件不重建，只改 view/viewId/searchQuery）：
@@ -361,20 +360,25 @@
       const groups = new Map<string, Task[]>();
       for (const h of headings) groups.set(h.id, []);
       const ungrouped: Task[] = [];
+      const completed: Task[] = [];
       for (const t of tasks) {
+        if (t.status === "done") {
+          completed.push(t);
+          continue;
+        }
         if (t.headingId && groups.has(t.headingId)) groups.get(t.headingId)!.push(t);
         else ungrouped.push(t);
       }
       groups.set("none", ungrouped);
       for (const arr of groups.values()) {
         arr.sort((a, b) => {
-          // 已完成任务沉底
-          const aDone = a.status === 'done' ? 1 : 0;
-          const bDone = b.status === 'done' ? 1 : 0;
-          if (aDone !== bDone) return aDone - bDone;
           if (a.order !== b.order) return a.order - b.order;
           return b.created - a.created;
         });
+      }
+      if (completed.length) {
+        completed.sort((a, b) => (b.completedDate || b.updated) - (a.completedDate || a.updated));
+        groups.set(COMPLETED_GROUP, completed);
       }
       return groups;
     }
@@ -407,6 +411,18 @@
         const [y, m] = mk.split("-").map(Number);
         groups.set(`m-${y}-${m}`, byMonth.get(mk)!.sort(descByDone));
       }
+      return groups;
+    }
+
+    // 区域、标签详情：未完成任务保持原有顺序，已完成任务集中到底部分组，
+    // 并按完成时间倒序，最近完成的排在最前。
+    if (view === "area" || view === "tag") {
+      const active = tasks.filter((task) => task.status !== "done");
+      const completed = tasks
+        .filter((task) => task.status === "done")
+        .sort((a, b) => (b.completedDate || b.updated) - (a.completedDate || a.updated));
+      const groups = new Map<string, Task[]>([["all", active]]);
+      if (completed.length) groups.set(COMPLETED_GROUP, completed);
       return groups;
     }
 
@@ -561,6 +577,12 @@
     showCreateForm = true;
   }
 
+  // 区域详情页的任务有独立区块，普通“+”新建应在该区块内展开，
+  // 而不是出现在区域备注上方。其他视图维持原有顶部新建行为。
+  function getDefaultCreateTarget(targetView: ViewType): { group: string; index: number } | null {
+    return targetView === "area" ? { group: "all", index: 0 } : null;
+  }
+
   // ========== AI 创建器入口：派发事件，由 App 外壳打开浮窗 ==========
   function openAICreator(target: { group: string; index: number } | null, dest?: { view: ViewType; viewId?: string }) {
     // 计算预设日期（同 createPreset 逻辑）
@@ -645,6 +667,7 @@
   function trackDragOver(e: MouseEvent) {
     let over: string | null = null;
     for (const key of Object.keys(dragSortRefs)) {
+      if (key === COMPLETED_GROUP) continue;
       if (blockContains(key, e.clientY)) {
         over = key;
         break;
@@ -694,7 +717,7 @@
 
     // 其余：列表内跨组落点
     for (const key of Object.keys(dragSortRefs)) {
-      if (key === fromGroup || !blockContains(key, clientY)) continue;
+      if (key === COMPLETED_GROUP || key === fromGroup || !blockContains(key, clientY)) continue;
       const toIndex = dragSortRefs[key] ? dragSortRefs[key].computeInsertIndex(clientY) : 0;
       moveTaskToGroup(id, key, toIndex);
       return;
@@ -778,6 +801,7 @@
 
   // 跨组移动：由落点分组推算新日期，再原位写回全局 order（与 handleReorder 同机制）
   async function moveTaskToGroup(taskId: string, toGroup: string, toIndex: number) {
+    if (toGroup === COMPLETED_GROUP) return;
     const task = sortedTasks.find((t) => t.id === taskId);
     if (!task) return;
 
@@ -860,7 +884,7 @@
 
     // 计算插入目标：光标落在哪个分组 + 分组内的索引
     const computeInsertTarget = (cursorY: number): { group: string; index: number } | null => {
-      const entries = Object.entries(groupBlockRefs).filter(([, el]) => el) as [string, HTMLElement][];
+      const entries = Object.entries(groupBlockRefs).filter(([key, el]) => key !== COMPLETED_GROUP && el) as [string, HTMLElement][];
       if (entries.length === 0) return null;
       for (const [gk, el] of entries) {
         const r = el.getBoundingClientRect();
@@ -1017,7 +1041,7 @@
 
   // "+" 按钮拖拽
   function handleFabMouseDown(e: MouseEvent) {
-    handleFabDragDown(e, fabBtnEl, (target, dest) => openCreate(target, dest));
+    handleFabDragDown(e, fabBtnEl, (target, dest) => openCreate(target || getDefaultCreateTarget(dest.view), dest));
   }
 
   // "✨" 按钮拖拽
@@ -1137,7 +1161,7 @@
             <svg><use xlink:href="#iconThingsSparkles" /></svg>
             <span>AI</span>
           </button>
-          <button class="task-list__header-btn" title="新建任务" on:click={() => openCreate(null, { view, viewId })}>
+          <button class="task-list__header-btn" title="新建任务" on:click={() => openCreate(getDefaultCreateTarget(view), { view, viewId })}>
             <svg><use xlink:href="#iconThingsAdd" /></svg>
           </button>
         </div>
@@ -1215,7 +1239,11 @@
       <ProjectPanel store={store} project={projectObj} tasks={projectTasks} on:addheading={startAddHeading} />
     {/if}
     {#if view === "area" && areaObj}
-      <AreaPanel store={store} area={areaObj} projects={areaProjects} />
+      <AreaPanel store={store} area={areaObj} projects={areaProjects} showProjects={false} />
+      <div class="task-list__area-section-heading">
+        <span>任务</span>
+        <div></div>
+      </div>
     {/if}
     {#if view === "projects"}
       <ProjectOverview store={store} version={refreshKey} />
@@ -1226,10 +1254,10 @@
     {#if view === "tags"}
       <TagOverview store={store} version={refreshKey} />
     {/if}
-    {#if sortedTasks.length === 0 && view !== "today" && view !== "upcoming" && view !== "projects" && view !== "areas" && view !== "tags" && view !== "project"}
-      <div class="task-list__empty">
-        <Icon name={emptyState.icon} size={48} klass="task-list__empty-icon" />
-        <p>{emptyState.text}</p>
+    {#if sortedTasks.length === 0 && !activeCreateSlot && view !== "today" && view !== "upcoming" && view !== "projects" && view !== "areas" && view !== "tags" && view !== "project"}
+      <div class="task-list__empty" class:task-list__empty--area={view === "area"}>
+        {#if view !== "area"}<Icon name={emptyState.icon} size={48} klass="task-list__empty-icon" />{/if}
+        <p>{view === "area" ? "此区域暂无直属任务" : emptyState.text}</p>
       </div>
     {:else}
       {#each [...groupedTasks.entries()] as [group, groupItems], gi (group)}
@@ -1267,6 +1295,11 @@
                 klass="task-list__group-icon"
               />
               <span>{group}</span>
+              <div class="task-list__day-line"></div>
+            </div>
+          {:else if group === COMPLETED_GROUP && (view === "project" || view === "area" || view === "tag")}
+            <div class="task-list__heading task-list__heading--completed">
+              <span class="task-list__heading-static">已完成</span>
               <div class="task-list__day-line"></div>
             </div>
           {:else if view === "project" && projectObj && group !== "all"}
@@ -1362,7 +1395,7 @@
                     {registerItem}
                     {unregisterItem}
                     on:dragstart={(e) => {
-                      if (view !== "search") handleDragStart(e.detail.event, task.id);
+                      if (view !== "search" && group !== COMPLETED_GROUP) handleDragStart(e.detail.event, task.id);
                     }}
                   />
                 </div>
@@ -1403,7 +1436,10 @@
           />
         </div>
       {/if}
+      {/if}
     {/if}
+    {#if view === "area" && areaObj}
+      <AreaPanel store={store} area={areaObj} projects={areaProjects} showNotes={false} />
     {/if}
   </div>
 
@@ -1500,6 +1536,23 @@
 
       &.is-drop-target {
         background: var(--b3-theme-primary-light);
+      }
+    }
+
+    &__area-section-heading {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 14px 0 8px;
+      color: var(--b3-theme-on-surface-light);
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+
+      div {
+        flex: 1;
+        height: 1px;
+        background: var(--b3-border-color);
       }
     }
 
@@ -1903,6 +1956,17 @@
 
       &--search {
         padding-top: 64px;
+      }
+
+      &--area {
+        align-items: flex-start;
+        padding: 10px 12px 14px;
+        text-align: left;
+
+        p {
+          margin: 0;
+          font-size: 13px;
+        }
       }
     }
   }

@@ -228,14 +228,109 @@
   }
 }
 
-.things-settings__action-section {
+.things-settings__section {
   margin-top: 20px;
   padding: 18px 0 4px;
   border-top: 1px solid var(--b3-border-color);
 }
 
-.things-settings__action-section:last-child {
+.things-settings__section--first {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.things-settings__section:last-child {
   padding-bottom: 16px;
+}
+
+.things-settings__section-title {
+  display: block;
+  color: var(--b3-theme-on-background);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.things-settings__section-desc {
+  margin: 6px 0 10px;
+  color: var(--b3-theme-on-surface-light);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.things-settings__section-control {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.things-settings__ai-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0;
+}
+
+.things-settings__ai-toggle-copy {
+  min-width: 0;
+}
+
+.things-settings__ai-toggle-title {
+  color: var(--b3-theme-on-background);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.things-settings__ai-toggle-desc {
+  margin-top: 4px;
+  color: var(--b3-theme-on-surface-light);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.things-settings__ai-config {
+  margin: 14px 0 0 10px;
+  padding: 1px 0 2px 18px;
+  border-left: 2px solid color-mix(in srgb, var(--b3-theme-primary) 38%, var(--b3-border-color));
+}
+
+.things-settings__ai-config[hidden],
+.things-settings__ai-custom[hidden] {
+  display: none;
+}
+
+.things-settings__ai-field {
+  margin-bottom: 0;
+
+  > select,
+  > input {
+    width: 100%;
+    box-sizing: border-box;
+  }
+}
+
+.things-settings__ai-custom {
+  margin: 14px 0 0 8px;
+  padding: 1px 0 1px 15px;
+  border-left: 1px solid var(--b3-border-color);
+}
+
+.things-settings__ai-custom-field {
+  margin-bottom: 13px;
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+
+  > select,
+  > input {
+    width: 100%;
+    box-sizing: border-box;
+  }
+}
+
+.things-settings__action-section {
+  // 大项间距与启动设置、AI 设置统一，由 things-settings__section 提供。
 }
 
 .things-settings__action-title {
@@ -308,10 +403,6 @@
   &.is-ai-context-target {
     border: 1px solid var(--b3-theme-primary);
     box-shadow: 0 10px 28px rgba(75, 91, 180, 0.25);
-
-    .things-nav-row__ai-drag {
-      visibility: visible;
-    }
   }
 }
 
@@ -417,33 +508,8 @@
     }
   }
 
-  // AI 拖拽提示：整行均可拖动，星芒仅用于提示可拖到 AI。
-  &__ai-drag {
-    visibility: hidden;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 18px;
-    height: 18px;
-    padding: 0 3px;
-    border-radius: 4px;
-    color: var(--b3-theme-primary);
-    flex-shrink: 0;
-    transition: background 0.15s, color 0.15s;
-
-    svg {
-      width: 11px;
-      height: 11px;
-    }
-
-    &:hover {
-      background: var(--b3-theme-primary-light);
-    }
-  }
-
   &:hover .things-nav-row__del,
-  &:hover .things-nav-row__edit,
-  &:hover .things-nav-row__ai-drag {
+  &:hover .things-nav-row__edit {
     visibility: visible;
   }
 }
