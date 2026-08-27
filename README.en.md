@@ -57,6 +57,7 @@ Download `package.zip` from GitHub Releases, extract it to `<SiYuan workspace>/d
 - In project and tag details, clicking `+` opens the new-task card near the current reading position. Project headings can be reordered and collapsed, while Completed stays fixed at the bottom.
 - Set projects, areas, tags, dates, deadlines, reminders, recurrence, notes, and checklists on task cards, or copy a complete task as Markdown.
 - Use natural language in the AI panel to create, find, update, or delete tasks. Deletions require confirmation.
+- Click `Things Task Manager` in SiYuan's plugin menu to open settings directly; open the task manager itself from the Things Dock on the left.
 
 ## Local development
 
@@ -67,6 +68,8 @@ pnpm run build
 ```
 
 Copy the contents of `dist/` to `<SiYuan workspace>/data/plugins/siyuan-things/`, then restart SiYuan or reload the plugin.
+
+Releases follow the project's [versioning policy](./docs/versioning.md): during the `0.x` phase, fixes increment the patch version while any new feature increments the minor version.
 
 ## AI configuration and privacy
 

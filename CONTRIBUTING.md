@@ -21,7 +21,6 @@ npm run build
 ## 提交与发布
 
 - 保持改动聚焦，避免混入无关格式化。
-- 插件版本遵循 SemVer。
+- 插件版本遵循[版本管理规则](./docs/versioning.zh-CN.md)：`0.x` 阶段仅修复时升级 `PATCH`，包含新功能时升级 `MINOR`。
 - 发布标签使用 `v<plugin.json version>`，例如 `v0.2.3`。
 - GitHub Actions 会验证版本、运行测试、构建并上传 `package.zip`。
-

@@ -36,6 +36,7 @@ export default class ThingsPlugin extends Plugin {
   private thingsDockType = "things_nav";
   private dockRestoreTimers: number[] = [];
   private layoutResetTimers: number[] = [];
+  private pluginMenuObserver: MutationObserver | null = null;
   private unsubTaskChange: (() => void) | null = null;
   private thingsApp: any = null; // 当前标签页的 Svelte 组件实例
   private thingsTab: any = null; // 当前标签页的 Tab 实例
@@ -140,22 +141,12 @@ export default class ThingsPlugin extends Plugin {
 
     this.addIcons(ICON_SPRITE);
 
-    const pluginInstance = this;
+    // 不注册 addTopBar：思源会将带顶栏按钮的插件强制显示为
+    // “插件名 → 钉住 / 设置 / 打开”的二级菜单。Things 通过左侧 Dock
+    // 进入任务管理；在插件菜单中点击 Things 时应直接调用 openSetting()。
+    this.observePluginMenuIcon();
 
-    // 注册顶部栏入口。空间不足时思源会将它收进右上角插件菜单，
-    // 此处显式使用 Things 品牌图标，避免只出现默认的设置齿轮。
-    this.addTopBar({
-      icon: "iconThings",
-      title: "Things 任务管理",
-      position: "right",
-      callback: () => {
-        const hasLiveTab = this.hasLiveThingsTab();
-        const view = hasLiveTab ? this.currentThingsView : this.getConfiguredThingsView();
-        const viewId = hasLiveTab ? this.currentThingsViewId : undefined;
-        this.openThingsTab(view, viewId);
-        if (this.dockElement) this.setActive(this.dockElement, view, viewId);
-      },
-    });
+    const pluginInstance = this;
 
     // 注册自定义标签页类型
     this.addTab({
@@ -377,6 +368,8 @@ export default class ThingsPlugin extends Plugin {
 
   async onunload() {
     console.log("[Things] Plugin unloaded");
+    this.pluginMenuObserver?.disconnect();
+    this.pluginMenuObserver = null;
     document.removeEventListener("click", this.handleThingsDockButtonClick, true);
     window.removeEventListener("things-navigate", this.handleThingsNavigate);
     this.eventBus.off("sync-start", this.handleSyncStart);
@@ -404,6 +397,40 @@ export default class ThingsPlugin extends Plugin {
         (closeBtn as HTMLElement).click();
       }
     });
+  }
+
+  /**
+   * 思源会把“无顶栏按钮但提供设置”的插件直接列入插件菜单，但图标固定为齿轮。
+   * 菜单没有开放自定义图标参数，因此在菜单节点生成后仅替换 Things 自身的图标。
+   */
+  private observePluginMenuIcon(): void {
+    this.pluginMenuObserver?.disconnect();
+    const selector = `.b3-menu__item[data-id="${this.name}"]`;
+
+    const applyIcon = (root: ParentNode) => {
+      const items = root instanceof HTMLElement && root.matches(selector)
+        ? [root]
+        : Array.from(root.querySelectorAll<HTMLElement>(selector));
+      items.forEach((item) => {
+        const label = item.querySelector<HTMLElement>(":scope > .b3-menu__label")?.textContent?.trim();
+        if (label !== this.displayName.trim()) return;
+
+        const use = item.querySelector<SVGUseElement>(":scope > .b3-menu__icon use");
+        if (!use) return;
+        use.setAttribute("href", "#iconThings");
+        use.setAttribute("xlink:href", "#iconThings");
+      });
+    };
+
+    applyIcon(document);
+    this.pluginMenuObserver = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        mutation.addedNodes.forEach((node) => {
+          if (node instanceof HTMLElement) applyIcon(node);
+        });
+      });
+    });
+    this.pluginMenuObserver.observe(document.body, { childList: true, subtree: true });
   }
 
   private getThingsDockButton(): HTMLElement | null {
