@@ -18,6 +18,7 @@ A Things-inspired GTD task manager for SiYuan Note. It provides Inbox, Today, Up
 | **Quick Find** | Search titles, notes, checklists, assignments, tags, statuses, and dates directly in the task list. |
 | **AI task assistant** | Create, search, summarize, update, and delete tasks through a continuous conversation. |
 | **Theme and layout** | Follows SiYuan's light and dark themes with consistent cards across the sidebar, task list, and AI panel. |
+| **Tab–sidebar following** | Optionally activate and locate the matching sidebar when a document or Things tab is clicked. |
 | **Safer operations** | Preview destructive operations such as deletion before confirmation. |
 | **Workspace data** | Store data through SiYuan's plugin APIs so it can follow workspace sync settings. |
 
@@ -57,7 +58,7 @@ Download `package.zip` from GitHub Releases, extract it to `<SiYuan workspace>/d
 - In an area, use the project chips below the title to filter the whole task page. In project and tag details, clicking `+` opens the new-task card near the current reading position. Project headings can be reordered and collapsed, while Completed stays fixed at the bottom.
 - Set projects, areas, tags, dates, deadlines, reminders, recurrence, notes, and checklists on task cards, or copy a complete task as Markdown.
 - Use natural language in the AI panel to create, find, update, or delete tasks. Deletions require confirmation.
-- Click `Things Task Manager` in SiYuan's plugin menu to open settings directly; open the task manager itself from the Things Dock on the left.
+- Click `Things Task Manager` in SiYuan's plugin menu to open settings directly. The optional **Follow tabs in sidebar** setting can restore SiYuan's native independent tab/sidebar behavior; open the task manager itself from the Things Dock on the left.
 
 ## Local development
 
@@ -73,7 +74,7 @@ Releases follow the project's [versioning policy](./docs/versioning.md): during 
 
 ## AI configuration and privacy
 
-The plugin can reuse the AI provider configured in SiYuan (the model picker is grouped by provider and follows the model currently selected in SiYuan's AI settings), or use a custom OpenAI-compatible endpoint, API key, and model name from the plugin settings.
+The plugin can reuse the AI provider configured in SiYuan (the model picker is grouped by provider and follows the model currently selected in SiYuan's AI settings), or use a custom OpenAI-compatible endpoint, API key, and model name from the plugin settings. The **Enable AI** switch expands or collapses the provider and custom endpoint configuration as one section.
 
 Task context required to answer a query is sent to the selected AI provider. The plugin does not include an AI account or proxy service. Review the privacy and retention policy of your selected provider before enabling AI features.
 

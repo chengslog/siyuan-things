@@ -289,9 +289,11 @@
 }
 
 .things-settings__ai-config {
-  margin: 14px 0 0 10px;
-  padding: 1px 0 2px 18px;
-  border-left: 2px solid color-mix(in srgb, var(--b3-theme-primary) 38%, var(--b3-border-color));
+  margin-top: 14px;
+  padding-top: 16px;
+  border-top: 1px solid var(--b3-border-color);
+  transform-origin: top;
+  animation: things-settings-expand 0.16s ease-out;
 }
 
 .things-settings__ai-config[hidden],
@@ -309,10 +311,28 @@
   }
 }
 
+.things-settings__ai-field-desc {
+  margin: 4px 0 8px;
+  color: var(--b3-theme-on-surface-light);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .things-settings__ai-custom {
-  margin: 14px 0 0 8px;
-  padding: 1px 0 1px 15px;
-  border-left: 1px solid var(--b3-border-color);
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--b3-border-color);
+}
+
+@keyframes things-settings-expand {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scaleY(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+  }
 }
 
 .things-settings__ai-custom-field {

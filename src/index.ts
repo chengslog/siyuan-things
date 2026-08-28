@@ -4,6 +4,8 @@ import {
   Dialog,
   openTab,
   getFrontend,
+  getActiveTab,
+  expandDocTree,
   fetchSyncPost,
   confirm as siyuanConfirm,
 } from "siyuan";
@@ -48,6 +50,7 @@ export default class ThingsPlugin extends Plugin {
   private openingThingsTab: Promise<any> | null = null;
   private currentThingsView: ViewType = "today";
   private currentThingsViewId: string | undefined = undefined;
+  private sidebarFollowRevision = 0;
   private handleSyncStart = () => {
     this.syncInProgress = true;
     this.dockRestoreTimers.forEach((timer) => window.clearTimeout(timer));
@@ -108,6 +111,66 @@ export default class ThingsPlugin extends Plugin {
       }
     }, 0);
   };
+
+  /**
+   * 思源不会让自定义标签页触发 switch-protyle，因此点击标签头后从活动 Tab
+   * 模型判断是否为 Things，再同步对应 Dock。模型类型是插件 API 的稳定标识，
+   * 不依赖标签标题或不同版本中易变化的 data-* 属性。
+   */
+  private handleThingsTabClick = (event: MouseEvent) => {
+    if (this.settingUtils?.get("tabFollowsSidebar") === false) return;
+    const target = event.target as HTMLElement | null;
+    const head = target?.closest<HTMLElement>(".layout-tab-bar .item");
+    if (!head || target?.closest(".item__close")) return;
+
+    // 先让思源完成标签页聚焦，再读取活动 Tab，避免拿到点击前的文档模型。
+    window.setTimeout(() => {
+      const activeTab = getActiveTab(false) as any;
+      const modelType = activeTab?.model?.type || "";
+      const isThingsTab = modelType === `${this.name}${TAB_TYPE}`
+        || activeTab === this.thingsTab
+        || activeTab?.headElement?.dataset?.thingsTab === "true"
+        || (!!this.thingsTabElement && activeTab?.panelElement?.contains(this.thingsTabElement));
+      if (isThingsTab) {
+        this.sidebarFollowRevision += 1;
+        this.openThingsDock();
+        if (this.dockElement) {
+          this.setActive(this.dockElement, this.currentThingsView, this.currentThingsViewId);
+        }
+        return;
+      }
+
+      // 仅响应顶部标签头的直接点击。不要监听全局 switch-protyle，后者也会在
+      // Dock 聚焦等流程触发，导致用户刚收起文档 Dock 又被立即打开。
+      const protyle = activeTab?.model?.editor?.protyle;
+      if (protyle) this.followDocumentTab(protyle);
+    }, 0);
+  };
+
+  /** 文档标签激活后打开文档树，并展开、选中该标签对应的根文档。 */
+  private followDocumentTab(protyle: any) {
+    const rootId = protyle?.block?.rootID || protyle?.block?.id;
+    if (!rootId || getFrontend().includes("mobile")) return;
+
+    const revision = ++this.sidebarFollowRevision;
+    const fileDock = this.findDockModel((type) => type === "file");
+    if (!fileDock) return;
+
+    try {
+      fileDock.dock.toggleModel(fileDock.type, true);
+    } catch (error) {
+      console.warn("[Things] Failed to activate document dock:", error);
+      return;
+    }
+
+    void Promise.resolve().then(() => expandDocTree({ id: rootId, isSetCurrent: true })).catch((error) => {
+      // 快速切换到其他标签后，不用旧请求覆盖新的侧边栏状态；这里只记录仍为
+      // 当前请求的真实错误。expandDocTree 自身只更新文档树，不再切换 Dock。
+      if (revision === this.sidebarFollowRevision) {
+        console.warn("[Things] Failed to locate active document:", error);
+      }
+    });
+  }
   private handleThingsNavigate = async (event: Event) => {
     const detail = (event as CustomEvent).detail || {};
     if (!detail.view) return;
@@ -328,6 +391,7 @@ export default class ThingsPlugin extends Plugin {
     });
     this.thingsDockType = (dockRegistration.model as any)?.type || this.thingsDockType;
     document.addEventListener("click", this.handleThingsDockButtonClick, true);
+    document.addEventListener("click", this.handleThingsTabClick, true);
 
     // 注册命令
     this.addCommand({
@@ -381,6 +445,14 @@ export default class ThingsPlugin extends Plugin {
         someday: "某天",
         log: "日志",
       },
+    });
+
+    this.settingUtils.addItem({
+      key: "tabFollowsSidebar",
+      value: true,
+      type: "checkbox",
+      title: "标签页联动侧边栏",
+      description: "切换文档标签时打开并定位文档树；切换 Things 标签时打开 Things 侧边栏。关闭后保持思源原生的独立状态。",
     });
 
     // AI 服务配置
@@ -475,6 +547,7 @@ export default class ThingsPlugin extends Plugin {
     this.pluginMenuObserver?.disconnect();
     this.pluginMenuObserver = null;
     document.removeEventListener("click", this.handleThingsDockButtonClick, true);
+    document.removeEventListener("click", this.handleThingsTabClick, true);
     window.removeEventListener("things-navigate", this.handleThingsNavigate);
     this.eventBus.off("sync-start", this.handleSyncStart);
     this.eventBus.off("sync-end", this.handleSyncEnd);
@@ -545,32 +618,49 @@ export default class ThingsPlugin extends Plugin {
     }) || null;
   }
 
+  /** Dock 布局属于全局 SiYuan 运行时，不在插件 App 实例上。 */
+  private getRuntimeLayout(): any {
+    return (window as any).siyuan?.layout || (this.app as any)?.layout;
+  }
+
+  /** 查找实际承载指定模型的 Dock，兼容用户把内置 Dock 移到右侧。 */
+  private findDockModel(matches: (type: string) => boolean): { dock: any; type: string } | null {
+    const layout = this.getRuntimeLayout();
+    const docks = [layout?.leftDock, layout?.rightDock, layout?.bottomDock].filter(Boolean);
+    for (const dock of docks) {
+      const type = Object.keys(dock.data || {}).find(matches);
+      if (type) return { dock, type };
+    }
+    return null;
+  }
+
   private isThingsDockOpen(): boolean {
     const button = this.getThingsDockButton();
     if (!button?.classList.contains("dock__item--active")) return false;
 
     // 同步期间可能只保留按钮的 active class，却先把左侧布局宽度清零。
     // 此时视觉上已经收缩，不能仅凭按钮状态误判为仍处于展开状态。
-    const layoutElement = (this.app as any)?.layout?.leftDock?.layout?.element as HTMLElement | undefined;
+    const leftDock = this.getRuntimeLayout()?.leftDock;
+    const layoutElement = leftDock?.layout?.element as HTMLElement | undefined;
     if (!layoutElement?.isConnected || layoutElement.classList.contains("fn__none")) return false;
     if (layoutElement.style.width === "0px" || layoutElement.clientWidth <= 1) return false;
-    if ((this.app as any)?.layout?.leftDock?.pin === false && layoutElement.style.opacity === "0") return false;
+    if (leftDock?.pin === false && layoutElement.style.opacity === "0") return false;
     return true;
   }
 
-  /** 使用思源 Dock 布局 API 恢复同步前已展开的 Things 侧边栏。 */
-  private openThingsDock(): boolean {
-    const leftDock = (this.app as any)?.layout?.leftDock;
+  /** 激活 Things Dock；同步恢复时才强制恢复浮动 Dock 的可见性。 */
+  private openThingsDock(forceRestoreVisibility = false): boolean {
     const button = this.getThingsDockButton();
-    if (!leftDock || !button) return false;
-    const runtimeType = Object.keys(leftDock.data || {}).find((type) =>
+    if (!button) return false;
+    const found = this.findDockModel((type) =>
       type === this.thingsDockType || type === "things_nav" || type.endsWith("things_nav") || type.includes(this.name)
-    ) || button.dataset.type || this.thingsDockType;
+    );
+    if (!found) return false;
     try {
       // 守护期间只恢复运行时布局，不把同步过程中的瞬态状态写回 uiLayout。
       const shouldSaveLayout = sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1";
-      leftDock.toggleModel(runtimeType, true, false, false, shouldSaveLayout);
-      leftDock.showDock(true);
+      found.dock.toggleModel(found.type, true, false, false, shouldSaveLayout);
+      if (forceRestoreVisibility) found.dock.showDock(true);
       return this.isThingsDockOpen();
     } catch (error) {
       console.warn("[Things] Failed to restore dock after sync:", error);
@@ -580,7 +670,7 @@ export default class ThingsPlugin extends Plugin {
 
   private restoreThingsDockIfNeeded(): boolean {
     if (sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1") return false;
-    const restored = this.isThingsDockOpen() || this.openThingsDock();
+    const restored = this.isThingsDockOpen() || this.openThingsDock(true);
     if (restored && this.dockElement) {
       this.setActive(this.dockElement, this.currentThingsView, this.currentThingsViewId);
     }
@@ -590,7 +680,7 @@ export default class ThingsPlugin extends Plugin {
   /** 当前变更是否可能影响 Things 按钮或左侧 Dock 布局。 */
   private mutationTouchesThingsDock(mutation: MutationRecord): boolean {
     const button = this.getThingsDockButton();
-    const layoutElement = (this.app as any)?.layout?.leftDock?.layout?.element as HTMLElement | undefined;
+    const layoutElement = this.getRuntimeLayout()?.leftDock?.layout?.element as HTMLElement | undefined;
     const touchesNode = (node: Node): boolean => {
       if (!(node instanceof HTMLElement)) return false;
       if (node === button || node === layoutElement || node === this.dockElement) return true;
@@ -1776,6 +1866,36 @@ export default class ThingsPlugin extends Plugin {
         settingsEl.appendChild(wrapper);
       }
 
+      // 标签页与侧边栏联动开关
+      const tabFollowKey = "tabFollowsSidebar";
+      const tabFollowEl = this.settingUtils.getElement(tabFollowKey) as HTMLInputElement | undefined;
+      if (tabFollowEl) {
+        const item = this.settingUtils.settings.get(tabFollowKey);
+        item?.setEleVal?.(tabFollowEl, item.value);
+
+        const section = document.createElement("section");
+        section.className = "things-settings__section";
+        const wrapper = document.createElement("div");
+        wrapper.className = "things-settings__ai-toggle";
+
+        const copy = document.createElement("div");
+        copy.className = "things-settings__ai-toggle-copy";
+        const label = document.createElement("div");
+        label.className = "things-settings__ai-toggle-title";
+        label.textContent = item?.title || "标签页联动侧边栏";
+        const desc = document.createElement("div");
+        desc.className = "things-settings__ai-toggle-desc";
+        desc.textContent = item?.description || "切换标签页时自动切换并定位对应侧边栏";
+        copy.append(label, desc);
+        wrapper.append(copy, tabFollowEl);
+        section.appendChild(wrapper);
+        settingsEl.appendChild(section);
+
+        tabFollowEl.addEventListener("change", async () => {
+          await this.settingUtils.setAndSave(tabFollowKey, tabFollowEl.checked);
+        });
+      }
+
       // AI 功能总开关
       const aiEnabledKey = "aiEnabled";
       const aiEnabledEl = this.settingUtils.getElement(aiEnabledKey) as HTMLInputElement | undefined;
@@ -1836,9 +1956,7 @@ export default class ThingsPlugin extends Plugin {
         wrapper.appendChild(label);
 
         const desc = document.createElement("div");
-        desc.style.fontSize = "12px";
-        desc.style.color = "var(--b3-theme-on-surface-light)";
-        desc.style.marginBottom = "8px";
+        desc.className = "things-settings__ai-field-desc";
         desc.textContent = "选择复用思源内置 AI 设置，或自定义 API 配置";
         wrapper.appendChild(desc);
 
