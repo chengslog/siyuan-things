@@ -36,12 +36,15 @@ export default class ThingsPlugin extends Plugin {
   private thingsDockType = "things_nav";
   private dockRestoreTimers: number[] = [];
   private dockRestoreInterval: number | null = null;
+  private dockRestoreObserver: MutationObserver | null = null;
+  private dockRestoreQueued = false;
   private syncInProgress = false;
   private layoutResetTimers: number[] = [];
   private pluginMenuObserver: MutationObserver | null = null;
   private unsubTaskChange: (() => void) | null = null;
   private thingsApp: any = null; // 当前标签页的 Svelte 组件实例
   private thingsTab: any = null; // 当前标签页的 Tab 实例
+  private thingsTabElement: HTMLElement | null = null; // 当前自定义页签内容节点（布局重建后仍可判断应用是否存活）
   private openingThingsTab: Promise<any> | null = null;
   private currentThingsView: ViewType = "today";
   private currentThingsViewId: string | undefined = undefined;
@@ -119,9 +122,13 @@ export default class ThingsPlugin extends Plugin {
 
   private hasLiveThingsTab(): boolean {
     if (!this.thingsApp) return false;
-    // 自定义页签初始化时，Svelte 应用会先挂载，Tab parent 可能稍后才可用。
-    // 此时应用已经可以安全复用，不能误判为需要再创建一个页签。
-    if (!this.thingsTab) return true;
+    // 同步可能只替换 Tab 外壳，使旧 Tab 引用断开；只要自定义内容节点仍在 DOM，
+    // Svelte 应用就仍可直接更新，不能因旧 headElement 失效而判定为死页签。
+    if (this.thingsTabElement?.isConnected) return true;
+    // 自定义页签初始化时内容节点会先被记录，因此即使 Tab parent 尚未就绪，
+    // 上面的 isConnected 也足以确认应用可复用。反之若内容和 Tab 都已脱离 DOM，
+    // 说明这里只剩同步前的幽灵实例，必须走引用恢复或新建流程。
+    if (!this.thingsTab) return false;
     const head = this.thingsTab.headElement as HTMLElement | undefined;
     const element = this.thingsTab.element as HTMLElement | undefined;
     return !!(head?.isConnected || element?.isConnected);
@@ -157,6 +164,7 @@ export default class ThingsPlugin extends Plugin {
     const head = tab?.headElement as HTMLElement | undefined;
     if (head) head.dataset.thingsTab = "true";
     if (modelElement) {
+      this.thingsTabElement = modelElement;
       modelElement.dataset.thingsTabContent = "true";
       (modelElement as any).__thingsPlugin = this;
       (modelElement as any).__thingsTab = tab || null;
@@ -172,6 +180,7 @@ export default class ThingsPlugin extends Plugin {
       const app = (element as any).__thingsApp;
       if (!app) continue;
       this.thingsApp = app;
+      this.thingsTabElement = element;
       this.thingsTab = (element as any).__thingsTab || this.thingsTab;
       return true;
     }
@@ -187,6 +196,12 @@ export default class ThingsPlugin extends Plugin {
       head.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     }
     return true;
+  }
+
+  /** 返回布局重建后的当前页签头，旧 Tab 引用断开时自动回退到 DOM 查找。 */
+  private getLiveThingsTabHead(): HTMLElement | null {
+    const referencedHead = this.thingsTab?.headElement as HTMLElement | undefined;
+    return referencedHead?.isConnected ? referencedHead : this.findExistingThingsTabHead();
   }
 
   /** Ensure SiYuan does not restore old tabs before Things opens its default view. */
@@ -278,6 +293,9 @@ export default class ThingsPlugin extends Plugin {
         if (pluginInstance.thingsApp === app || pluginInstance.thingsTab === tab) {
           pluginInstance.thingsApp = null;
           pluginInstance.thingsTab = null;
+          if (pluginInstance.thingsTabElement === this.element) {
+            pluginInstance.thingsTabElement = null;
+          }
         }
       },
     });
@@ -528,7 +546,16 @@ export default class ThingsPlugin extends Plugin {
   }
 
   private isThingsDockOpen(): boolean {
-    return this.getThingsDockButton()?.classList.contains("dock__item--active") === true;
+    const button = this.getThingsDockButton();
+    if (!button?.classList.contains("dock__item--active")) return false;
+
+    // 同步期间可能只保留按钮的 active class，却先把左侧布局宽度清零。
+    // 此时视觉上已经收缩，不能仅凭按钮状态误判为仍处于展开状态。
+    const layoutElement = (this.app as any)?.layout?.leftDock?.layout?.element as HTMLElement | undefined;
+    if (!layoutElement?.isConnected || layoutElement.classList.contains("fn__none")) return false;
+    if (layoutElement.style.width === "0px" || layoutElement.clientWidth <= 1) return false;
+    if ((this.app as any)?.layout?.leftDock?.pin === false && layoutElement.style.opacity === "0") return false;
+    return true;
   }
 
   /** 使用思源 Dock 布局 API 恢复同步前已展开的 Things 侧边栏。 */
@@ -540,9 +567,11 @@ export default class ThingsPlugin extends Plugin {
       type === this.thingsDockType || type === "things_nav" || type.endsWith("things_nav") || type.includes(this.name)
     ) || button.dataset.type || this.thingsDockType;
     try {
-      leftDock.toggleModel(runtimeType, true, false, false, true);
+      // 守护期间只恢复运行时布局，不把同步过程中的瞬态状态写回 uiLayout。
+      const shouldSaveLayout = sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1";
+      leftDock.toggleModel(runtimeType, true, false, false, shouldSaveLayout);
       leftDock.showDock(true);
-      return true;
+      return this.isThingsDockOpen();
     } catch (error) {
       console.warn("[Things] Failed to restore dock after sync:", error);
       return false;
@@ -558,23 +587,78 @@ export default class ThingsPlugin extends Plugin {
     return restored;
   }
 
+  /** 当前变更是否可能影响 Things 按钮或左侧 Dock 布局。 */
+  private mutationTouchesThingsDock(mutation: MutationRecord): boolean {
+    const button = this.getThingsDockButton();
+    const layoutElement = (this.app as any)?.layout?.leftDock?.layout?.element as HTMLElement | undefined;
+    const touchesNode = (node: Node): boolean => {
+      if (!(node instanceof HTMLElement)) return false;
+      if (node === button || node === layoutElement || node === this.dockElement) return true;
+      if (node.matches(".dock__item")) {
+        const type = node.dataset.type || "";
+        if (type === this.thingsDockType || type === "things_nav" || type.endsWith("things_nav")) return true;
+      }
+      if (button && (node.contains(button) || button.contains(node))) return true;
+      if (layoutElement && (node.contains(layoutElement) || layoutElement.contains(node))) return true;
+      if (node.matches("#dockLeft, .layout__dockl")) return true;
+      if (node.querySelector("#dockLeft, .layout__dockl")) return true;
+      return Array.from(node.querySelectorAll<HTMLElement>(".dock__item")).some((item) => {
+        const type = item.dataset.type || "";
+        return type === this.thingsDockType || type === "things_nav" || type.endsWith("things_nav");
+      });
+    };
+
+    if (touchesNode(mutation.target)) return true;
+    return Array.from(mutation.addedNodes).some(touchesNode)
+      || Array.from(mutation.removedNodes).some(touchesNode);
+  }
+
+  /** 将同一批 DOM 变更合并，并在浏览器下一次绘制前恢复 Dock。 */
+  private queueImmediateDockRestore() {
+    if (this.dockRestoreQueued || sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1") return;
+    this.dockRestoreQueued = true;
+    queueMicrotask(() => {
+      this.dockRestoreQueued = false;
+      if (sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1") return;
+      if (!this.isThingsDockOpen()) this.restoreThingsDockIfNeeded();
+    });
+  }
+
   /**
-   * 同步期间持续守护 Dock 展开状态。思源若重建布局导致 Dock 短暂关闭，
-   * 最迟在下一次 100ms 轮询恢复；Dock init 时另有一次即时恢复以减少闪烁。
+   * 同步期间持续守护 Dock 展开状态。MutationObserver 在浏览器绘制前即时恢复，
+   * 100ms 轮询只负责模型重建尚未就绪等无法即时恢复的边界情况。
    */
   private startDockRestoreGuard() {
     if (sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1") return;
-    if (this.dockRestoreInterval !== null) return;
     this.restoreThingsDockIfNeeded();
-    this.dockRestoreInterval = window.setInterval(() => {
-      this.restoreThingsDockIfNeeded();
-    }, 100);
+    if (!this.dockRestoreObserver) {
+      this.dockRestoreObserver = new MutationObserver((mutations) => {
+        if (mutations.some((mutation) => this.mutationTouchesThingsDock(mutation))) {
+          this.queueImmediateDockRestore();
+        }
+      });
+      this.dockRestoreObserver.observe(document.body, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ["class", "style", "data-type"],
+      });
+    }
+    if (this.dockRestoreInterval === null) {
+      this.dockRestoreInterval = window.setInterval(() => {
+        this.restoreThingsDockIfNeeded();
+      }, 100);
+    }
   }
 
   private stopDockRestoreGuard() {
-    if (this.dockRestoreInterval === null) return;
-    window.clearInterval(this.dockRestoreInterval);
-    this.dockRestoreInterval = null;
+    if (this.dockRestoreInterval !== null) {
+      window.clearInterval(this.dockRestoreInterval);
+      this.dockRestoreInterval = null;
+    }
+    this.dockRestoreObserver?.disconnect();
+    this.dockRestoreObserver = null;
+    this.dockRestoreQueued = false;
   }
 
   private scheduleDockRestoreAfterSync() {
@@ -1410,15 +1494,13 @@ export default class ThingsPlugin extends Plugin {
         viewId: viewId || undefined,
         searchQuery: searchQuery || "",
       });
-      if (this.thingsTab) {
-        this.updateTabTitle(title);
-        this.updateTabIcon(this.getViewIcon(view));
-      }
+      this.updateTabTitle(title);
+      this.updateTabIcon(this.getViewIcon(view));
       // 把标签页切到前台：复用路径只更新内容、不会聚焦标签页，
       // 停留在文档页时点侧边栏会"没反应"。思源 Layout 没有公开的 focusTab，
       // 模拟点击页签头元素（等效于用户直接点该标签页），跨版本可靠
       try {
-        const head = this.thingsTab?.headElement as HTMLElement | undefined;
+        const head = this.getLiveThingsTabHead();
         if (head && !head.classList.contains("item--focus")) {
           head.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
         }
@@ -1447,6 +1529,7 @@ export default class ThingsPlugin extends Plugin {
 
     this.thingsApp = null;
     this.thingsTab = null;
+    this.thingsTabElement = null;
 
     // Serialize creation: startup, Dock clicks and sidebar clicks can arrive in
     // the same frame, but only one custom tab may be created.
@@ -1480,14 +1563,15 @@ export default class ThingsPlugin extends Plugin {
    * 更新标签页标题（直接操作 DOM，确保对恢复的标签页也生效）
    */
   private updateTabTitle(title: string) {
-    if (!this.thingsTab) return;
-    // 设置内部属性
-    this.thingsTab.title = title;
-    if (typeof this.thingsTab.updateTitle === 'function') {
+    const referencedHead = this.thingsTab?.headElement as HTMLElement | undefined;
+    // 只调用仍连接在当前布局中的 Tab 模型；同步前的旧模型可能保留方法，
+    // 但调用后会操作已销毁节点并中断本次导航。
+    if (this.thingsTab && referencedHead?.isConnected) this.thingsTab.title = title;
+    if (referencedHead?.isConnected && typeof this.thingsTab?.updateTitle === 'function') {
       this.thingsTab.updateTitle(title);
     }
     // 直接更新 headElement 中的标题文本
-    const headEl = this.thingsTab.headElement;
+    const headEl = this.getLiveThingsTabHead();
     console.log("[Things] updateTabTitle:", title, "headEl:", !!headEl);
     if (headEl) {
       const textEl = headEl.querySelector('.item__text')
@@ -1503,12 +1587,12 @@ export default class ThingsPlugin extends Plugin {
    * 更新标签页图标（直接操作 DOM）
    */
   private updateTabIcon(iconName: string) {
-    if (!this.thingsTab) return;
-    this.thingsTab.icon = iconName;
-    if (typeof this.thingsTab.setDocIcon === 'function') {
+    const referencedHead = this.thingsTab?.headElement as HTMLElement | undefined;
+    if (this.thingsTab && referencedHead?.isConnected) this.thingsTab.icon = iconName;
+    if (referencedHead?.isConnected && typeof this.thingsTab?.setDocIcon === 'function') {
       this.thingsTab.setDocIcon(iconName);
     }
-    const headEl = this.thingsTab.headElement;
+    const headEl = this.getLiveThingsTabHead();
     if (headEl) {
       const useEl = headEl.querySelector('use');
       if (useEl) {
