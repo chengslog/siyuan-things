@@ -1536,24 +1536,34 @@ export default class ThingsPlugin extends Plugin {
     if (!container) return;
 
     const projects = this.store.projects.getActiveProjects().sort((a, b) => a.order - b.order);
-    let html = '';
+    const fragment = document.createDocumentFragment();
 
     for (const p of projects) {
-      html += `
-        <div class="things-nav__item things-nav__item--sub things-nav-row" data-view="project" data-id="${p.id}" title="单击打开 · 拖动排序或添加到 AI">
-          <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsFolder"></use></svg>
-          <span class="things-nav__label things-nav-row__name">${p.name}</span>
-          <span class="things-nav-row__edit" title="重命名项目"><svg><use xlink:href="#iconThingsPencil"></use></svg></span>
-          <span class="things-nav-row__del" title="删除项目">×</span>
-        </div>
+      const row = document.createElement('div');
+      row.className = 'things-nav__item things-nav__item--sub things-nav-row';
+      row.dataset.view = 'project';
+      row.dataset.id = String(p.id);
+      row.title = '单击打开 · 拖动排序或添加到 AI';
+      // 仅静态图标骨架使用 innerHTML；所有持久化数据都通过 DOM 属性或 textContent 写入。
+      row.innerHTML = `
+        <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsFolder"></use></svg>
+        <span class="things-nav__label things-nav-row__name"></span>
+        <span class="things-nav-row__edit" title="重命名项目"><svg><use xlink:href="#iconThingsPencil"></use></svg></span>
+        <span class="things-nav-row__del" title="删除项目">×</span>
       `;
+      const label = row.querySelector<HTMLElement>('.things-nav-row__name');
+      if (label) label.textContent = String(p.name || '');
+      fragment.appendChild(row);
     }
 
     if (projects.length === 0) {
-      html = '<div class="things-nav__empty">暂无</div>';
+      const empty = document.createElement('div');
+      empty.className = 'things-nav__empty';
+      empty.textContent = '暂无';
+      fragment.appendChild(empty);
     }
 
-    container.innerHTML = html;
+    container.replaceChildren(fragment);
 
     container.querySelectorAll('.things-nav-row').forEach(el => {
       const node = el as HTMLElement;
@@ -1589,24 +1599,33 @@ export default class ThingsPlugin extends Plugin {
     if (!container) return;
 
     const areas = this.store.areas.getAll().sort((a, b) => a.order - b.order);
-    let html = '';
+    const fragment = document.createDocumentFragment();
 
     for (const a of areas) {
-      html += `
-        <div class="things-nav__item things-nav__item--sub things-nav-row" data-view="area" data-id="${a.id}" title="单击打开 · 拖动排序或添加到 AI">
-          <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsLayers"></use></svg>
-          <span class="things-nav__label things-nav-row__name">${a.name}</span>
-          <span class="things-nav-row__edit" title="重命名区域"><svg><use xlink:href="#iconThingsPencil"></use></svg></span>
-          <span class="things-nav-row__del" title="删除区域">×</span>
-        </div>
+      const row = document.createElement('div');
+      row.className = 'things-nav__item things-nav__item--sub things-nav-row';
+      row.dataset.view = 'area';
+      row.dataset.id = String(a.id);
+      row.title = '单击打开 · 拖动排序或添加到 AI';
+      row.innerHTML = `
+        <svg class="things-nav__icon things-nav__icon--sm"><use xlink:href="#iconThingsLayers"></use></svg>
+        <span class="things-nav__label things-nav-row__name"></span>
+        <span class="things-nav-row__edit" title="重命名区域"><svg><use xlink:href="#iconThingsPencil"></use></svg></span>
+        <span class="things-nav-row__del" title="删除区域">×</span>
       `;
+      const label = row.querySelector<HTMLElement>('.things-nav-row__name');
+      if (label) label.textContent = String(a.name || '');
+      fragment.appendChild(row);
     }
 
     if (areas.length === 0) {
-      html = '<div class="things-nav__empty">暂无</div>';
+      const empty = document.createElement('div');
+      empty.className = 'things-nav__empty';
+      empty.textContent = '暂无';
+      fragment.appendChild(empty);
     }
 
-    container.innerHTML = html;
+    container.replaceChildren(fragment);
 
     container.querySelectorAll('.things-nav-row').forEach(el => {
       const node = el as HTMLElement;
@@ -1642,23 +1661,42 @@ export default class ThingsPlugin extends Plugin {
     if (!container) return;
 
     const roots = this.store.tags.getRootTags().sort((a, b) => a.order - b.order);
-    let html = '';
+    const fragment = document.createDocumentFragment();
 
     const renderLevel = (tags: any[], depth: number) => {
       for (const t of tags) {
-        // 色点 = 换色开关（占 16px 图标位保持对齐）；无色标签显示虚线空点
-        const dot = t.color
-          ? `<span class="things-tag-row__dot" title="更换颜色"><span style="background: ${t.color}"></span></span>`
-          : `<span class="things-tag-row__dot things-tag-row__dot--empty" title="设置颜色"><span></span></span>`;
-        html += `
-          <div class="things-nav__item things-nav__item--sub things-tag-row things-nav-row${depth === 0 ? ' things-tag-row--root' : ''}" data-view="tag" data-id="${t.id}"
-               style="padding-left: ${12 + depth * 16}px" title="单击打开 · 拖动排序或添加到 AI">
-            ${dot}
-            <span class="things-nav__label things-nav-row__name">${t.name}</span>
-            <span class="things-nav-row__edit" title="重命名标签"><svg><use xlink:href="#iconThingsPencil"></use></svg></span>
-            <span class="things-nav-row__del" title="删除标签">×</span>
-          </div>
-        `;
+        const row = document.createElement('div');
+        row.className = `things-nav__item things-nav__item--sub things-tag-row things-nav-row${depth === 0 ? ' things-tag-row--root' : ''}`;
+        row.dataset.view = 'tag';
+        row.dataset.id = String(t.id);
+        row.style.paddingLeft = `${12 + depth * 16}px`;
+        row.title = '单击打开 · 拖动排序或添加到 AI';
+
+        // 只接受插件调色板中的颜色，避免同步文件中的任意 CSS 值进入 style。
+        const color = TAG_PALETTE.includes(String(t.color || '')) ? String(t.color) : '';
+        const dot = document.createElement('span');
+        dot.className = `things-tag-row__dot${color ? '' : ' things-tag-row__dot--empty'}`;
+        dot.title = color ? '更换颜色' : '设置颜色';
+        const dotColor = document.createElement('span');
+        if (color) dotColor.style.backgroundColor = color;
+        dot.appendChild(dotColor);
+
+        const label = document.createElement('span');
+        label.className = 'things-nav__label things-nav-row__name';
+        label.textContent = String(t.name || '');
+
+        const edit = document.createElement('span');
+        edit.className = 'things-nav-row__edit';
+        edit.title = '重命名标签';
+        edit.innerHTML = '<svg><use xlink:href="#iconThingsPencil"></use></svg>';
+
+        const remove = document.createElement('span');
+        remove.className = 'things-nav-row__del';
+        remove.title = '删除标签';
+        remove.textContent = '×';
+
+        row.append(dot, label, edit, remove);
+        fragment.appendChild(row);
         const children = this.store.tags.getChildTags(t.id).sort((a, b) => a.order - b.order);
         if (children.length) renderLevel(children, depth + 1);
       }
@@ -1666,10 +1704,13 @@ export default class ThingsPlugin extends Plugin {
     renderLevel(roots, 0);
 
     if (roots.length === 0) {
-      html = '<div class="things-nav__empty">暂无</div>';
+      const empty = document.createElement('div');
+      empty.className = 'things-nav__empty';
+      empty.textContent = '暂无';
+      fragment.appendChild(empty);
     }
 
-    container.innerHTML = html;
+    container.replaceChildren(fragment);
 
     container.querySelectorAll('.things-tag-row').forEach(el => {
       const row = el as HTMLElement;
@@ -1923,23 +1964,36 @@ export default class ThingsPlugin extends Plugin {
       tag: { title: '新建标签', placeholder: '标签名称' },
     }[kind];
 
-    let fieldsHtml = `<input type="text" class="things-create-card__field" placeholder="${meta.placeholder}" />`;
-    if (kind === 'project') {
-      const areas = this.store.areas.getAll().sort((a, b) => a.order - b.order);
-      const options = ['<option value="">无区域</option>']
-        .concat(areas.map(a => `<option value="${a.id}">${a.name}</option>`))
-        .join('');
-      fieldsHtml += `<select class="things-create-card__field">${options}</select>`;
-    }
-
     const card = document.createElement('div');
     card.className = 'things-create-card';
     card.id = 'things-create-card';
     card.innerHTML = `
-      <div class="things-create-card__title">${meta.title}</div>
-      ${fieldsHtml}
+      <div class="things-create-card__title"></div>
+      <input type="text" class="things-create-card__field" />
       <button class="things-create-card__ok">创建</button>
     `;
+    const cardTitle = card.querySelector<HTMLElement>('.things-create-card__title');
+    if (cardTitle) cardTitle.textContent = meta.title;
+    const input = card.querySelector<HTMLInputElement>('input')!;
+    input.placeholder = meta.placeholder;
+
+    let select: HTMLSelectElement | null = null;
+    if (kind === 'project') {
+      select = document.createElement('select');
+      select.className = 'things-create-card__field';
+      const noArea = document.createElement('option');
+      noArea.value = '';
+      noArea.textContent = '无区域';
+      select.appendChild(noArea);
+      const areas = this.store.areas.getAll().sort((a, b) => a.order - b.order);
+      for (const area of areas) {
+        const option = document.createElement('option');
+        option.value = String(area.id);
+        option.textContent = String(area.name || '');
+        select.appendChild(option);
+      }
+      card.querySelector('.things-create-card__ok')?.before(select);
+    }
     document.body.appendChild(card);
 
     // 定位：侧边栏右缘外 10px，纵向贴近加号按钮，超出视口时收回
@@ -1951,8 +2005,6 @@ export default class ThingsPlugin extends Plugin {
     card.style.left = `${dockRect.right + 10}px`;
     card.style.top = `${Math.max(8, top)}px`;
 
-    const input = card.querySelector('input')!;
-    const select = card.querySelector('select') as HTMLSelectElement | null;
     input.focus();
 
     const close = () => {
@@ -2639,6 +2691,11 @@ export default class ThingsPlugin extends Plugin {
             if (item && item.setEleVal) {
               item.setEleVal(el, item.value);
             }
+            if (key === "aiApiKey" && el instanceof HTMLInputElement) {
+              el.type = "password";
+              el.autocomplete = "off";
+              el.spellcheck = false;
+            }
 
             const itemWrapper = document.createElement("div");
             itemWrapper.className = "things-settings__ai-custom-field";
@@ -2665,7 +2722,7 @@ export default class ThingsPlugin extends Plugin {
               const value = (el as HTMLInputElement | HTMLSelectElement).value;
               await this.settingUtils.setAndSave(key, value);
               window.dispatchEvent(new Event("things-ai-config-change"));
-              console.log(`[Things] Setting ${key} saved:`, value);
+              console.log(`[Things] Setting ${key} saved`);
             });
 
             itemWrapper.appendChild(el);

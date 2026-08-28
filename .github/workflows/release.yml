@@ -12,19 +12,23 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # Checkout
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      # Install Node.js
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
 
-      # Install dependencies
+      - name: Enable pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.19.0 --activate
+
       - name: Install dependencies
-        run: npm install
+        run: pnpm install --frozen-lockfile
 
       - name: Verify tag matches plugin version
         shell: bash
@@ -33,17 +37,21 @@ jobs:
           test "${GITHUB_REF_NAME}" = "v${VERSION}"
 
       - name: Run core tests
-        run: npm test
+        run: pnpm test
 
-      # Build for production, 这一步会生成一个 package.zip
       - name: Build for production
-        run: npm run build
+        run: pnpm run build
 
       - name: Release
-        uses: ncipollo/release-action@v1
-        with:
-          allowUpdates: true
-          artifactErrorsFailBuild: true
-          artifacts: "package.zip"
-          token: ${{ secrets.GITHUB_TOKEN }}
-          prerelease: false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" package.zip --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" package.zip \
+              --verify-tag \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes
+          fi
