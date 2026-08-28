@@ -237,10 +237,6 @@
   border-top: 0;
 }
 
-.things-settings__section:last-child {
-  padding-bottom: 16px;
-}
-
 .things-settings__section-title {
   display: block;
   color: var(--b3-theme-on-background);
@@ -260,35 +256,72 @@
   box-sizing: border-box;
 }
 
+.things-settings__category-title,
+.things-settings__maintenance-title {
+  color: var(--b3-theme-on-background);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.things-settings__category-item {
+  padding-top: 14px;
+
+  & + & {
+    margin-top: 14px;
+  }
+}
+
+.things-settings__ai-section > .things-settings__ai-toggle {
+  margin-top: 14px;
+}
+
 .things-settings__ai-toggle {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  column-gap: 16px;
+  row-gap: 4px;
   padding: 0;
+
+  > .b3-switch {
+    grid-column: 2;
+    grid-row: 1;
+    flex: 0 0 auto;
+    margin-top: 0;
+  }
 }
 
 .things-settings__ai-toggle-copy {
-  min-width: 0;
+  display: contents;
 }
 
 .things-settings__ai-toggle-title {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
   color: var(--b3-theme-on-background);
   font-weight: 600;
   line-height: 1.4;
 }
 
 .things-settings__ai-toggle-desc {
-  margin-top: 4px;
+  grid-column: 1;
+  grid-row: 2;
+  margin: 0;
   color: var(--b3-theme-on-surface-light);
   font-size: 12px;
   line-height: 1.5;
+
+  &.is-error {
+    color: var(--b3-theme-error);
+  }
 }
 
 .things-settings__ai-config {
   margin-top: 14px;
-  padding-top: 16px;
-  border-top: 1px solid var(--b3-border-color);
+  padding-top: 2px;
   transform-origin: top;
   animation: things-settings-expand 0.16s ease-out;
 }
@@ -317,8 +350,7 @@
 
 .things-settings__ai-custom {
   margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid var(--b3-border-color);
+  padding-top: 0;
 }
 
 @keyframes things-settings-expand {
@@ -346,8 +378,66 @@
   }
 }
 
-.things-settings__action-section {
-  // 大项间距与启动设置、AI 设置统一，由 things-settings__section 提供。
+.things-settings__maintenance-toggle {
+  margin-top: 12px;
+}
+
+.things-settings__toggle-controls {
+  display: flex;
+  grid-column: 2;
+  grid-row: 1;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.things-settings__update-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--b3-theme-on-surface-light);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+
+  svg {
+    width: 14px;
+    height: 14px;
+    fill: currentColor;
+  }
+
+  &:hover {
+    background: var(--b3-theme-surface-light);
+    color: var(--b3-theme-primary);
+  }
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: wait;
+  }
+}
+
+.things-settings__footer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--b3-border-color);
+
+  .things-settings__action-button {
+    width: 104px;
+    min-height: 30px;
+    padding: 4px 8px;
+    box-sizing: border-box;
+  }
 }
 
 .things-settings__action-title {
@@ -386,6 +476,11 @@
   border-color: var(--b3-theme-primary);
   background: var(--b3-theme-primary-light);
   color: var(--b3-theme-primary);
+}
+
+.things-settings__action-button:disabled {
+  opacity: 0.55;
+  cursor: wait;
 }
 
 .things-settings__action-button--danger {

@@ -27,6 +27,12 @@ import {
   createDockRestoreIntent,
   isDockRestoreIntentValid,
 } from "@/utils/dockRestore";
+import {
+  GITHUB_RELEASE_API,
+  expectedSha256,
+  resolveGitHubUpdate,
+  type GitHubRelease,
+} from "@/utils/githubUpdater";
 import { resetAiChat, type AIComposerContext } from "@/stores/aiChat";
 
 const STORAGE_NAME = "things-config";
@@ -56,6 +62,7 @@ export default class ThingsPlugin extends Plugin {
   private currentThingsView: ViewType = "today";
   private currentThingsViewId: string | undefined = undefined;
   private sidebarFollowRevision = 0;
+  private githubUpdatePromise: Promise<void> | null = null;
   private handleSyncStart = () => {
     const shouldRestoreDock = this.hasDockRestoreIntent() || this.isThingsDockOpen();
     this.syncInProgress = true;
@@ -292,6 +299,76 @@ export default class ThingsPlugin extends Plugin {
     return true;
   }
 
+  private async verifyGitHubPackage(blob: Blob, release: GitHubRelease): Promise<void> {
+    const asset = release.assets.find((item) => item.name === "package.zip");
+    if (!asset || blob.size !== asset.size) {
+      throw new Error("下载的 package.zip 大小与 GitHub Release 不一致");
+    }
+    const expected = expectedSha256(asset);
+    if (!expected) return;
+    const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()));
+    const actual = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    if (actual !== expected) throw new Error("下载的 package.zip SHA-256 校验失败");
+  }
+
+  private async performGitHubUpdate(status?: (message: string, error?: boolean) => void): Promise<void> {
+    const report = (message: string, error = false) => {
+      status?.(message, error);
+      console[error ? "error" : "info"](`[Things Update] ${message}`);
+    };
+    report("正在检查 GitHub 最新版本…");
+
+    const releaseResponse = await fetch(GITHUB_RELEASE_API, {
+      headers: { Accept: "application/vnd.github+json" },
+      cache: "no-store",
+    });
+    if (!releaseResponse.ok) throw new Error(`GitHub 版本检查失败（HTTP ${releaseResponse.status}）`);
+    const release = await releaseResponse.json() as GitHubRelease;
+    const update = resolveGitHubUpdate(release, __PLUGIN_VERSION__);
+    if (!update) {
+      report(`当前已是最新版本 v${__PLUGIN_VERSION__}`);
+      return;
+    }
+
+    report(`发现 v${update.version}，正在下载并校验…`);
+    showMessage(`Things v${update.version} 正在从 GitHub 下载`, 3500);
+    const packageResponse = await fetch(update.asset.browser_download_url, { cache: "no-store" });
+    if (!packageResponse.ok) throw new Error(`package.zip 下载失败（HTTP ${packageResponse.status}）`);
+    const packageBlob = await packageResponse.blob();
+    await this.verifyGitHubPackage(packageBlob, release);
+
+    report(`v${update.version} 校验通过，正在交给思源安装…`);
+    const form = new FormData();
+    form.append("file", packageBlob, "package.zip");
+    form.append("frontend", getFrontend());
+    form.append("overwrite", "true");
+    const installResponse = await fetch("/api/bazaar/installLocalBazaarPackage", {
+      method: "POST",
+      body: form,
+    });
+    if (!installResponse.ok) throw new Error(`思源本地安装接口失败（HTTP ${installResponse.status}）`);
+    const result = await installResponse.json();
+    if (result?.code !== 0) throw new Error(result?.msg || "思源未能安装 GitHub 更新包");
+
+    report(`已更新到 v${update.version}，Things 正在重新加载`);
+    showMessage(`Things 已更新到 v${update.version}，正在重新加载`, 5000);
+  }
+
+  private runGitHubUpdate(status?: (message: string, error?: boolean) => void): Promise<void> {
+    if (this.githubUpdatePromise) return this.githubUpdatePromise;
+    this.githubUpdatePromise = this.performGitHubUpdate(status)
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        status?.(`更新失败：${message}`, true);
+        console.error("[Things Update] GitHub update failed:", error);
+        showMessage(`Things GitHub 更新失败：${message}`, 6000, "error");
+      })
+      .finally(() => {
+        this.githubUpdatePromise = null;
+      });
+    return this.githubUpdatePromise;
+  }
+
   async onload() {
     console.log("[Things] Loading plugin...");
 
@@ -458,6 +535,14 @@ export default class ThingsPlugin extends Plugin {
       description: "切换文档标签时打开并定位文档树；切换 Things 标签时打开 Things 侧边栏。关闭后保持思源原生的独立状态。",
     });
 
+    this.settingUtils.addItem({
+      key: "githubAutoUpdate",
+      value: false,
+      type: "checkbox",
+      title: "从 GitHub 自动更新",
+      description: "启动时直接检查 Things 官方 GitHub 仓库，发现新的正式版后下载、校验并交给思源安装，不经过思源集市下载通道。",
+    });
+
     // AI 服务配置
     this.settingUtils.addItem({
       key: "aiEnabled",
@@ -524,6 +609,9 @@ export default class ThingsPlugin extends Plugin {
       this.updateCounts(this.dockElement);
     }
     this.scheduleDockRestoreAfterSync();
+    if (this.settingUtils.get("githubAutoUpdate") === true) {
+      window.setTimeout(() => void this.runGitHubUpdate(), 1200);
+    }
 
     {
       // 获取默认视图设置
@@ -1762,6 +1850,14 @@ export default class ThingsPlugin extends Plugin {
 
     const settingsEl = dialog.element.querySelector("#things-settings");
     if (settingsEl) {
+      const generalSection = document.createElement("section");
+      generalSection.className = "things-settings__section things-settings__section--first things-settings__category";
+      const generalTitle = document.createElement("div");
+      generalTitle.className = "things-settings__category-title";
+      generalTitle.textContent = "通用设置";
+      generalSection.appendChild(generalTitle);
+      settingsEl.appendChild(generalSection);
+
       // 添加默认视图设置
       const defaultViewKey = "defaultView";
       const defaultViewEl = this.settingUtils.getElement(defaultViewKey);
@@ -1772,7 +1868,7 @@ export default class ThingsPlugin extends Plugin {
         }
 
         const wrapper = document.createElement("div");
-        wrapper.className = "things-settings__section things-settings__section--first";
+        wrapper.className = "things-settings__category-item";
 
         const label = document.createElement("label");
         label.className = "things-settings__section-title";
@@ -1812,7 +1908,7 @@ export default class ThingsPlugin extends Plugin {
         defaultViewEl.classList.add("things-settings__section-control");
         wrapper.appendChild(defaultViewEl);
         wrapper.appendChild(startupStatus);
-        settingsEl.appendChild(wrapper);
+        generalSection.appendChild(wrapper);
       }
 
       // 标签页与侧边栏联动开关
@@ -1823,7 +1919,7 @@ export default class ThingsPlugin extends Plugin {
         item?.setEleVal?.(tabFollowEl, item.value);
 
         const section = document.createElement("section");
-        section.className = "things-settings__section";
+        section.className = "things-settings__category-item";
         const wrapper = document.createElement("div");
         wrapper.className = "things-settings__ai-toggle";
 
@@ -1838,18 +1934,74 @@ export default class ThingsPlugin extends Plugin {
         copy.append(label, desc);
         wrapper.append(copy, tabFollowEl);
         section.appendChild(wrapper);
-        settingsEl.appendChild(section);
+        generalSection.appendChild(section);
 
         tabFollowEl.addEventListener("change", async () => {
           await this.settingUtils.setAndSave(tabFollowKey, tabFollowEl.checked);
         });
       }
 
+      // GitHub 直连更新放在“维护与支持”，手动检查使用开关旁的图标按钮。
+      let githubUpdateSection: HTMLElement | null = null;
+      const githubUpdateKey = "githubAutoUpdate";
+      const githubUpdateEl = this.settingUtils.getElement(githubUpdateKey) as HTMLInputElement | undefined;
+      if (githubUpdateEl) {
+        const item = this.settingUtils.settings.get(githubUpdateKey);
+        item?.setEleVal?.(githubUpdateEl, item.value);
+
+        const section = document.createElement("div");
+        section.className = "things-settings__maintenance-toggle";
+        const wrapper = document.createElement("div");
+        wrapper.className = "things-settings__ai-toggle";
+        const copy = document.createElement("div");
+        copy.className = "things-settings__ai-toggle-copy";
+        const label = document.createElement("div");
+        label.className = "things-settings__ai-toggle-title";
+        label.textContent = item?.title || "从 GitHub 自动更新";
+        const desc = document.createElement("div");
+        desc.className = "things-settings__ai-toggle-desc";
+        desc.textContent = item?.description || "绕过思源集市，直接从 Things 官方仓库获取正式版";
+        const updateDescription = desc.textContent;
+        copy.append(label, desc);
+
+        const checkButton = document.createElement("button");
+        checkButton.type = "button";
+        checkButton.className = "things-settings__update-button";
+        checkButton.title = "检查更新";
+        checkButton.setAttribute("aria-label", "检查更新");
+        checkButton.innerHTML = '<svg aria-hidden="true"><use xlink:href="#iconRefresh"></use></svg>';
+        const controls = document.createElement("div");
+        controls.className = "things-settings__toggle-controls";
+        controls.append(checkButton, githubUpdateEl);
+        wrapper.append(copy, controls);
+        section.appendChild(wrapper);
+        const setStatus = (message: string, error = false) => {
+          desc.textContent = message || updateDescription;
+          desc.classList.toggle("is-error", error);
+        };
+        const check = async () => {
+          checkButton.disabled = true;
+          await this.runGitHubUpdate(setStatus);
+          if (checkButton.isConnected) checkButton.disabled = false;
+        };
+        checkButton.addEventListener("click", () => void check());
+        githubUpdateEl.addEventListener("change", async () => {
+          await this.settingUtils.setAndSave(githubUpdateKey, githubUpdateEl.checked);
+          setStatus(githubUpdateEl.checked ? "已启用，将在每次启动时检查一次" : "已关闭自动检查");
+          if (githubUpdateEl.checked) await check();
+        });
+        githubUpdateSection = section;
+      }
+
       // AI 功能总开关
       const aiEnabledKey = "aiEnabled";
       const aiEnabledEl = this.settingUtils.getElement(aiEnabledKey) as HTMLInputElement | undefined;
       const aiSection = document.createElement("section");
-      aiSection.className = "things-settings__section things-settings__ai-section";
+      aiSection.className = "things-settings__section things-settings__ai-section things-settings__category";
+      const aiSectionTitle = document.createElement("div");
+      aiSectionTitle.className = "things-settings__category-title";
+      aiSectionTitle.textContent = "AI 设置";
+      aiSection.appendChild(aiSectionTitle);
       const aiConfigSection = document.createElement("div");
       aiConfigSection.id = "things-ai-config-section";
       aiConfigSection.className = "things-settings__ai-config";
@@ -1976,22 +2128,21 @@ export default class ThingsPlugin extends Plugin {
       }
       aiSection.appendChild(aiConfigSection);
 
-      const dangerSection = document.createElement("div");
-      dangerSection.className = "things-settings__section things-settings__action-section";
+      const maintenanceSection = document.createElement("section");
+      maintenanceSection.className = "things-settings__section things-settings__maintenance";
+      const maintenanceTitle = document.createElement("div");
+      maintenanceTitle.className = "things-settings__maintenance-title";
+      maintenanceTitle.textContent = "维护与支持";
+      maintenanceSection.appendChild(maintenanceTitle);
+      if (githubUpdateSection) maintenanceSection.appendChild(githubUpdateSection);
 
-      const dangerTitle = document.createElement("div");
-      dangerTitle.className = "things-settings__action-title";
-      dangerTitle.textContent = "重置 Things";
-      dangerSection.appendChild(dangerTitle);
-
-      const dangerDesc = document.createElement("div");
-      dangerDesc.className = "things-settings__action-desc";
-      dangerDesc.textContent = "清空任务、归档、删除记录、项目、区域、标签、提醒和 AI 会话，并将 Things 设置恢复为默认值。不会影响思源笔记及其他插件。";
-      dangerSection.appendChild(dangerDesc);
+      const maintenanceActions = document.createElement("div");
+      maintenanceActions.className = "things-settings__footer-actions";
 
       const resetButton = document.createElement("button");
       resetButton.className = "things-settings__action-button things-settings__action-button--danger";
-      resetButton.textContent = "清空所有记录并恢复默认";
+      resetButton.textContent = "重置 Things";
+      resetButton.title = "清空 Things 的任务、分类、提醒、AI 会话和设置";
       resetButton.addEventListener("click", () => {
         const taskStats = this.store.tasks.getStorageStats();
         const entityCount = this.store.projects.count + this.store.areas.count + this.store.tags.count;
@@ -2019,36 +2170,22 @@ export default class ThingsPlugin extends Plugin {
             } catch (error) {
               console.error("[Things] Reset failed:", error);
               resetButton.disabled = false;
-              resetButton.textContent = "清空所有记录并恢复默认";
+              resetButton.textContent = "重置 Things";
               showMessage("重置失败，请查看开发者控制台", 5000, "error");
             }
           },
         );
       });
-      dangerSection.appendChild(resetButton);
-      settingsEl.appendChild(dangerSection);
-
-      const supportSection = document.createElement("div");
-      supportSection.className = "things-settings__section things-settings__action-section";
-
-      const supportTitle = document.createElement("div");
-      supportTitle.className = "things-settings__action-title";
-      supportTitle.textContent = "支持与反馈";
-      supportSection.appendChild(supportTitle);
-
-      const supportDesc = document.createElement("div");
-      supportDesc.className = "things-settings__action-desc";
-      supportDesc.textContent = "遇到问题时，可以前往 GitHub 提交反馈。";
-      supportSection.appendChild(supportDesc);
-
       const bugLink = document.createElement("a");
       bugLink.href = "https://github.com/chengslog/siyuan-things/issues/new?labels=bug&title=%5BBug%5D%20";
       bugLink.target = "_blank";
       bugLink.rel = "noopener noreferrer";
       bugLink.className = "things-settings__action-button";
-      bugLink.textContent = "提交 Bug 反馈";
-      supportSection.appendChild(bugLink);
-      settingsEl.appendChild(supportSection);
+      bugLink.textContent = "Bug 反馈";
+      maintenanceActions.appendChild(bugLink);
+      maintenanceActions.appendChild(resetButton);
+      settingsEl.appendChild(maintenanceSection);
+      settingsEl.appendChild(maintenanceActions);
 
     }
   }

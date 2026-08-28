@@ -19,6 +19,7 @@ A Things-inspired GTD task manager for SiYuan Note. It provides Inbox, Today, Up
 | **AI task assistant** | Create, search, summarize, update, and delete tasks through a continuous conversation. |
 | **Theme and layout** | Follows SiYuan's light and dark themes with consistent cards across the sidebar, task list, and AI panel. |
 | **Tab–sidebar following** | Optionally activate and locate the matching sidebar when a document or Things tab is clicked. |
+| **Direct GitHub updates** | Optionally bypass the Marketplace download channel, check stable releases from the official Things repository, verify the archive, and hand it to SiYuan for installation. |
 | **Safer operations** | Preview destructive operations such as deletion before confirmation. |
 | **Workspace data** | Store data through SiYuan's plugin APIs so it can follow workspace sync settings. |
 
@@ -59,6 +60,7 @@ Download `package.zip` from GitHub Releases, extract it to `<SiYuan workspace>/d
 - Set projects, areas, tags, dates, deadlines, reminders, recurrence, notes, and checklists on task cards, or copy a complete task as Markdown.
 - Use natural language in the AI panel to create, find, update, or delete tasks. Deletions require confirmation.
 - Click `Things Task Manager` in SiYuan's plugin menu to open settings directly. The optional **Follow tabs in sidebar** setting can restore SiYuan's native independent tab/sidebar behavior; open the task manager itself from the Things Dock on the left.
+- If the Marketplace download channel is temporarily unavailable, enable **Update automatically from GitHub** or click the refresh icon beside that setting. Only stable releases from the repository fixed in the plugin manifest are accepted, and SiYuan validates the local package before installing it.
 
 ## Local development
 
