@@ -70,6 +70,8 @@ pnpm run build
 
 Copy the contents of `dist/` to `<SiYuan workspace>/data/plugins/siyuan-things/`, then restart SiYuan or reload the plugin.
 
+When developing in a workspace with sync enabled, add `plugins/siyuan-things/**/*` to `<SiYuan workspace>/data/.siyuan/syncignore` so repeated build deployments do not enter sync or trigger plugin reloads. Do not exclude `storage/petal/siyuan-things`; task and settings data should continue to follow the workspace sync configuration.
+
 Releases follow the project's [versioning policy](./docs/versioning.md): during the `0.x` phase, fixes increment the patch version while any new feature increments the minor version.
 
 ## AI configuration and privacy

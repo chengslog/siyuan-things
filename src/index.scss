@@ -1,28 +1,25 @@
 // Things 插件样式
 
-// Things Dock 与标签页共用同一层底板；仅作用于本插件注册的 Dock 内容容器。
+// 思源的 .layout__dockl 已提供 12px 圆角、主题背景和 overflow:hidden。
+// 插件内容保持透明且不重复裁切，避免两层圆角抗锯齿在四角形成透明凸起。
 .things-dock-surface {
-  background: color-mix(
-    in srgb,
-    var(--b3-theme-background) 94%,
-    var(--b3-theme-on-background) 6%
-  ) !important;
+  background: transparent !important;
+  border-radius: 0;
 }
 
 .things-nav {
   padding: 8px 0;
-  // 右侧预留更小：与思源 Dock 自带分隔区、任务卡左距合计约 10px。
-  margin: 10px 4px 10px 10px;
+  margin: 0;
   font-size: 13px;
-  height: calc(100% - 20px);
+  height: 100%;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
   overflow: hidden;
-  border: 1px solid var(--b3-border-color);
-  border-radius: 14px;
-  background: var(--b3-theme-background);
-  box-shadow: 0 4px 16px rgba(30, 43, 62, 0.06);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 
   &__scroll {
     flex: 1;

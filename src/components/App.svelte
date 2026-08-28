@@ -321,11 +321,7 @@
     width: 100%;
     overflow: hidden;
     position: relative; // AI 浮窗遮罩以其为定位上下文（任务列表之上，而非全局）
-    background: color-mix(
-      in srgb,
-      var(--b3-theme-background) 94%,
-      var(--b3-theme-on-background) 6%
-    );
+    background: transparent;
     font-family: var(--b3-font-family);
 
     grid-template-columns: 1fr;
@@ -336,12 +332,11 @@
 
     // ===== 主任务卡片区 =====
     &__main-card {
-      // 左侧靠近 Things Dock；中右间距同样约 10px。
-      margin: 10px 3px 10px 4px;
-      border-radius: 14px;
+      margin: 0;
+      border-radius: var(--b3-border-radius-b, 12px);
       border: 1px solid var(--b3-border-color);
       background: var(--b3-theme-background);
-      box-shadow: 0 4px 16px rgba(30, 43, 62, 0.06);
+      box-shadow: none;
       box-sizing: border-box;
       position: relative;
       overflow: hidden;
@@ -349,20 +344,16 @@
       flex-direction: column;
       min-width: 0;
       min-height: 0;
-      height: calc(100% - 20px);
-
-      .app-shell:not(.is-full) & {
-        margin: 10px;
-      }
+      height: 100%;
     }
 
     // ===== 二级模式：收起提示 =====
     &__secondary-placeholder {
-      margin: 10px;
-      border-radius: 14px;
+      margin: 0;
+      border-radius: var(--b3-border-radius-b, 12px);
       border: 1px solid var(--b3-border-color);
       background: var(--b3-theme-background);
-      box-shadow: 0 4px 16px rgba(30, 43, 62, 0.06);
+      box-shadow: none;
       box-sizing: border-box;
       display: flex;
       flex-direction: column;
@@ -371,7 +362,7 @@
       gap: 8px;
       color: var(--b3-theme-on-surface-light);
       font-size: 13px;
-      height: calc(100% - 20px);
+      height: 100%;
 
       svg {
         width: 40px;
@@ -426,7 +417,7 @@
     // ===== 分隔条 2 =====
     &__divider {
       width: 4px;
-      margin: 10px 0;
+      margin: 0;
       cursor: col-resize;
       background: transparent;
       transition: background 0.15s;
@@ -458,10 +449,10 @@
 
     // ===== AI 面板卡片区 =====
     &__ai-card {
-      margin: 10px 10px 10px 3px;
+      margin: 0;
       min-width: 0;
       min-height: 0;
-      height: calc(100% - 20px);
+      height: 100%;
       display: flex;
       flex-direction: column;
     }

@@ -53,10 +53,10 @@
   .ai-panel {
     height: 100%;
     margin: 0; // 外边距由 App 外壳的卡片容器负责，避免双重 margin 导致高度不一致
-    border-radius: 14px;
+    border-radius: var(--b3-border-radius-b, 12px);
     border: 1px solid var(--b3-border-color);
     background: var(--b3-theme-background);
-    box-shadow: 0 4px 16px rgba(30, 43, 62, 0.06);
+    box-shadow: none;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;

@@ -20,6 +20,13 @@ import { ICON_SPRITE, getViewIconId } from "@/icons";
 import { ReminderService } from "@/reminder";
 import { TAG_PALETTE, nextTagColor } from "@/utils/colors";
 import { renderMarkdown } from "@/utils/markdown";
+import {
+  ACTIVE_SYNC_DOCK_RESTORE_TTL,
+  DOCK_RESTORE_RETRY_DELAYS,
+  POST_SYNC_DOCK_RESTORE_TTL,
+  createDockRestoreIntent,
+  isDockRestoreIntentValid,
+} from "@/utils/dockRestore";
 import { resetAiChat, type AIComposerContext } from "@/stores/aiChat";
 
 const STORAGE_NAME = "things-config";
@@ -37,9 +44,7 @@ export default class ThingsPlugin extends Plugin {
   private dockElement: HTMLElement | null = null;
   private thingsDockType = "things_nav";
   private dockRestoreTimers: number[] = [];
-  private dockRestoreInterval: number | null = null;
-  private dockRestoreObserver: MutationObserver | null = null;
-  private dockRestoreQueued = false;
+  private dockRestoreRevision = 0;
   private syncInProgress = false;
   private layoutResetTimers: number[] = [];
   private pluginMenuObserver: MutationObserver | null = null;
@@ -52,15 +57,14 @@ export default class ThingsPlugin extends Plugin {
   private currentThingsViewId: string | undefined = undefined;
   private sidebarFollowRevision = 0;
   private handleSyncStart = () => {
+    const shouldRestoreDock = this.hasDockRestoreIntent() || this.isThingsDockOpen();
     this.syncInProgress = true;
-    this.dockRestoreTimers.forEach((timer) => window.clearTimeout(timer));
-    this.dockRestoreTimers = [];
-    if (this.isThingsDockOpen()) {
-      sessionStorage.setItem(SYNC_DOCK_RESTORE_KEY, "1");
-      this.startDockRestoreGuard();
+    this.sidebarFollowRevision += 1;
+    this.cancelDockRestoreTimers();
+    if (shouldRestoreDock) {
+      this.setDockRestoreIntent(ACTIVE_SYNC_DOCK_RESTORE_TTL);
     } else {
-      sessionStorage.removeItem(SYNC_DOCK_RESTORE_KEY);
-      this.stopDockRestoreGuard();
+      this.clearDockRestoreIntent();
     }
   };
   private handleSyncEnd = async () => {
@@ -70,6 +74,9 @@ export default class ThingsPlugin extends Plugin {
       if (this.dockElement) this.renderDock(this.dockElement);
     } finally {
       this.syncInProgress = false;
+      if (this.hasDockRestoreIntent()) {
+        this.setDockRestoreIntent(POST_SYNC_DOCK_RESTORE_TTL);
+      }
       this.scheduleDockRestoreAfterSync();
     }
   };
@@ -81,13 +88,10 @@ export default class ThingsPlugin extends Plugin {
     if (!dockButton || (dockType !== "things_nav" && !dockType.endsWith("things_nav"))) return;
 
     const wasDockOpen = dockButton.classList.contains("dock__item--active");
-    // 守护期间用户主动点击已展开的 Dock，视为明确要求关闭，不再自动拉回。
-    if (wasDockOpen && sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) === "1") {
-      sessionStorage.removeItem(SYNC_DOCK_RESTORE_KEY);
-      this.stopDockRestoreGuard();
-      this.dockRestoreTimers.forEach((timer) => window.clearTimeout(timer));
-      this.dockRestoreTimers = [];
-    }
+    // 用户主动操作优先于同步前状态，任何待执行的自动恢复都立即取消。
+    if (this.hasDockRestoreIntent()) this.clearDockRestoreIntent();
+    // 同步期间只让思源处理这次原生 Dock 点击，插件不再聚焦标签页或调整布局。
+    if (this.syncInProgress) return;
 
     // Let SiYuan finish its own dock toggle first. If a Things tab is already
     // open, focus it and preserve its view; otherwise open the configured default.
@@ -118,7 +122,7 @@ export default class ThingsPlugin extends Plugin {
    * 不依赖标签标题或不同版本中易变化的 data-* 属性。
    */
   private handleThingsTabClick = (event: MouseEvent) => {
-    if (this.settingUtils?.get("tabFollowsSidebar") === false) return;
+    if (this.syncInProgress || this.settingUtils?.get("tabFollowsSidebar") === false) return;
     const target = event.target as HTMLElement | null;
     const head = target?.closest<HTMLElement>(".layout-tab-bar .item");
     if (!head || target?.closest(".item__close")) return;
@@ -317,6 +321,7 @@ export default class ThingsPlugin extends Plugin {
         const container = document.createElement("div");
         container.style.height = "100%";
         container.style.overflow = "hidden";
+        this.element.style.overflow = "hidden";
         this.element.appendChild(container);
 
         // 挂载 App 外壳：rail + sidebar + main + AI 面板
@@ -380,10 +385,8 @@ export default class ThingsPlugin extends Plugin {
         this.dockElement = dock.element;
         dock.element.classList.add("things-dock-surface");
         this.renderDock(dock.element);
-        // 同步重建 Dock 模型后尽早恢复，不等待下一次轮询。
-        if (sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) === "1") {
-          window.setTimeout(() => this.restoreThingsDockIfNeeded(), 0);
-        }
+        // 插件因同步结果重载时，等布局稳定后走同一套有限重试，不在 init 内抢占布局。
+        this.scheduleDockRestoreAfterSync();
       },
       destroy() {
         this.dockElement = null;
@@ -552,9 +555,8 @@ export default class ThingsPlugin extends Plugin {
     this.eventBus.off("sync-start", this.handleSyncStart);
     this.eventBus.off("sync-end", this.handleSyncEnd);
     this.eventBus.off("sync-fail", this.handleSyncEnd);
-    this.dockRestoreTimers.forEach((timer) => window.clearTimeout(timer));
-    this.dockRestoreTimers = [];
-    this.stopDockRestoreGuard();
+    // 不清除带有效期的恢复意图：同步结果导致插件重载时由新实例接手。
+    this.cancelDockRestoreTimers();
     this.layoutResetTimers.forEach((timer) => window.clearTimeout(timer));
     this.layoutResetTimers = [];
 
@@ -657,8 +659,8 @@ export default class ThingsPlugin extends Plugin {
     );
     if (!found) return false;
     try {
-      // 守护期间只恢复运行时布局，不把同步过程中的瞬态状态写回 uiLayout。
-      const shouldSaveLayout = sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1";
+      // 同步后恢复只改运行时布局，不把同步过程中的瞬态状态写回 uiLayout。
+      const shouldSaveLayout = !this.hasDockRestoreIntent();
       found.dock.toggleModel(found.type, true, false, false, shouldSaveLayout);
       if (forceRestoreVisibility) found.dock.showDock(true);
       return this.isThingsDockOpen();
@@ -669,7 +671,7 @@ export default class ThingsPlugin extends Plugin {
   }
 
   private restoreThingsDockIfNeeded(): boolean {
-    if (sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1") return false;
+    if (this.syncInProgress || !this.hasDockRestoreIntent()) return false;
     const restored = this.isThingsDockOpen() || this.openThingsDock(true);
     if (restored && this.dockElement) {
       this.setActive(this.dockElement, this.currentThingsView, this.currentThingsViewId);
@@ -677,95 +679,42 @@ export default class ThingsPlugin extends Plugin {
     return restored;
   }
 
-  /** 当前变更是否可能影响 Things 按钮或左侧 Dock 布局。 */
-  private mutationTouchesThingsDock(mutation: MutationRecord): boolean {
-    const button = this.getThingsDockButton();
-    const layoutElement = this.getRuntimeLayout()?.leftDock?.layout?.element as HTMLElement | undefined;
-    const touchesNode = (node: Node): boolean => {
-      if (!(node instanceof HTMLElement)) return false;
-      if (node === button || node === layoutElement || node === this.dockElement) return true;
-      if (node.matches(".dock__item")) {
-        const type = node.dataset.type || "";
-        if (type === this.thingsDockType || type === "things_nav" || type.endsWith("things_nav")) return true;
-      }
-      if (button && (node.contains(button) || button.contains(node))) return true;
-      if (layoutElement && (node.contains(layoutElement) || layoutElement.contains(node))) return true;
-      if (node.matches("#dockLeft, .layout__dockl")) return true;
-      if (node.querySelector("#dockLeft, .layout__dockl")) return true;
-      return Array.from(node.querySelectorAll<HTMLElement>(".dock__item")).some((item) => {
-        const type = item.dataset.type || "";
-        return type === this.thingsDockType || type === "things_nav" || type.endsWith("things_nav");
-      });
-    };
-
-    if (touchesNode(mutation.target)) return true;
-    return Array.from(mutation.addedNodes).some(touchesNode)
-      || Array.from(mutation.removedNodes).some(touchesNode);
+  private setDockRestoreIntent(ttl: number) {
+    sessionStorage.setItem(SYNC_DOCK_RESTORE_KEY, createDockRestoreIntent(Date.now(), ttl));
   }
 
-  /** 将同一批 DOM 变更合并，并在浏览器下一次绘制前恢复 Dock。 */
-  private queueImmediateDockRestore() {
-    if (this.dockRestoreQueued || sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1") return;
-    this.dockRestoreQueued = true;
-    queueMicrotask(() => {
-      this.dockRestoreQueued = false;
-      if (sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1") return;
-      if (!this.isThingsDockOpen()) this.restoreThingsDockIfNeeded();
-    });
+  private hasDockRestoreIntent(): boolean {
+    const raw = sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY);
+    const valid = isDockRestoreIntentValid(raw, Date.now());
+    if (!valid && raw) sessionStorage.removeItem(SYNC_DOCK_RESTORE_KEY);
+    return valid;
   }
 
-  /**
-   * 同步期间持续守护 Dock 展开状态。MutationObserver 在浏览器绘制前即时恢复，
-   * 100ms 轮询只负责模型重建尚未就绪等无法即时恢复的边界情况。
-   */
-  private startDockRestoreGuard() {
-    if (sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1") return;
-    this.restoreThingsDockIfNeeded();
-    if (!this.dockRestoreObserver) {
-      this.dockRestoreObserver = new MutationObserver((mutations) => {
-        if (mutations.some((mutation) => this.mutationTouchesThingsDock(mutation))) {
-          this.queueImmediateDockRestore();
-        }
-      });
-      this.dockRestoreObserver.observe(document.body, {
-        subtree: true,
-        childList: true,
-        attributes: true,
-        attributeFilter: ["class", "style", "data-type"],
-      });
-    }
-    if (this.dockRestoreInterval === null) {
-      this.dockRestoreInterval = window.setInterval(() => {
-        this.restoreThingsDockIfNeeded();
-      }, 100);
-    }
-  }
-
-  private stopDockRestoreGuard() {
-    if (this.dockRestoreInterval !== null) {
-      window.clearInterval(this.dockRestoreInterval);
-      this.dockRestoreInterval = null;
-    }
-    this.dockRestoreObserver?.disconnect();
-    this.dockRestoreObserver = null;
-    this.dockRestoreQueued = false;
-  }
-
-  private scheduleDockRestoreAfterSync() {
-    if (sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1") return;
-    this.startDockRestoreGuard();
+  private cancelDockRestoreTimers() {
+    this.dockRestoreRevision += 1;
     this.dockRestoreTimers.forEach((timer) => window.clearTimeout(timer));
-    const delays = [0, 120, 400, 900, 1800, 3000];
-    this.dockRestoreTimers = delays.map((delay, index) => window.setTimeout(() => {
-      if (sessionStorage.getItem(SYNC_DOCK_RESTORE_KEY) !== "1") return;
-      this.restoreThingsDockIfNeeded();
+    this.dockRestoreTimers = [];
+  }
 
-      // 不在第一次成功时撤掉标记：思源可能仍在继续重建布局。
-      // 等最后一次延迟校准结束且没有新同步，再解除守护。
-      if (index === delays.length - 1 && !this.syncInProgress) {
-        sessionStorage.removeItem(SYNC_DOCK_RESTORE_KEY);
-        this.stopDockRestoreGuard();
-        this.dockRestoreTimers = [];
+  private clearDockRestoreIntent() {
+    sessionStorage.removeItem(SYNC_DOCK_RESTORE_KEY);
+    this.cancelDockRestoreTimers();
+  }
+
+  /** 同步结束且布局稳定后最多尝试三次；同步过程中绝不操作 Dock。 */
+  private scheduleDockRestoreAfterSync() {
+    this.cancelDockRestoreTimers();
+    if (this.syncInProgress || !this.hasDockRestoreIntent()) return;
+
+    const revision = this.dockRestoreRevision;
+    this.dockRestoreTimers = DOCK_RESTORE_RETRY_DELAYS.map((delay, index) => window.setTimeout(() => {
+      if (revision !== this.dockRestoreRevision || this.syncInProgress || !this.hasDockRestoreIntent()) return;
+      if (this.restoreThingsDockIfNeeded()) {
+        this.clearDockRestoreIntent();
+        return;
+      }
+      if (index === DOCK_RESTORE_RETRY_DELAYS.length - 1) {
+        this.clearDockRestoreIntent();
       }
     }, delay));
   }

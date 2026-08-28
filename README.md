@@ -85,6 +85,8 @@ pnpm run build
 
 将 `dist/` 中的内容复制到 `<思源工作空间>/data/plugins/siyuan-things/`，然后重启思源或重新加载插件。
 
+如果该工作空间启用了同步，本地开发时建议在 `<思源工作空间>/data/.siyuan/syncignore` 中加入 `plugins/siyuan-things/**/*`，避免反复覆盖构建文件时触发同步和插件重载。请勿排除 `storage/petal/siyuan-things`，任务与设置数据仍应按工作空间配置同步。
+
 版本发布遵循项目的[版本管理规则](./docs/versioning.zh-CN.md)：`0.x` 阶段仅修复问题时升级补丁版本，包含新功能时升级次版本。
 
 ## 兼容性与反馈
