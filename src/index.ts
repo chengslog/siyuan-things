@@ -30,8 +30,10 @@ import {
 import {
   GITHUB_RELEASE_API,
   expectedSha256,
+  readGitHubPackage,
   resolveGitHubUpdate,
   type GitHubRelease,
+  type GitHubUpdate,
 } from "@/utils/githubUpdater";
 import { resetAiChat, type AIComposerContext } from "@/stores/aiChat";
 
@@ -40,8 +42,19 @@ const TAB_TYPE = "things_tab";
 const SYNC_DOCK_RESTORE_KEY = "siyuan-things:dock-open-before-sync";
 const AI_CONTEXT_MIME = "application/x-siyuan-things-context";
 const AI_CONTEXT_DROP_EVENT = "things-ai-context-drop";
+const GITHUB_UPDATE_PENDING_KEY = "siyuan-things:github-update-pending";
+const GITHUB_UPDATE_MONITOR_KEY = "__siyuanThingsUpdateMonitor";
 declare const __PLUGIN_VERSION__: string;
 declare const __PLUGIN_CHANGELOG__: string;
+
+type GitHubUpdatePhase = "checking" | "downloading" | "verifying" | "installing" | "success" | "latest" | "error";
+type GitHubUpdateStatus = {
+  phase: GitHubUpdatePhase;
+  message: string;
+  percent: number;
+};
+type GitHubUpdateReporter = (status: GitHubUpdateStatus) => void;
+type PreparedGitHubUpdate = { release: GitHubRelease; update: GitHubUpdate };
 
 export default class ThingsPlugin extends Plugin {
   private store: StoreManager;
@@ -63,6 +76,8 @@ export default class ThingsPlugin extends Plugin {
   private currentThingsViewId: string | undefined = undefined;
   private sidebarFollowRevision = 0;
   private githubUpdatePromise: Promise<void> | null = null;
+  private githubUpdateAbortController: AbortController | null = null;
+  private githubUpdateCancelable = false;
   private handleSyncStart = () => {
     const shouldRestoreDock = this.hasDockRestoreIntent() || this.isThingsDockOpen();
     this.syncInProgress = true;
@@ -311,66 +326,454 @@ export default class ThingsPlugin extends Plugin {
     if (actual !== expected) throw new Error("下载的 package.zip SHA-256 校验失败");
   }
 
-  private async performGitHubUpdate(status?: (message: string, error?: boolean) => void): Promise<void> {
-    const report = (message: string, error = false) => {
-      status?.(message, error);
-      console[error ? "error" : "info"](`[Things Update] ${message}`);
-    };
-    report("正在检查 GitHub 最新版本…");
+  private async withUpdateTimeout<T>(
+    label: string,
+    timeoutMs: number,
+    operation: (signal: AbortSignal) => Promise<T>,
+    parentSignal?: AbortSignal,
+  ): Promise<T> {
+    const controller = new AbortController();
+    let timedOut = false;
+    const abortFromParent = () => controller.abort();
+    parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+    const timer = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    try {
+      return await operation(controller.signal);
+    } catch (error) {
+      if (timedOut) throw new Error(`${label}超时，请检查网络后重试`);
+      if (parentSignal?.aborted) throw new Error("更新已取消");
+      throw error;
+    } finally {
+      window.clearTimeout(timer);
+      parentSignal?.removeEventListener("abort", abortFromParent);
+    }
+  }
 
-    const releaseResponse = await fetch(GITHUB_RELEASE_API, {
+  private rememberPendingGitHubUpdate(version: string): void {
+    try {
+      localStorage.setItem(GITHUB_UPDATE_PENDING_KEY, JSON.stringify({ version, startedAt: Date.now() }));
+    } catch (error) {
+      console.warn("[Things Update] Failed to persist pending update:", error);
+    }
+  }
+
+  private clearPendingGitHubUpdate(): void {
+    try {
+      localStorage.removeItem(GITHUB_UPDATE_PENDING_KEY);
+    } catch {
+      // localStorage 不可用时不影响更新流程。
+    }
+  }
+
+  private announceCompletedGitHubUpdate(): void {
+    try {
+      const raw = localStorage.getItem(GITHUB_UPDATE_PENDING_KEY);
+      if (!raw) return;
+      const pending = JSON.parse(raw) as { version?: string; startedAt?: number };
+      const fresh = typeof pending.startedAt === "number" && Date.now() - pending.startedAt < 10 * 60 * 1000;
+      if (pending.version === __PLUGIN_VERSION__ && fresh) {
+        this.clearPendingGitHubUpdate();
+        window.setTimeout(() => this.openGitHubUpdateResultDialog(__PLUGIN_VERSION__), 900);
+      } else if (!fresh) {
+        this.clearPendingGitHubUpdate();
+      }
+    } catch {
+      this.clearPendingGitHubUpdate();
+    }
+  }
+
+  private startGitHubUpdateMonitor(
+    version: string,
+    report: GitHubUpdateReporter,
+    onConfirmationTimeout: (message: string) => void,
+  ): () => void {
+    const host = window as typeof window & Record<string, any>;
+    const existing = host[GITHUB_UPDATE_MONITOR_KEY];
+    if (existing?.timer) window.clearInterval(existing.timer);
+    if (existing?.expires) window.clearTimeout(existing.expires);
+
+    const state: { timer?: number; expires?: number; done: boolean } = { done: false };
+    const stop = () => {
+      if (state.timer) window.clearInterval(state.timer);
+      if (state.expires) window.clearTimeout(state.expires);
+      if (host[GITHUB_UPDATE_MONITOR_KEY] === state) delete host[GITHUB_UPDATE_MONITOR_KEY];
+    };
+    const check = async () => {
+      if (state.done) return;
+      try {
+        const response = await fetch(`/plugins/siyuan-things/plugin.json?t=${Date.now()}`, { cache: "no-store" });
+        if (!response.ok) return;
+        const manifest = await response.json();
+        if (manifest?.version !== version) return;
+        state.done = true;
+        stop();
+        this.clearPendingGitHubUpdate();
+        report({ phase: "success", message: `已成功更新到 v${version}`, percent: 100 });
+      } catch {
+        // 插件重载期间静态资源可能短暂不可用，下一轮继续检查。
+      }
+    };
+    state.timer = window.setInterval(() => void check(), 800);
+    state.expires = window.setTimeout(() => {
+      stop();
+      this.clearPendingGitHubUpdate();
+      onConfirmationTimeout("安装结果确认超时，请重新打开设置查看版本");
+    }, 3 * 60 * 1000);
+    host[GITHUB_UPDATE_MONITOR_KEY] = state;
+    return stop;
+  }
+
+  private async checkLatestGitHubUpdate(
+    report?: GitHubUpdateReporter,
+    parentSignal?: AbortSignal,
+  ): Promise<PreparedGitHubUpdate | null> {
+    report?.({ phase: "checking", message: "正在检查 GitHub 最新版本…", percent: 8 });
+    const releaseResponse = await this.withUpdateTimeout("版本检查", 20_000, (signal) => fetch(GITHUB_RELEASE_API, {
       headers: { Accept: "application/vnd.github+json" },
       cache: "no-store",
-    });
+      signal,
+    }), parentSignal);
     if (!releaseResponse.ok) throw new Error(`GitHub 版本检查失败（HTTP ${releaseResponse.status}）`);
     const release = await releaseResponse.json() as GitHubRelease;
     const update = resolveGitHubUpdate(release, __PLUGIN_VERSION__);
-    if (!update) {
-      report(`当前已是最新版本 v${__PLUGIN_VERSION__}`);
+    return update ? { release, update } : null;
+  }
+
+  private async performGitHubUpdate(
+    report: GitHubUpdateReporter,
+    prepared?: PreparedGitHubUpdate,
+    parentSignal?: AbortSignal,
+  ): Promise<void> {
+    const resolved = prepared || await this.checkLatestGitHubUpdate(report, parentSignal);
+    if (!resolved) {
+      report({ phase: "latest", message: `当前已是最新版本 v${__PLUGIN_VERSION__}`, percent: 100 });
       return;
     }
+    const { release, update } = resolved;
 
-    report(`发现 v${update.version}，正在下载并校验…`);
-    showMessage(`Things v${update.version} 正在从 GitHub 下载`, 3500);
-    const packageResponse = await fetch(update.asset.browser_download_url, { cache: "no-store" });
-    if (!packageResponse.ok) throw new Error(`package.zip 下载失败（HTTP ${packageResponse.status}）`);
-    const packageBlob = await packageResponse.blob();
+    this.githubUpdateCancelable = true;
+    report({ phase: "downloading", message: `准备下载 v${update.version}…`, percent: 16 });
+    const packageBlob = await this.withUpdateTimeout("安装包下载", 120_000, async (signal) => {
+      const sources = [
+        update.asset.url ? {
+          name: "GitHub Assets API",
+          url: update.asset.url,
+          headers: {
+            Accept: "application/octet-stream",
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+        } : null,
+        {
+          name: "GitHub Release",
+          url: update.asset.browser_download_url,
+          headers: undefined,
+        },
+      ].filter(Boolean) as Array<{ name: string; url: string; headers?: Record<string, string> }>;
+      let lastError: unknown;
+      for (const source of sources) {
+        try {
+          report({ phase: "downloading", message: `正在连接 ${source.name}…`, percent: 16 });
+          const packageResponse = await fetch(source.url, {
+            cache: "no-store",
+            headers: source.headers,
+            signal,
+          });
+          if (!packageResponse.ok) throw new Error(`HTTP ${packageResponse.status}`);
+          return await readGitHubPackage(packageResponse, update.asset.size, ({ received, total, percent }) => {
+            const receivedMB = (received / 1024 / 1024).toFixed(1);
+            const totalMB = (total / 1024 / 1024).toFixed(1);
+            report({
+              phase: "downloading",
+              message: `正在下载 v${update.version}：${percent}%（${receivedMB}/${totalMB} MB）`,
+              percent: 16 + Math.round(percent * 0.58),
+            });
+          });
+        } catch (error) {
+          if (signal.aborted) throw error;
+          lastError = error;
+          console.warn(`[Things Update] ${source.name} download failed:`, error);
+        }
+      }
+      const detail = lastError instanceof Error ? `：${lastError.message}` : "";
+      throw new Error(`所有 GitHub 下载入口均不可用${detail}`);
+    }, parentSignal);
+    this.githubUpdateCancelable = false;
+    report({ phase: "verifying", message: `下载完成，正在校验 v${update.version}…`, percent: 78 });
     await this.verifyGitHubPackage(packageBlob, release);
 
-    report(`v${update.version} 校验通过，正在交给思源安装…`);
+    report({ phase: "installing", message: `校验通过，正在安装 v${update.version}（已等待 0 秒）…`, percent: 88 });
     const form = new FormData();
     form.append("file", packageBlob, "package.zip");
     form.append("frontend", getFrontend());
     form.append("overwrite", "true");
-    const installResponse = await fetch("/api/bazaar/installLocalBazaarPackage", {
-      method: "POST",
-      body: form,
-    });
-    if (!installResponse.ok) throw new Error(`思源本地安装接口失败（HTTP ${installResponse.status}）`);
+    this.rememberPendingGitHubUpdate(update.version);
+    const stopMonitor = this.startGitHubUpdateMonitor(
+      update.version,
+      report,
+      (message) => report({ phase: "error", message, percent: 100 }),
+    );
+    const installStartedAt = Date.now();
+    const installTicker = window.setInterval(() => {
+      const seconds = Math.max(1, Math.floor((Date.now() - installStartedAt) / 1000));
+      report({ phase: "installing", message: `正在安装 v${update.version}（已等待 ${seconds} 秒）…`, percent: 90 });
+    }, 1000);
+    let installResponse: Response;
+    try {
+      installResponse = await this.withUpdateTimeout("安装", 120_000, (signal) => fetch("/api/bazaar/installLocalBazaarPackage", {
+        method: "POST",
+        body: form,
+        signal,
+      }), parentSignal);
+    } catch (error) {
+      stopMonitor();
+      this.clearPendingGitHubUpdate();
+      throw error;
+    } finally {
+      window.clearInterval(installTicker);
+    }
+    if (!installResponse.ok) {
+      stopMonitor();
+      this.clearPendingGitHubUpdate();
+      throw new Error(`思源本地安装接口失败（HTTP ${installResponse.status}）`);
+    }
     const result = await installResponse.json();
-    if (result?.code !== 0) throw new Error(result?.msg || "思源未能安装 GitHub 更新包");
+    if (result?.code !== 0) {
+      stopMonitor();
+      this.clearPendingGitHubUpdate();
+      throw new Error(result?.msg || "思源未能安装 GitHub 更新包");
+    }
 
-    report(`已更新到 v${update.version}，Things 正在重新加载`);
-    showMessage(`Things 已更新到 v${update.version}，正在重新加载`, 5000);
+    report({ phase: "installing", message: `v${update.version} 已安装，正在确认插件重载…`, percent: 96 });
   }
 
-  private runGitHubUpdate(status?: (message: string, error?: boolean) => void): Promise<void> {
+  private runGitHubUpdate(report: GitHubUpdateReporter, prepared?: PreparedGitHubUpdate): Promise<void> {
     if (this.githubUpdatePromise) return this.githubUpdatePromise;
-    this.githubUpdatePromise = this.performGitHubUpdate(status)
-      .catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        status?.(`更新失败：${message}`, true);
-        console.error("[Things Update] GitHub update failed:", error);
-        showMessage(`Things GitHub 更新失败：${message}`, 6000, "error");
-      })
+    this.githubUpdateAbortController = new AbortController();
+    this.githubUpdateCancelable = true;
+    this.githubUpdatePromise = this.performGitHubUpdate(
+      report,
+      prepared,
+      this.githubUpdateAbortController.signal,
+    )
       .finally(() => {
         this.githubUpdatePromise = null;
+        this.githubUpdateAbortController = null;
+        this.githubUpdateCancelable = false;
       });
     return this.githubUpdatePromise;
   }
 
+  private cancelGitHubUpdate(): void {
+    if (this.githubUpdateCancelable) this.githubUpdateAbortController?.abort();
+  }
+
+  private openGitHubUpdateResultDialog(version: string): void {
+    const dialog = new Dialog({
+      title: "",
+      content: `
+        <div class="things-update-card things-update-card--result">
+          <div class="things-update-card__title">Things 已更新到 v${version}</div>
+          <div class="things-update-card__detail">请关闭当前 Things 标签页，然后从侧边栏重新打开 Things。</div>
+          <div class="things-update-card__progress-row">
+            <div class="things-update-card__progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">
+              <div class="things-update-card__progress-value" style="width: 100%"></div>
+            </div>
+            <div class="things-update-card__status">已完成</div>
+          </div>
+          <div class="things-update-card__actions">
+            <button type="button" class="things-update-card__button is-primary" data-action="confirm">知道了</button>
+          </div>
+        </div>`,
+      width: "424px",
+    });
+    dialog.element.classList.add("things-update-dialog");
+    dialog.element.querySelector('[data-action="confirm"]')?.addEventListener("click", () => {
+      dialog.destroy();
+    });
+  }
+
+  private openGitHubUpdateDialog(prepared?: PreparedGitHubUpdate, confirmFirst = false): void {
+    let running = false;
+    let finished = false;
+    const dialog = new Dialog({
+      title: "",
+      content: `
+        <div class="things-update-card">
+          <div class="things-update-card__title"></div>
+          <div class="things-update-card__detail"></div>
+          <div class="things-update-card__progress-row">
+            <div class="things-update-card__progress" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+              <div class="things-update-card__progress-value"></div>
+            </div>
+            <div class="things-update-card__status"></div>
+          </div>
+          <div class="things-update-card__actions"></div>
+        </div>`,
+      width: "424px",
+      destroyCallback: () => {
+        if (running && !finished) this.cancelGitHubUpdate();
+      },
+    });
+    dialog.element.classList.add("things-update-dialog");
+
+    const card = dialog.element.querySelector(".things-update-card") as HTMLElement;
+    const title = card.querySelector(".things-update-card__title") as HTMLElement;
+    const detail = card.querySelector(".things-update-card__detail") as HTMLElement;
+    const progressRow = card.querySelector(".things-update-card__progress-row") as HTMLElement;
+    const progress = card.querySelector(".things-update-card__progress") as HTMLElement;
+    const progressValue = card.querySelector(".things-update-card__progress-value") as HTMLElement;
+    const statusText = card.querySelector(".things-update-card__status") as HTMLElement;
+    const actions = card.querySelector(".things-update-card__actions") as HTMLElement;
+    const nativeClose = dialog.element.querySelector(".b3-dialog__close") as HTMLElement | null;
+
+    const setActions = (items: Array<{
+      label: string;
+      primary?: boolean;
+      danger?: boolean;
+      action: () => void;
+    }>) => {
+      actions.replaceChildren();
+      for (const item of items) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "things-update-card__button";
+        button.classList.toggle("is-primary", Boolean(item.primary));
+        button.classList.toggle("is-danger", Boolean(item.danger));
+        button.textContent = item.label;
+        button.addEventListener("click", item.action);
+        actions.appendChild(button);
+      }
+    };
+
+    const renderFailure = (message: string, cancelled = false) => {
+      running = false;
+      title.textContent = cancelled ? "更新已取消" : "更新失败";
+      detail.textContent = message;
+      progressRow.style.display = "";
+      progress.classList.remove("is-indeterminate");
+      progress.classList.add("is-error");
+      progressValue.style.width = "100%";
+      progress.setAttribute("aria-valuenow", "100");
+      statusText.textContent = cancelled ? "已取消" : "失败";
+      if (nativeClose) nativeClose.style.visibility = "";
+      setActions([
+        { label: "关闭", action: () => dialog.destroy() },
+        { label: "重试", primary: true, action: () => void startUpdate() },
+      ]);
+    };
+
+    const renderStatus = (status: GitHubUpdateStatus) => {
+      if (status.phase === "success" && !dialog.element.isConnected) {
+        this.openGitHubUpdateResultDialog(status.message.match(/v([\d.]+)/)?.[1] || __PLUGIN_VERSION__);
+        return;
+      }
+      const titles: Record<GitHubUpdatePhase, string> = {
+        checking: "正在检查更新",
+        downloading: "正在下载更新",
+        verifying: "正在校验更新",
+        installing: "正在安装更新",
+        success: "Things 更新完成",
+        latest: "当前已是最新版本",
+        error: "更新失败",
+      };
+      const details: Record<GitHubUpdatePhase, string> = {
+        checking: "正在从 GitHub 获取最新版本信息。",
+        downloading: "下载完成后将自动校验并安装更新包。",
+        verifying: "正在确认更新包完整且未被篡改。",
+        installing: "安装完成后，请关闭当前 Things 标签页并重新打开。",
+        success: "请关闭当前 Things 标签页，然后从侧边栏重新打开 Things。",
+        latest: status.message,
+        error: status.message,
+      };
+      const downloadPercent = status.message.match(/：(\d+)%/)?.[1];
+      const waitedSeconds = status.message.match(/已等待\s*(\d+)\s*秒/)?.[1];
+      const phaseText: Record<GitHubUpdatePhase, string> = {
+        checking: "正在检查…",
+        downloading: downloadPercent ? `${downloadPercent}%` : "正在连接…",
+        verifying: "正在校验…",
+        installing: waitedSeconds ? `已等待 ${waitedSeconds} 秒` : "正在安装…",
+        success: "已完成",
+        latest: "已是最新",
+        error: "失败",
+      };
+      title.textContent = titles[status.phase];
+      detail.textContent = details[status.phase];
+      statusText.textContent = phaseText[status.phase];
+      progressRow.style.display = "";
+      progress.classList.toggle("is-indeterminate", status.phase === "installing");
+      progress.classList.toggle("is-error", status.phase === "error");
+      progressValue.style.width = `${status.percent}%`;
+      progress.setAttribute("aria-valuenow", String(status.percent));
+      if (nativeClose) nativeClose.style.visibility = status.phase === "installing" ? "hidden" : "";
+      if (status.phase === "checking" || status.phase === "downloading") {
+        setActions([{ label: "取消", action: () => this.cancelGitHubUpdate() }]);
+      } else if (status.phase === "success") {
+        running = false;
+        finished = true;
+        setActions([{ label: "知道了", primary: true, action: () => dialog.destroy() }]);
+      } else if (status.phase === "latest") {
+        running = false;
+        finished = true;
+        setActions([{ label: "确定", primary: true, action: () => dialog.destroy() }]);
+      } else if (status.phase === "error") {
+        renderFailure(status.message);
+      } else {
+        setActions([]);
+      }
+    };
+
+    const startUpdate = async () => {
+      if (running) return;
+      running = true;
+      finished = false;
+      progress.className = "things-update-card__progress";
+      setActions([]);
+      try {
+        await this.runGitHubUpdate(renderStatus, prepared);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error("[Things Update] GitHub update failed:", error);
+        renderFailure(message, message === "更新已取消");
+      }
+    };
+
+    if (confirmFirst && prepared) {
+      const { version } = prepared.update;
+      title.textContent = `发现 Things v${version}`;
+      detail.textContent = `当前版本为 v${__PLUGIN_VERSION__}，是否立即从 GitHub 更新？`;
+      progressRow.style.display = "none";
+      setActions([
+        { label: "稍后", action: () => dialog.destroy() },
+        {
+          label: "立即更新",
+          primary: true,
+          action: () => {
+            progressRow.style.display = "";
+            void startUpdate();
+          },
+        },
+      ]);
+    } else {
+      void startUpdate();
+    }
+  }
+
+  private async checkGitHubUpdateOnStartup(): Promise<void> {
+    try {
+      const prepared = await this.checkLatestGitHubUpdate();
+      if (prepared) this.openGitHubUpdateDialog(prepared, true);
+    } catch (error) {
+      // 启动检查失败不打扰用户，手动检查时会在更新卡片中显示详细原因。
+      console.warn("[Things Update] Startup update check failed:", error);
+    }
+  }
+
   async onload() {
     console.log("[Things] Loading plugin...");
+    this.announceCompletedGitHubUpdate();
 
     this.store = new StoreManager(this);
 
@@ -540,7 +943,7 @@ export default class ThingsPlugin extends Plugin {
       value: false,
       type: "checkbox",
       title: "从 GitHub 自动更新",
-      description: "启动时直接检查 Things 官方 GitHub 仓库，发现新的正式版后下载、校验并交给思源安装，不经过思源集市下载通道。",
+      description: "启动时检查 Things 官方 GitHub 仓库，发现新正式版后先询问，确认后再下载、校验并安装。",
     });
 
     // AI 服务配置
@@ -610,7 +1013,7 @@ export default class ThingsPlugin extends Plugin {
     }
     this.scheduleDockRestoreAfterSync();
     if (this.settingUtils.get("githubAutoUpdate") === true) {
-      window.setTimeout(() => void this.runGitHubUpdate(), 1200);
+      window.setTimeout(() => void this.checkGitHubUpdateOnStartup(), 1200);
     }
 
     {
@@ -1961,7 +2364,6 @@ export default class ThingsPlugin extends Plugin {
         const desc = document.createElement("div");
         desc.className = "things-settings__ai-toggle-desc";
         desc.textContent = item?.description || "绕过思源集市，直接从 Things 官方仓库获取正式版";
-        const updateDescription = desc.textContent;
         copy.append(label, desc);
 
         const checkButton = document.createElement("button");
@@ -1975,20 +2377,12 @@ export default class ThingsPlugin extends Plugin {
         controls.append(checkButton, githubUpdateEl);
         wrapper.append(copy, controls);
         section.appendChild(wrapper);
-        const setStatus = (message: string, error = false) => {
-          desc.textContent = message || updateDescription;
-          desc.classList.toggle("is-error", error);
-        };
-        const check = async () => {
-          checkButton.disabled = true;
-          await this.runGitHubUpdate(setStatus);
-          if (checkButton.isConnected) checkButton.disabled = false;
-        };
-        checkButton.addEventListener("click", () => void check());
+        checkButton.addEventListener("click", () => {
+          dialog.destroy();
+          window.setTimeout(() => this.openGitHubUpdateDialog(), 120);
+        });
         githubUpdateEl.addEventListener("change", async () => {
           await this.settingUtils.setAndSave(githubUpdateKey, githubUpdateEl.checked);
-          setStatus(githubUpdateEl.checked ? "已启用，将在每次启动时检查一次" : "已关闭自动检查");
-          if (githubUpdateEl.checked) await check();
         });
         githubUpdateSection = section;
       }

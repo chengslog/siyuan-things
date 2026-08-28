@@ -60,7 +60,7 @@ Download `package.zip` from GitHub Releases, extract it to `<SiYuan workspace>/d
 - Set projects, areas, tags, dates, deadlines, reminders, recurrence, notes, and checklists on task cards, or copy a complete task as Markdown.
 - Use natural language in the AI panel to create, find, update, or delete tasks. Deletions require confirmation.
 - Click `Things Task Manager` in SiYuan's plugin menu to open settings directly. The optional **Follow tabs in sidebar** setting can restore SiYuan's native independent tab/sidebar behavior; open the task manager itself from the Things Dock on the left.
-- If the Marketplace download channel is temporarily unavailable, enable **Update automatically from GitHub** or click the refresh icon beside that setting. Only stable releases from the repository fixed in the plugin manifest are accepted, and SiYuan validates the local package before installing it.
+- If the Marketplace download channel is temporarily unavailable, enable **Update automatically from GitHub** or click the refresh icon beside that setting. Startup checks ask before installing; manual updates close Settings and use a dedicated card for download, verification, installation, reload progress, cancellation, and retry instead of silently replacing the plugin.
 
 ## Local development
 

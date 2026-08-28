@@ -418,7 +418,129 @@
 
   &:disabled {
     opacity: 0.55;
-    cursor: wait;
+    cursor: default;
+  }
+
+  &.is-updating svg {
+    animation: things-settings-update-spin 0.9s linear infinite;
+  }
+}
+
+@keyframes things-settings-update-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.things-update-card {
+  padding: 20px 22px 18px;
+  text-align: left;
+}
+
+.things-update-dialog {
+  .b3-dialog__container {
+    overflow: hidden;
+    border-radius: 18px;
+  }
+
+  .b3-dialog__header {
+    display: none;
+  }
+}
+
+.things-update-card__title {
+  color: var(--b3-theme-on-background);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 26px;
+}
+
+.things-update-card__detail {
+  margin-top: 4px;
+  color: var(--b3-theme-on-surface-light);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.things-update-card__progress-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.things-update-card__progress {
+  position: relative;
+  flex: 1;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--b3-theme-surface-light);
+
+  &.is-error .things-update-card__progress-value {
+    background: var(--b3-theme-error);
+  }
+
+  &.is-indeterminate .things-update-card__progress-value {
+    width: 38% !important;
+    animation: things-update-progress-slide 1.1s ease-in-out infinite;
+  }
+}
+
+.things-update-card__progress-value {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--b3-theme-primary);
+  transition: width 0.18s ease;
+}
+
+.things-update-card__status {
+  flex: 0 0 auto;
+  min-width: 64px;
+  color: var(--b3-theme-on-surface-light);
+  font-size: 12px;
+  line-height: 18px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.things-update-card__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.things-update-card__button {
+  min-width: 88px;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--b3-border-color);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--b3-theme-on-background);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--b3-theme-surface-light);
+  }
+
+  &.is-primary {
+    border-color: var(--b3-theme-primary);
+    background: var(--b3-theme-primary);
+    color: var(--b3-theme-on-primary);
+  }
+}
+
+@keyframes things-update-progress-slide {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(270%);
   }
 }
 
