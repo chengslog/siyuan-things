@@ -7,6 +7,14 @@
   border-radius: 0;
 }
 
+// 左侧卡片的圆角和背景由思源 Dock 外壳负责，阴影也加在同一层，
+// 避免插件内层再次绘制表面而产生圆角锯齿。
+.layout__dockl:has(.things-dock-surface) {
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.06),
+    0 8px 24px rgba(15, 23, 42, 0.08);
+}
+
 .things-nav {
   padding: 8px 0;
   margin: 0;

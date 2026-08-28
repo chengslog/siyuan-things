@@ -44,6 +44,24 @@ const AI_CONTEXT_MIME = "application/x-siyuan-things-context";
 const AI_CONTEXT_DROP_EVENT = "things-ai-context-drop";
 const GITHUB_UPDATE_PENDING_KEY = "siyuan-things:github-update-pending";
 const GITHUB_UPDATE_MONITOR_KEY = "__siyuanThingsUpdateMonitor";
+const GITHUB_UPDATE_CARD_STYLE = `<style data-things-update-card-style>
+  .things-update-dialog .b3-dialog__container{overflow:hidden;border-radius:18px}
+  .things-update-dialog .b3-dialog__header{display:none}
+  .things-update-dialog .things-update-card{box-sizing:border-box;width:100%;padding:20px 22px 18px;text-align:left}
+  .things-update-dialog .things-update-card__title{color:var(--b3-theme-on-background);font-size:18px;font-weight:600;line-height:26px}
+  .things-update-dialog .things-update-card__detail{margin-top:4px;color:var(--b3-theme-on-surface-light);font-size:13px;line-height:20px}
+  .things-update-dialog .things-update-card__progress-row{display:flex;align-items:center;gap:12px;margin-top:16px}
+  .things-update-dialog .things-update-card__progress{position:relative;flex:1;height:5px;overflow:hidden;border-radius:999px;background:var(--b3-theme-surface-light)}
+  .things-update-dialog .things-update-card__progress.is-error .things-update-card__progress-value{background:var(--b3-theme-error)}
+  .things-update-dialog .things-update-card__progress.is-indeterminate .things-update-card__progress-value{width:38%!important;animation:things-update-progress-slide 1.1s ease-in-out infinite}
+  .things-update-dialog .things-update-card__progress-value{width:0;height:100%;border-radius:inherit;background:var(--b3-theme-primary);transition:width .18s ease}
+  .things-update-dialog .things-update-card__status{flex:0 0 auto;min-width:64px;color:var(--b3-theme-on-surface-light);font-size:12px;line-height:18px;text-align:right;white-space:nowrap}
+  .things-update-dialog .things-update-card__actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+  .things-update-dialog .things-update-card__button{min-width:88px;height:32px;padding:0 14px;border:1px solid var(--b3-border-color);border-radius:6px;background:transparent;color:var(--b3-theme-on-background);font:inherit;font-size:12px;cursor:pointer}
+  .things-update-dialog .things-update-card__button:hover{background:var(--b3-theme-surface-light)}
+  .things-update-dialog .things-update-card__button.is-primary{border-color:var(--b3-theme-primary);background:var(--b3-theme-primary);color:var(--b3-theme-on-primary)}
+  @keyframes things-update-progress-slide{from{transform:translateX(-120%)}to{transform:translateX(270%)}}
+</style>`;
 declare const __PLUGIN_VERSION__: string;
 declare const __PLUGIN_CHANGELOG__: string;
 
@@ -78,6 +96,12 @@ export default class ThingsPlugin extends Plugin {
   private githubUpdatePromise: Promise<void> | null = null;
   private githubUpdateAbortController: AbortController | null = null;
   private githubUpdateCancelable = false;
+  private githubUpdateMonitorStop: (() => void) | null = null;
+  private githubUpdateResultTimer: number | null = null;
+  private githubUpdateDialogs = new Set<Dialog>();
+  private githubUpdateCompletionPending = false;
+  private githubUpdateHandoffActive = false;
+  private unloaded = false;
   private handleSyncStart = () => {
     const shouldRestoreDock = this.hasDockRestoreIntent() || this.isThingsDockOpen();
     this.syncInProgress = true;
@@ -200,6 +224,7 @@ export default class ThingsPlugin extends Plugin {
   private handleThingsNavigate = async (event: Event) => {
     const detail = (event as CustomEvent).detail || {};
     if (!detail.view) return;
+    if (detail.openDock === true) this.openThingsDock();
     await this.openThingsTab(detail.view, detail.viewId);
     if (this.dockElement) this.setActive(this.dockElement, detail.view, detail.viewId);
   };
@@ -228,7 +253,7 @@ export default class ThingsPlugin extends Plugin {
    * 但页签头仍然存在。通过稳定标记和 SiYuan 自定义页签属性兜底查找，
    * 避免把“引用暂时丢失”误判成“页签不存在”。
    */
-  private findExistingThingsTabHead(): HTMLElement | null {
+  private findExistingThingsTabHeads(): HTMLElement[] {
     const customId = `${this.name}${TAB_TYPE}`;
     const selectors = [
       '[data-things-tab="true"]',
@@ -246,7 +271,39 @@ export default class ThingsPlugin extends Plugin {
       if (head?.isConnected && !heads.includes(head)) heads.push(head);
     });
 
+    return heads;
+  }
+
+  private findExistingThingsTabHead(): HTMLElement | null {
+    const heads = this.findExistingThingsTabHeads();
     return heads.find((head) => head.classList.contains("item--focus")) || heads[0] || null;
+  }
+
+  /** Close every Things custom tab, including tabs whose data-type was namespaced by SiYuan. */
+  private closeThingsTabs(): void {
+    const tabs = new Set<any>();
+    if (this.thingsTab) tabs.add(this.thingsTab);
+    document.querySelectorAll<HTMLElement>('[data-things-tab-content="true"]').forEach((element) => {
+      const tab = (element as any).__thingsTab;
+      if (tab) tabs.add(tab);
+    });
+
+    this.findExistingThingsTabHeads().forEach((head) => {
+      const closeButton = head.querySelector<HTMLElement>(".item__close");
+      closeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+
+    // A restored custom tab can temporarily have no close button. Fall back to the
+    // Tab model that SiYuan exposes to custom page implementations.
+    tabs.forEach((tab) => {
+      const head = tab?.headElement as HTMLElement | undefined;
+      if (!head?.isConnected) return;
+      try {
+        tab?.parent?.removeTab?.(tab.id);
+      } catch (error) {
+        console.warn("[Things] Failed to close a stale Things tab:", error);
+      }
+    });
   }
 
   private markThingsTab(tab: any, modelElement?: HTMLElement, app?: any) {
@@ -375,8 +432,11 @@ export default class ThingsPlugin extends Plugin {
       const pending = JSON.parse(raw) as { version?: string; startedAt?: number };
       const fresh = typeof pending.startedAt === "number" && Date.now() - pending.startedAt < 10 * 60 * 1000;
       if (pending.version === __PLUGIN_VERSION__ && fresh) {
-        this.clearPendingGitHubUpdate();
-        window.setTimeout(() => this.openGitHubUpdateResultDialog(__PLUGIN_VERSION__), 900);
+        this.githubUpdateCompletionPending = true;
+        this.githubUpdateResultTimer = window.setTimeout(() => {
+          this.githubUpdateResultTimer = null;
+          this.openGitHubUpdateResultDialog(__PLUGIN_VERSION__);
+        }, 1200);
       } else if (!fresh) {
         this.clearPendingGitHubUpdate();
       }
@@ -397,6 +457,7 @@ export default class ThingsPlugin extends Plugin {
 
     const state: { timer?: number; expires?: number; done: boolean } = { done: false };
     const stop = () => {
+      state.done = true;
       if (state.timer) window.clearInterval(state.timer);
       if (state.expires) window.clearTimeout(state.expires);
       if (host[GITHUB_UPDATE_MONITOR_KEY] === state) delete host[GITHUB_UPDATE_MONITOR_KEY];
@@ -410,7 +471,6 @@ export default class ThingsPlugin extends Plugin {
         if (manifest?.version !== version) return;
         state.done = true;
         stop();
-        this.clearPendingGitHubUpdate();
         report({ phase: "success", message: `已成功更新到 v${version}`, percent: 100 });
       } catch {
         // 插件重载期间静态资源可能短暂不可用，下一轮继续检查。
@@ -509,12 +569,17 @@ export default class ThingsPlugin extends Plugin {
     form.append("file", packageBlob, "package.zip");
     form.append("frontend", getFrontend());
     form.append("overwrite", "true");
+    this.githubUpdateHandoffActive = true;
     this.rememberPendingGitHubUpdate(update.version);
     const stopMonitor = this.startGitHubUpdateMonitor(
       update.version,
       report,
-      (message) => report({ phase: "error", message, percent: 100 }),
+      (message) => {
+        this.githubUpdateHandoffActive = false;
+        report({ phase: "error", message, percent: 100 });
+      },
     );
+    this.githubUpdateMonitorStop = stopMonitor;
     const installStartedAt = Date.now();
     const installTicker = window.setInterval(() => {
       const seconds = Math.max(1, Math.floor((Date.now() - installStartedAt) / 1000));
@@ -528,20 +593,26 @@ export default class ThingsPlugin extends Plugin {
         signal,
       }), parentSignal);
     } catch (error) {
+      this.githubUpdateHandoffActive = false;
       stopMonitor();
+      if (this.githubUpdateMonitorStop === stopMonitor) this.githubUpdateMonitorStop = null;
       this.clearPendingGitHubUpdate();
       throw error;
     } finally {
       window.clearInterval(installTicker);
     }
     if (!installResponse.ok) {
+      this.githubUpdateHandoffActive = false;
       stopMonitor();
+      if (this.githubUpdateMonitorStop === stopMonitor) this.githubUpdateMonitorStop = null;
       this.clearPendingGitHubUpdate();
       throw new Error(`思源本地安装接口失败（HTTP ${installResponse.status}）`);
     }
     const result = await installResponse.json();
     if (result?.code !== 0) {
+      this.githubUpdateHandoffActive = false;
       stopMonitor();
+      if (this.githubUpdateMonitorStop === stopMonitor) this.githubUpdateMonitorStop = null;
       this.clearPendingGitHubUpdate();
       throw new Error(result?.msg || "思源未能安装 GitHub 更新包");
     }
@@ -570,13 +641,79 @@ export default class ThingsPlugin extends Plugin {
     if (this.githubUpdateCancelable) this.githubUpdateAbortController?.abort();
   }
 
+  private destroyGitHubUpdateDialog(dialog: Dialog): void {
+    this.githubUpdateDialogs.delete(dialog);
+    dialog.destroy();
+  }
+
+  private destroyGitHubUpdateDialogs(): void {
+    const dialogs = Array.from(this.githubUpdateDialogs);
+    this.githubUpdateDialogs.clear();
+    dialogs.forEach((dialog) => dialog.destroy());
+  }
+
+  /** Replace any tab surviving the plugin reload with a tab owned by this instance. */
+  private reopenThingsTabAfterUpdate(dialog: Dialog): void {
+    const hasLiveTab = this.hasLiveThingsTab();
+    const view = hasLiveTab ? this.currentThingsView : this.getConfiguredThingsView();
+    const viewId = hasLiveTab ? this.currentThingsViewId : undefined;
+    this.githubUpdateHandoffActive = false;
+    this.githubUpdateCompletionPending = false;
+    this.clearPendingGitHubUpdate();
+    this.destroyGitHubUpdateDialog(dialog);
+    this.closeThingsTabs();
+
+    let attempts = 0;
+    const reopen = () => {
+      const staleHeads = this.findExistingThingsTabHeads();
+      if (staleHeads.length > 0 && attempts < 10) {
+        attempts += 1;
+        this.closeThingsTabs();
+        window.setTimeout(reopen, 60);
+        return;
+      }
+      if (staleHeads.length > 0) {
+        showMessage("旧 Things 标签页未能自动关闭，请手动关闭后从侧边栏重新打开");
+        return;
+      }
+      this.thingsApp = null;
+      this.thingsTab = null;
+      this.thingsTabElement = null;
+      if (this.unloaded) {
+        this.reopenThingsTabThroughCurrentPlugin(view, viewId);
+      } else {
+        void this.openThingsTab(view, viewId);
+      }
+    };
+    window.setTimeout(reopen, 60);
+  }
+
+  private reopenThingsTabThroughCurrentPlugin(view: ViewType, viewId?: string, attempt = 0): void {
+    const dock = Array.from(document.querySelectorAll<HTMLElement>(".dock__item")).find((item) => {
+      const type = item.dataset.type || "";
+      return type === "things_nav" || type.endsWith("things_nav");
+    });
+    const dockOpened = dock ? this.openThingsDock() : false;
+    if ((!dock || !dockOpened) && attempt < 20) {
+      window.setTimeout(() => this.reopenThingsTabThroughCurrentPlugin(view, viewId, attempt + 1), 100);
+      return;
+    }
+    if (!dock) {
+      showMessage("Things 新版本尚未加载，请从插件列表重新启用后再打开");
+      return;
+    }
+    window.dispatchEvent(new CustomEvent("things-navigate", { detail: { view, viewId, openDock: true } }));
+  }
+
   private openGitHubUpdateResultDialog(version: string): void {
-    const dialog = new Dialog({
+    let dialog!: Dialog;
+    dialog = new Dialog({
       title: "",
       content: `
+        ${GITHUB_UPDATE_CARD_STYLE}
         <div class="things-update-card things-update-card--result">
           <div class="things-update-card__title">Things 已更新到 v${version}</div>
-          <div class="things-update-card__detail">请关闭当前 Things 标签页，然后从侧边栏重新打开 Things。</div>
+          <div class="things-update-card__detail">重新打开 Things 后即可使用新版本。</div>
           <div class="things-update-card__progress-row">
             <div class="things-update-card__progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">
               <div class="things-update-card__progress-value" style="width: 100%"></div>
@@ -584,23 +721,27 @@ export default class ThingsPlugin extends Plugin {
             <div class="things-update-card__status">已完成</div>
           </div>
           <div class="things-update-card__actions">
-            <button type="button" class="things-update-card__button is-primary" data-action="confirm">知道了</button>
+            <button type="button" class="things-update-card__button is-primary" data-action="confirm">重新打开 Things</button>
           </div>
         </div>`,
       width: "424px",
+      destroyCallback: () => this.githubUpdateDialogs.delete(dialog),
     });
+    this.githubUpdateDialogs.add(dialog);
     dialog.element.classList.add("things-update-dialog");
     dialog.element.querySelector('[data-action="confirm"]')?.addEventListener("click", () => {
-      dialog.destroy();
+      this.reopenThingsTabAfterUpdate(dialog);
     });
   }
 
   private openGitHubUpdateDialog(prepared?: PreparedGitHubUpdate, confirmFirst = false): void {
     let running = false;
     let finished = false;
-    const dialog = new Dialog({
+    let dialog!: Dialog;
+    dialog = new Dialog({
       title: "",
       content: `
+        ${GITHUB_UPDATE_CARD_STYLE}
         <div class="things-update-card">
           <div class="things-update-card__title"></div>
           <div class="things-update-card__detail"></div>
@@ -614,9 +755,11 @@ export default class ThingsPlugin extends Plugin {
         </div>`,
       width: "424px",
       destroyCallback: () => {
+        this.githubUpdateDialogs.delete(dialog);
         if (running && !finished) this.cancelGitHubUpdate();
       },
     });
+    this.githubUpdateDialogs.add(dialog);
     dialog.element.classList.add("things-update-dialog");
 
     const card = dialog.element.querySelector(".things-update-card") as HTMLElement;
@@ -667,7 +810,6 @@ export default class ThingsPlugin extends Plugin {
 
     const renderStatus = (status: GitHubUpdateStatus) => {
       if (status.phase === "success" && !dialog.element.isConnected) {
-        this.openGitHubUpdateResultDialog(status.message.match(/v([\d.]+)/)?.[1] || __PLUGIN_VERSION__);
         return;
       }
       const titles: Record<GitHubUpdatePhase, string> = {
@@ -684,7 +826,7 @@ export default class ThingsPlugin extends Plugin {
         downloading: "下载完成后将自动校验并安装更新包。",
         verifying: "正在确认更新包完整且未被篡改。",
         installing: "安装完成后，请关闭当前 Things 标签页并重新打开。",
-        success: "请关闭当前 Things 标签页，然后从侧边栏重新打开 Things。",
+        success: "点击下方按钮关闭旧标签页，并使用新版本重新打开 Things。",
         latest: status.message,
         error: status.message,
       };
@@ -713,7 +855,11 @@ export default class ThingsPlugin extends Plugin {
       } else if (status.phase === "success") {
         running = false;
         finished = true;
-        setActions([{ label: "知道了", primary: true, action: () => dialog.destroy() }]);
+        setActions([{
+          label: "重新打开 Things",
+          primary: true,
+          action: () => this.reopenThingsTabAfterUpdate(dialog),
+        }]);
       } else if (status.phase === "latest") {
         running = false;
         finished = true;
@@ -772,6 +918,7 @@ export default class ThingsPlugin extends Plugin {
   }
 
   async onload() {
+    this.unloaded = false;
     console.log("[Things] Loading plugin...");
     this.announceCompletedGitHubUpdate();
 
@@ -1012,8 +1159,16 @@ export default class ThingsPlugin extends Plugin {
       this.updateCounts(this.dockElement);
     }
     this.scheduleDockRestoreAfterSync();
-    if (this.settingUtils.get("githubAutoUpdate") === true) {
+    if (!this.githubUpdateCompletionPending && this.settingUtils.get("githubAutoUpdate") === true) {
       window.setTimeout(() => void this.checkGitHubUpdateOnStartup(), 1200);
+    }
+
+    // A completed update owns the next navigation decision. Keep the workspace
+    // free of stale or auto-restored Things tabs until the user confirms the
+    // result card, then reopen through the new plugin instance.
+    if (this.githubUpdateCompletionPending) {
+      console.log("[Things Update] Waiting for completion confirmation before reopening Things");
+      return;
     }
 
     {
@@ -1038,6 +1193,25 @@ export default class ThingsPlugin extends Plugin {
 
   async onunload() {
     console.log("[Things] Plugin unloaded");
+    this.unloaded = true;
+    const preserveUpdateHandoff = this.githubUpdateHandoffActive && this.githubUpdateDialogs.size > 0;
+    if (preserveUpdateHandoff) {
+      // The initiating instance owns the visible update flow until the new
+      // version is loaded. Avoid a second result dialog from the new instance.
+      this.clearPendingGitHubUpdate();
+    } else {
+      this.githubUpdateMonitorStop?.();
+      this.githubUpdateMonitorStop = null;
+      if (this.githubUpdateResultTimer !== null) {
+        window.clearTimeout(this.githubUpdateResultTimer);
+        this.githubUpdateResultTimer = null;
+      }
+      // SiYuan removes the plugin stylesheet immediately after onunload. Normal
+      // dialogs must go with the instance; an active update dialog is preserved
+      // above because it carries its own scoped handoff styles.
+      this.destroyGitHubUpdateDialogs();
+    }
+    this.closeThingsTabs();
     this.pluginMenuObserver?.disconnect();
     this.pluginMenuObserver = null;
     document.removeEventListener("click", this.handleThingsDockButtonClick, true);
@@ -1060,14 +1234,6 @@ export default class ThingsPlugin extends Plugin {
       this.unsubTaskChange = null;
     }
 
-    // 关闭所有 Things 相关的标签页
-    const tabs = document.querySelectorAll(`[data-type="${TAB_TYPE}"]`);
-    tabs.forEach(tab => {
-      const closeBtn = tab.querySelector('.item__close');
-      if (closeBtn) {
-        (closeBtn as HTMLElement).click();
-      }
-    });
   }
 
   /**

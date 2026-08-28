@@ -54,9 +54,13 @@
     height: 100%;
     margin: 0; // 外边距由 App 外壳的卡片容器负责，避免双重 margin 导致高度不一致
     border-radius: var(--b3-border-radius-b, 12px);
+    // 右上角由思源标签宿主裁切，避免两层圆角抗锯齿叠加。
+    border-top-right-radius: 0;
     border: 1px solid var(--b3-border-color);
     background: var(--b3-theme-background);
-    box-shadow: none;
+    box-shadow:
+      0 1px 2px rgba(15, 23, 42, 0.06),
+      0 8px 24px rgba(15, 23, 42, 0.08);
     box-sizing: border-box;
     display: flex;
     flex-direction: column;

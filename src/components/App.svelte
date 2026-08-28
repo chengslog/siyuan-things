@@ -336,7 +336,9 @@
       border-radius: var(--b3-border-radius-b, 12px);
       border: 1px solid var(--b3-border-color);
       background: var(--b3-theme-background);
-      box-shadow: none;
+      box-shadow:
+        0 1px 2px rgba(15, 23, 42, 0.06),
+        0 8px 24px rgba(15, 23, 42, 0.08);
       box-sizing: border-box;
       position: relative;
       overflow: hidden;
@@ -347,13 +349,27 @@
       height: 100%;
     }
 
+    // 思源标签宿主负责页面顶部的外侧圆角。与宿主重合的角保持直角，
+    // 由宿主做唯一一次裁切；卡片内部和底部仍保留自己的圆角。
+    &:not(.is-full) &__main-card,
+    &:not(.is-full) &__secondary-placeholder {
+      border-top-left-radius: 0;
+      border-top-right-radius: 0;
+    }
+
+    &.is-full &__main-card {
+      border-top-left-radius: 0;
+    }
+
     // ===== 二级模式：收起提示 =====
     &__secondary-placeholder {
       margin: 0;
       border-radius: var(--b3-border-radius-b, 12px);
       border: 1px solid var(--b3-border-color);
       background: var(--b3-theme-background);
-      box-shadow: none;
+      box-shadow:
+        0 1px 2px rgba(15, 23, 42, 0.06),
+        0 8px 24px rgba(15, 23, 42, 0.08);
       box-sizing: border-box;
       display: flex;
       flex-direction: column;
