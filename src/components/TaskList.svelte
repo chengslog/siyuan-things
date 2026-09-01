@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick, getContext } from "svelte";
+  import { onMount, tick, getContext, createEventDispatcher } from "svelte";
   import { cubicOut } from "svelte/easing";
   import { flip } from "svelte/animate";
   import { slide } from "svelte/transition";
@@ -27,8 +27,12 @@
   // full=AI 面板独立列；button=右下角 ✧ FAB；header=Header 内 ✦＋；compact=Header 仅小 ✦
   export let aiMode: 'full' | 'button' | 'header' | 'compact' = 'button';
   export let aiEnabled: boolean = true;
+  // 宽屏下由用户手动最小化 AI 面板时，点击 AI 按钮恢复原面板。
+  export let aiPanelRestorable: boolean = false;
   // AI 浮窗打开时隐藏整个 FAB 组
   export let hideFabs: boolean = false;
+
+  const dispatch = createEventDispatcher<{ restoreAiPanel: void }>();
 
   // 获取 plugin 实例（从 App.svelte 的 context 中）
   const plugin = getContext<any>("plugin");
@@ -1017,7 +1021,15 @@
   }
 
   // 通用拖拽处理器：支持 "+" 和 "✨" 两个按钮
-  function handleFabDragDown(e: MouseEvent, fab: HTMLButtonElement, onDrop: (target: { group: string; index: number } | null, dest: { view: ViewType; viewId?: string }) => void) {
+  function handleFabDragDown(
+    e: MouseEvent,
+    fab: HTMLButtonElement,
+    onDrop: (
+      target: { group: string; index: number } | null,
+      dest: { view: ViewType; viewId?: string },
+      interaction: 'click' | 'drop'
+    ) => void
+  ) {
     if (e.button !== 0) return;
     e.preventDefault();
     const startX = e.clientX;
@@ -1152,7 +1164,7 @@
       document.removeEventListener("mouseup", onUp);
       cancelOpen();
       if (!dragging) {
-        onDrop(null, { view, viewId }); // 直接点击 → 当前视图顶部
+        onDrop(null, { view, viewId }, 'click'); // 直接点击 → 当前视图顶部
         return;
       }
       const nav = hoverNav;
@@ -1175,10 +1187,10 @@
         const nv = nav.dataset.view as ViewType;
         const nid = nav.dataset.id;
         window.dispatchEvent(new CustomEvent("things-navigate", { detail: { view: nv, viewId: nid } }));
-        onDrop(null, { view: nv, viewId: nid });
+        onDrop(null, { view: nv, viewId: nid }, 'drop');
       } else if (list) {
         // 在任务列表上松手 → 在插入位置弹出
-        onDrop(insertTarget, { view, viewId });
+        onDrop(insertTarget, { view, viewId }, 'drop');
       }
       // 两者都不是：仅回弹，不做任何操作
     };
@@ -1198,7 +1210,13 @@
 
   // "✨" 按钮拖拽
   function handleAIFabMouseDown(e: MouseEvent) {
-    handleFabDragDown(e, aiFabBtnEl, (target, dest) => openAICreator(target, dest));
+    handleFabDragDown(e, aiFabBtnEl, (target, dest, interaction) => {
+      if (interaction === 'click' && aiPanelRestorable) {
+        dispatch('restoreAiPanel');
+        return;
+      }
+      openAICreator(target, dest);
+    });
   }
 
   // 视图标题（依赖 refreshKey：项目改名后标题同步刷新）
@@ -1687,7 +1705,8 @@
         <button
           class="things-fab__btn things-fab__btn--ai"
           bind:this={aiFabBtnEl}
-          title="AI 智能创建（可拖到侧边栏或列表）"
+          title={aiPanelRestorable ? "恢复 AI 面板" : "AI 智能创建（可拖到侧边栏或列表）"}
+          aria-label={aiPanelRestorable ? "恢复 AI 面板" : "AI 智能创建"}
           on:mousedown={handleAIFabMouseDown}
         >
           <svg><use xlink:href="#iconThingsSparkles" /></svg>

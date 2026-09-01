@@ -32,8 +32,11 @@
         <div class="ai-panel__title">AI 任务整理</div>
         <div class="ai-panel__subtitle">自然语言 → 结构化任务卡片</div>
       </div>
-      <button class="ai-panel__new-chat" disabled={$aiIsSending} on:click={startNewAiChat} title="开始新会话">
-        新会话
+      <button class="ai-panel__new-chat" disabled={$aiIsSending} on:click={startNewAiChat} title="开始新会话" aria-label="开始新会话">
+        <Icon name="iconThingsAdd" size={15} />
+      </button>
+      <button class="ai-panel__minimize" on:click={() => dispatch("minimize")} title="最小化 AI 面板" aria-label="最小化 AI 面板">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg>
       </button>
     </div>
 
@@ -112,18 +115,47 @@
       color: var(--b3-theme-on-surface-light);
     }
 
-    &__new-chat {
-      padding: 5px 9px;
-      border: 1px solid var(--b3-border-color);
+    &__new-chat,
+    &__minimize {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: none;
       border-radius: 7px;
-      background: var(--b3-theme-background);
-      color: var(--b3-theme-on-surface);
-      font-size: 11px;
+      background: transparent;
+      color: var(--b3-theme-on-surface-light);
       cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       flex-shrink: 0;
+      transition: background 0.15s, color 0.15s;
 
-      &:hover { background: var(--b3-theme-surface-lighter); }
+      &:hover {
+        background: var(--b3-theme-surface-light);
+        color: var(--b3-theme-on-surface);
+      }
+
+      &:focus-visible {
+        outline: 2px solid var(--b3-theme-primary);
+        outline-offset: 1px;
+      }
+    }
+
+    &__new-chat {
+      :global(.things-icon) { fill: currentColor; }
       &:disabled { opacity: 0.5; cursor: default; }
+    }
+
+    &__minimize {
+      svg {
+        width: 16px;
+        height: 16px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+      }
     }
 
     &__body {

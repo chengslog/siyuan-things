@@ -58,7 +58,7 @@ Download `package.zip` from GitHub Releases, extract it to `<SiYuan workspace>/d
 - Use Inbox, Today, Upcoming, Anytime, Someday, and Log to manage the task lifecycle.
 - In an area, use the project chips below the title to filter the whole task page. In project and tag details, clicking `+` opens the new-task card near the current reading position. Project headings can be reordered and collapsed, while Completed stays fixed at the bottom.
 - Set projects, areas, tags, dates, deadlines, reminders, recurrence, notes, and checklists on task cards, or copy a complete task as Markdown.
-- Use natural language in the AI panel to create, find, update, or delete tasks. Deletions require confirmation.
+- Use natural language in the AI panel to create, find, update, or delete tasks. Minimize the panel to an AI button when you need more room for the task list, then click it again to restore the current conversation. Deletions require confirmation.
 - Click `Things Task Manager` in SiYuan's plugin menu to open settings directly. The optional **Follow tabs in sidebar** setting can restore SiYuan's native independent tab/sidebar behavior; open the task manager itself from the Things Dock on the left.
 - If the Marketplace download channel is temporarily unavailable, enable **Update automatically from GitHub** or click the refresh icon beside that setting. Startup checks ask before installing; manual updates close Settings and use a dedicated card for download, verification, installation, reload progress, cancellation, and retry. After a successful update, **Reopen Things** closes the stale tab, loads the new instance, and restores the sidebar instead of silently replacing the plugin.
 

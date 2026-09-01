@@ -45,11 +45,21 @@
   // 钳制下限保证 TaskList ≥ 2/5、AI ≥ 1/5；两者都到下限时 FULL 条件打破，面板退出。
   $: canShowPanel = aiEnabled &&
     thingsWidth >= taskListMinWidth + aiPanelMinWidth + DIVIDER_WIDTH;
-  $: aiState = canShowPanel
+  let aiPanelMinimized = false;
+  $: aiState = canShowPanel && !aiPanelMinimized
     ? 'full'
     : thingsWidth >= taskListMinWidth
       ? 'button'
       : 'secondary';
+  $: aiPanelRestorable = aiPanelMinimized && canShowPanel;
+
+  function minimizeAIPanel() {
+    aiPanelMinimized = true;
+  }
+
+  function restoreAIPanel() {
+    aiPanelMinimized = false;
+  }
 
   // ========== 二级页面：侧边栏一级、任务列表二级 ==========
   let navOpened = false; // 用户在二级模式下是否点过侧边栏导航
@@ -266,7 +276,9 @@
         {store}
         aiMode={aiState === 'full' ? 'full' : 'button'}
         {aiEnabled}
+        {aiPanelRestorable}
         hideFabs={aiWindowOpen}
+        on:restoreAiPanel={restoreAIPanel}
       />
     </div>
   {:else}
@@ -297,6 +309,7 @@
         currentView={view}
         currentViewId={viewId}
         {aiConfig}
+        on:minimize={minimizeAIPanel}
       />
     </div>
   {/if}
