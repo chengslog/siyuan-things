@@ -1,19 +1,28 @@
 import type { Plugin } from 'siyuan';
-import type { Task, TaskStatus, RepeatRule } from '@/types';
+import type { Task, TaskStatus, RepeatRule, ProjectStatus } from '@/types';
 import { BaseStore } from './base';
 import { genUUID } from '@/utils/id';
 import { initialRepeatStartDate, nextRepeatTimestamp } from '@/utils/recurrence';
 import { removeTagId } from '@/utils/tagCleanup';
+import { isTaskVisibleForProjectStatus } from '@/utils/taskVisibility';
 
 export class TaskStore extends BaseStore<Task> {
   private archiveFileName: string;
   private archivedItems: Map<string, Task> = new Map();
   private trashFileName = 'tasks-trash.json';
   private trashBatches: Array<{ id: string; deletedAt: number; tasks: Task[] }> = [];
+  private getProjectStatus?: (projectId: string) => ProjectStatus | undefined;
 
-  constructor(plugin: Plugin) {
+  constructor(plugin: Plugin, getProjectStatus?: (projectId: string) => ProjectStatus | undefined) {
     super(plugin, 'tasks.json');
     this.archiveFileName = 'tasks-archive.json';
+    this.getProjectStatus = getProjectStatus;
+  }
+
+  /** 暂停或作废项目中的任务不参与全局时间视图。 */
+  private isVisibleInStandardView(task: Task): boolean {
+    if (!task.projectId || !this.getProjectStatus) return true;
+    return isTaskVisibleForProjectStatus(task, this.getProjectStatus(task.projectId));
   }
 
   /** 删除标签前批量清理当前、归档和回收记录中的任务引用。 */
@@ -416,6 +425,7 @@ export class TaskStore extends BaseStore<Task> {
       t.status === 'todo' &&
       !t.parentId &&
       !t.someday &&
+      this.isVisibleInStandardView(t) &&
       (
         // 条件1：开始日期 <= 今天
         (t.startDate && t.startDate <= todayEndTs) ||
@@ -437,7 +447,8 @@ export class TaskStore extends BaseStore<Task> {
     return this.getAll().filter(t =>
       t.status === 'todo' &&
       !t.parentId &&
-      !t.someday && (
+      !t.someday &&
+      this.isVisibleInStandardView(t) && (
         (t.startDate && t.startDate > todayEndTs) ||
         (t.deadline && t.deadline > todayEndTs && !t.startDate)
       )
@@ -466,6 +477,7 @@ export class TaskStore extends BaseStore<Task> {
       t.status === 'todo' &&
       !t.someday &&
       !t.parentId &&
+      this.isVisibleInStandardView(t) &&
       (
         // 条件1：无日期任务
         (!t.startDate && !t.deadline) ||
@@ -485,6 +497,7 @@ export class TaskStore extends BaseStore<Task> {
     return this.getAll().filter(t =>
       t.status === 'todo' &&
       !t.parentId &&
+      this.isVisibleInStandardView(t) &&
       t.someday === true
     );
   }

@@ -907,8 +907,8 @@
   // 标签变化
   async function handleTagChange(e: CustomEvent) {
     selectedTags = e.detail.tags;
-    showTagPicker = false;
     if (mode === 'create') {
+      showTagPicker = false;
       tick().then(() => titleInput?.focus());
     }
   }
@@ -975,9 +975,9 @@
     someday = false;
   }
 
-  // 清除标签
-  async function clearTags() {
-    selectedTags = [];
+  // 只移除指定标签，保留任务上的其他标签。
+  function removeTag(tagId: string) {
+    selectedTags = selectedTags.filter((id) => id !== tagId);
   }
 
   // 清除截止日期
@@ -1510,18 +1510,25 @@
 
           <!-- 标签 -->
           {#if tags.length > 0}
-            <div class="task-card__tag-item">
-              <button
-                class="task-card__tag-btn"
-                on:click|stopPropagation={() => { showTagPicker = !showTagPicker; showDatePicker = false; showDeadlinePicker = false; showProjectAreaPicker = false; }}
-              >
-                {#each tags as tag, i}
+            <div class="task-card__tag-group">
+              {#each tags as tag (tag.id)}
+                <div class="task-card__tag-item">
+                  <button
+                    class="task-card__tag-btn"
+                    title="编辑标签"
+                    on:click|stopPropagation={() => { showTagPicker = !showTagPicker; showDatePicker = false; showDeadlinePicker = false; showProjectAreaPicker = false; }}
+                  >
                   <span class="task-card__tag-dot" style="background: {tag.color || '#999'}"></span>
                   <span>{tag.name}</span>
-                  {#if i < tags.length - 1}<span>, </span>{/if}
-                {/each}
-              </button>
-              <button class="task-card__tag-remove" on:click|stopPropagation={clearTags}>×</button>
+                  </button>
+                  <button
+                    class="task-card__tag-remove"
+                    title={`移除标签“${tag.name}”`}
+                    aria-label={`移除标签“${tag.name}”`}
+                    on:click|stopPropagation={() => removeTag(tag.id)}
+                  >×</button>
+                </div>
+              {/each}
 
               {#if showTagPicker}
                 <div class="task-card__dropdown" use:smartPosition>
@@ -2624,6 +2631,14 @@
           color: var(--b3-theme-error);
         }
       }
+    }
+
+    &__tag-group {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 4px;
+      position: relative;
     }
 
     &__flag {

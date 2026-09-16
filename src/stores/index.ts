@@ -14,8 +14,8 @@ export class StoreManager {
 
   constructor(plugin: Plugin) {
     // 使用文件存储
-    this.tasks = new TaskStore(plugin);
     this.projects = new ProjectStore(plugin);
+    this.tasks = new TaskStore(plugin, (projectId) => this.projects.get(projectId)?.status);
     this.areas = new AreaStore(plugin);
     this.tags = new TagStore(plugin, (tagId) => this.tasks.removeTagFromAll(tagId));
   }
