@@ -26,6 +26,38 @@ test('keeps model-selected tags and does not infer issue tags for ordinary tasks
   );
 });
 
+test('drops a model-proposed bug tag when the current request has no explicit issue wording', () => {
+  assert.deepEqual(
+    inferExistingTaskTags(
+      '测试 mstsc 的方式下重定向小票打印机美团打印情况，测试 usbip 重定向的方式下美团打印的情况',
+      ['Bug', '测试', '打印'],
+      ['Bug', '测试'],
+    ),
+    ['测试'],
+  );
+});
+
+test('keeps a model-proposed issue tag when the user explicitly reports an issue', () => {
+  assert.deepEqual(
+    inferExistingTaskTags('美团打印出现异常', ['Bug', '测试'], ['Bug', '测试']),
+    ['Bug', '测试'],
+  );
+});
+
+test('recognizes natural malfunction symptoms without requiring a fixed issue noun', () => {
+  assert.deepEqual(
+    inferExistingTaskTags('同步后标签消失了', ['Bug', '测试']),
+    ['Bug'],
+  );
+});
+
+test('always keeps an issue tag explicitly selected by the user', () => {
+  assert.deepEqual(
+    inferExistingTaskTags('复测小票打印方案', ['Bug', '测试'], ['Bug'], ['Bug']),
+    ['Bug'],
+  );
+});
+
 test('normalizes hash prefixes, spacing, case and hierarchical paths to existing names', () => {
   assert.equal(findExistingTagName(' # BUG ', ['Bug', '产品']), 'Bug');
   assert.equal(findExistingTagName('工作 / 缺陷', ['工作', '缺陷']), '缺陷');

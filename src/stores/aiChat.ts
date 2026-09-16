@@ -319,6 +319,7 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
             text,
             taskStore!.tags.getAll().map((tag) => tag.name),
             task.tags || [],
+            creationContexts.filter((context) => context.kind === 'tag').map((context) => context.value),
           ),
         }));
       if (!round.parsedTasks.length) throw new Error('AI 未返回有效任务草稿');
