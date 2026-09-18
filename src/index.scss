@@ -7,12 +7,45 @@
   border-radius: 0;
 }
 
+// 移动端的 Dock 是全屏一级页面，不沿用桌面左侧 Dock 的卡片外壳。
+.things-dock-surface--mobile {
+  display: flex !important;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: var(--b3-theme-background) !important;
+  box-shadow: none !important;
+}
+
+.things-mobile-task-host {
+  position: absolute;
+  z-index: 8;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
 // 左侧卡片的圆角和背景由思源 Dock 外壳负责，阴影也加在同一层，
 // 避免插件内层再次绘制表面而产生圆角锯齿。
 .layout__dockl:has(.things-dock-surface) {
   box-shadow:
     0 1px 2px rgba(15, 23, 42, 0.06),
     0 8px 24px rgba(15, 23, 42, 0.08);
+}
+
+// 移动端使用思源自己的抽屉层级，插件父容器不再保留桌面 Dock 的卡片阴影。
+.layout__dockl:has(.things-dock-surface--mobile) {
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
 }
 
 .things-nav {

@@ -4,6 +4,7 @@
  * 此前 TaskCard / DatePicker 各有一份返回 emoji 的重复实现，现合并于此。
  */
 import { isTodayDate, isTomorrowDate, formatDateFull } from "@/utils/calendar";
+import { hasStartDateArrived } from "@/utils/date";
 import { ICON_COLORS } from "@/icons";
 
 export interface IconLabel {
@@ -31,7 +32,9 @@ export function getStartDateDisplay(startDate?: number, someday?: boolean, view?
 
   if (isTonight) return { icon: "iconThingsMoonFilled", text: "", color: ICON_COLORS.tonight };
   if (isTodayDate(startDate)) return { icon: "iconThingsStarFilled", text: "", color: ICON_COLORS.today };
-  if (view === "today") return { icon: "iconThingsStarFilled", text: "", color: ICON_COLORS.today };
+  if (view === "today" || (view === "anytime" && hasStartDateArrived(startDate))) {
+    return { icon: "iconThingsStarFilled", text: "", color: ICON_COLORS.today };
+  }
   if (isTomorrowDate(startDate)) return { icon: "iconThingsCalendar", text: "明天" };
   return { icon: "iconThingsCalendar", text: formatDateFull(startDate) };
 }

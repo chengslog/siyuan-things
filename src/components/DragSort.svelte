@@ -187,6 +187,7 @@
     document.addEventListener('mouseup', onEnd);
     document.addEventListener('touchmove', onMove, { passive: false });
     document.addEventListener('touchend', onEnd);
+    document.addEventListener('touchcancel', onEnd);
 
     dispatch('dragstart', { id, index });
   }
@@ -340,6 +341,7 @@
     document.removeEventListener('mouseup', onEnd);
     document.removeEventListener('touchmove', onMove);
     document.removeEventListener('touchend', onEnd);
+    document.removeEventListener('touchcancel', onEnd);
 
     draggedId = null;
     draggedIndex = -1;

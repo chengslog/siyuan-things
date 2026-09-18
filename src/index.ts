@@ -12,6 +12,8 @@ import {
 
 import "./index.scss";
 import App from "@/components/App.svelte";
+import MobileApp from "@/components/MobileApp.svelte";
+import MobileTaskPage from "@/components/MobileTaskPage.svelte";
 import { StoreManager } from "@/stores";
 import type { ViewType, PluginConfig } from "@/types";
 import { DEFAULT_CONFIG } from "@/types";
@@ -87,6 +89,10 @@ export default class ThingsPlugin extends Plugin {
   private pluginMenuObserver: MutationObserver | null = null;
   private unsubTaskChange: (() => void) | null = null;
   private thingsApp: any = null; // 当前标签页的 Svelte 组件实例
+  private mobileApp: any = null; // 移动端 Dock 内的一级导航
+  private mobileTaskApp: any = null; // 移动端主界面的独立任务页
+  private mobileTaskHost: HTMLElement | null = null;
+  private isMobileFrontend = false;
   private thingsTab: any = null; // 当前标签页的 Tab 实例
   private thingsTabElement: HTMLElement | null = null; // 当前自定义页签内容节点（布局重建后仍可判断应用是否存活）
   private openingThingsTab: Promise<any> | null = null;
@@ -103,6 +109,10 @@ export default class ThingsPlugin extends Plugin {
   private githubUpdateHandoffActive = false;
   private unloaded = false;
   private handleSyncStart = () => {
+    if (this.isMobileFrontend) {
+      this.syncInProgress = true;
+      return;
+    }
     const shouldRestoreDock = this.hasDockRestoreIntent() || this.isThingsDockOpen();
     this.syncInProgress = true;
     this.sidebarFollowRevision += 1;
@@ -117,16 +127,21 @@ export default class ThingsPlugin extends Plugin {
     try {
       // 同步可能替换插件数据文件，先刷新内存和侧边栏内容。
       await this.store.loadAll();
-      if (this.dockElement) this.renderDock(this.dockElement);
+      if (this.isMobileFrontend) {
+        this.mobileApp?.refresh?.();
+      } else if (this.dockElement) {
+        this.renderDock(this.dockElement);
+      }
     } finally {
       this.syncInProgress = false;
-      if (this.hasDockRestoreIntent()) {
+      if (!this.isMobileFrontend && this.hasDockRestoreIntent()) {
         this.setDockRestoreIntent(POST_SYNC_DOCK_RESTORE_TTL);
       }
-      this.scheduleDockRestoreAfterSync();
+      if (!this.isMobileFrontend) this.scheduleDockRestoreAfterSync();
     }
   };
   private handleThingsDockButtonClick = (event: MouseEvent) => {
+    if (this.isMobileFrontend) return;
     const target = event.target as HTMLElement | null;
     const dockButton = target?.closest('.dock__item') as HTMLElement | null;
     const dockType = dockButton?.dataset.type || "";
@@ -168,6 +183,7 @@ export default class ThingsPlugin extends Plugin {
    * 不依赖标签标题或不同版本中易变化的 data-* 属性。
    */
   private handleThingsTabClick = (event: MouseEvent) => {
+    if (this.isMobileFrontend) return;
     if (this.syncInProgress || this.settingUtils?.get("tabFollowsSidebar") === false) return;
     const target = event.target as HTMLElement | null;
     const head = target?.closest<HTMLElement>(".layout-tab-bar .item");
@@ -224,9 +240,9 @@ export default class ThingsPlugin extends Plugin {
   private handleThingsNavigate = async (event: Event) => {
     const detail = (event as CustomEvent).detail || {};
     if (!detail.view) return;
-    if (detail.openDock === true) this.openThingsDock();
+    if (detail.openDock === true && !this.isMobileFrontend) this.openThingsDock();
     await this.openThingsTab(detail.view, detail.viewId);
-    if (this.dockElement) this.setActive(this.dockElement, detail.view, detail.viewId);
+    if (!this.isMobileFrontend && this.dockElement) this.setActive(this.dockElement, detail.view, detail.viewId);
   };
 
   private getConfiguredThingsView(): ViewType {
@@ -919,6 +935,8 @@ export default class ThingsPlugin extends Plugin {
 
   async onload() {
     this.unloaded = false;
+    const frontend = getFrontend();
+    this.isMobileFrontend = frontend === "mobile" || frontend === "browser-mobile";
     console.log("[Things] Loading plugin...");
     this.announceCompletedGitHubUpdate();
 
@@ -938,7 +956,7 @@ export default class ThingsPlugin extends Plugin {
     const pluginInstance = this;
 
     // 注册自定义标签页类型
-    this.addTab({
+    if (!this.isMobileFrontend) this.addTab({
       type: TAB_TYPE,
       init() {
         const view = this.data.view || "today";
@@ -1009,19 +1027,33 @@ export default class ThingsPlugin extends Plugin {
       init: (dock) => {
         console.log("[Things] Dock init");
         this.thingsDockType = (dock as any).type || this.thingsDockType;
-        this.dockElement = dock.element;
+        this.dockElement = dock.element as HTMLElement;
         dock.element.classList.add("things-dock-surface");
-        this.renderDock(dock.element);
-        // 插件因同步结果重载时，等布局稳定后走同一套有限重试，不在 init 内抢占布局。
-        this.scheduleDockRestoreAfterSync();
+        if (this.isMobileFrontend) {
+          dock.element.classList.add("things-dock-surface--mobile");
+          dock.element.replaceChildren();
+          this.mobileApp?.$destroy?.();
+          this.mobileApp = new MobileApp({
+            target: dock.element,
+            props: { store: this.store, version: __PLUGIN_VERSION__, plugin: this },
+          });
+        } else {
+          this.renderDock(dock.element as HTMLElement);
+          // 插件因同步结果重载时，等布局稳定后走同一套有限重试，不在 init 内抢占布局。
+          this.scheduleDockRestoreAfterSync();
+        }
       },
-      destroy() {
+      destroy: () => {
+        this.mobileApp?.$destroy?.();
+        this.mobileApp = null;
         this.dockElement = null;
       }
     });
     this.thingsDockType = (dockRegistration.model as any)?.type || this.thingsDockType;
-    document.addEventListener("click", this.handleThingsDockButtonClick, true);
-    document.addEventListener("click", this.handleThingsTabClick, true);
+    if (!this.isMobileFrontend) {
+      document.addEventListener("click", this.handleThingsDockButtonClick, true);
+      document.addEventListener("click", this.handleThingsTabClick, true);
+    }
 
     // 注册命令
     this.addCommand({
@@ -1042,7 +1074,9 @@ export default class ThingsPlugin extends Plugin {
 
     // 项目/区域变更 → 侧边栏实时刷新（改名、删除、完成、暂停都同步）
     const refreshDock = () => {
-      if (this.dockElement) {
+      if (this.isMobileFrontend) {
+        this.mobileApp?.refresh?.();
+      } else if (this.dockElement) {
         this.renderProjects(this.dockElement);
         this.renderAreas(this.dockElement);
         this.renderTags(this.dockElement);
@@ -1140,7 +1174,9 @@ export default class ThingsPlugin extends Plugin {
 
     // 监听任务变化，自动更新侧边栏计数
     this.unsubTaskChange = this.store.tasks.on(() => {
-      if (this.dockElement) {
+      if (this.isMobileFrontend) {
+        this.mobileApp?.refresh?.();
+      } else if (this.dockElement) {
         this.updateCounts(this.dockElement);
       }
     });
@@ -1151,15 +1187,19 @@ export default class ThingsPlugin extends Plugin {
   async onLayoutReady() {
     await this.store.loadAll();
     await this.settingUtils.load();
-    this.thingsApp?.$set?.({ aiEnabled: this.settingUtils.get("aiEnabled") !== false });
-    window.dispatchEvent(new Event("things-ai-config-change"));
+    if (this.isMobileFrontend) {
+      this.mobileApp?.refresh?.();
+    } else {
+      this.thingsApp?.$set?.({ aiEnabled: this.settingUtils.get("aiEnabled") !== false });
+      window.dispatchEvent(new Event("things-ai-config-change"));
+    }
     console.log("[Things] Data loaded, tasks:", this.store.tasks.count);
 
-    if (this.dockElement) {
+    if (!this.isMobileFrontend && this.dockElement) {
       this.updateCounts(this.dockElement);
     }
-    this.scheduleDockRestoreAfterSync();
-    if (!this.githubUpdateCompletionPending && this.settingUtils.get("githubAutoUpdate") === true) {
+    if (!this.isMobileFrontend) this.scheduleDockRestoreAfterSync();
+    if (!this.isMobileFrontend && !this.githubUpdateCompletionPending && this.settingUtils.get("githubAutoUpdate") === true) {
       window.setTimeout(() => void this.checkGitHubUpdateOnStartup(), 1200);
     }
 
@@ -1178,6 +1218,12 @@ export default class ThingsPlugin extends Plugin {
       // 选了"不打开" → 不干预思源启动逻辑（不打开 Things 标签页）
       if (defaultView === "none") {
         console.log("[Things] defaultView=none，跳过启动时打开");
+        return;
+      }
+
+      // 移动端没有公开 API 可以在启动时强制展示插件 Dock 或自定义页；
+      // 保持当前文档不变，等待用户从 Things 一级导航进入任务页。
+      if (this.isMobileFrontend) {
         return;
       }
 
@@ -1211,7 +1257,13 @@ export default class ThingsPlugin extends Plugin {
       // above because it carries its own scoped handoff styles.
       this.destroyGitHubUpdateDialogs();
     }
-    this.closeThingsTabs();
+    if (this.isMobileFrontend) {
+      this.closeMobileTaskPage();
+      this.mobileApp?.$destroy?.();
+      this.mobileApp = null;
+    } else {
+      this.closeThingsTabs();
+    }
     this.pluginMenuObserver?.disconnect();
     this.pluginMenuObserver = null;
     document.removeEventListener("click", this.handleThingsDockButtonClick, true);
@@ -2227,10 +2279,66 @@ export default class ThingsPlugin extends Plugin {
   /**
    * 打开标签页（复用已有标签，不重复创建）
    */
+  public openMobileTaskPage(view: ViewType, viewId?: string, searchQuery = "") {
+    if (!this.isMobileFrontend) return;
+    this.currentThingsView = view;
+    this.currentThingsViewId = viewId || undefined;
+
+    // 对齐思源移动端打开文档的行为：先收起侧栏和遮罩，再在主界面展示内容。
+    const mask = document.querySelector<HTMLElement>(".side-mask");
+    if (mask && !mask.classList.contains("fn__none")) {
+      mask.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    }
+    for (const id of ["sidebar", "sidebarRight", "model", "menu"]) {
+      const element = document.getElementById(id);
+      if (element) element.style.transform = "";
+    }
+    if (mask) {
+      mask.style.opacity = "";
+      window.setTimeout(() => mask.classList.add("fn__none"), 220);
+    }
+    try { (window as any).siyuan?.menus?.menu?.remove?.(); } catch { /* best effort */ }
+
+    const props = {
+      store: this.store,
+      plugin: this,
+      view,
+      viewId: viewId || undefined,
+      searchQuery,
+      title: this.getViewTitle(view, viewId),
+    };
+    if (this.mobileTaskApp && this.mobileTaskHost?.isConnected) {
+      this.mobileTaskApp.$set(props);
+      return;
+    }
+
+    this.closeMobileTaskPage();
+    const host = document.createElement("div");
+    host.className = "things-mobile-task-host";
+    // 思源移动端的文档同样渲染在 #editor；把二级页挂到这里，保留原生顶部栏、
+    // 底部栏和安全区，只替换中间的主内容区域。
+    const mobileEditor = document.getElementById("editor") || document.body;
+    mobileEditor.appendChild(host);
+    this.mobileTaskHost = host;
+    this.mobileTaskApp = new MobileTaskPage({ target: host, props });
+  }
+
+  public closeMobileTaskPage() {
+    this.mobileTaskApp?.$destroy?.();
+    this.mobileTaskApp = null;
+    this.mobileTaskHost?.remove();
+    this.mobileTaskHost = null;
+  }
+
   private async openThingsTab(view: ViewType, viewId?: string, searchQuery?: string) {
     console.log("[Things] Opening tab:", view, viewId);
     this.currentThingsView = view;
     this.currentThingsViewId = viewId || undefined;
+
+    if (this.isMobileFrontend) {
+      this.openMobileTaskPage(view, viewId, searchQuery || "");
+      return;
+    }
 
     const title = this.getViewTitle(view, viewId);
 

@@ -18,11 +18,13 @@
   import { moveProjectGroup, normalizeProjectGroupOrder } from "@/utils/projectGrouping";
   import { findViewportCreateTarget } from "@/utils/createPosition";
   import { selectAreaTasks } from "@/utils/areaTasks";
+  import { hasStartDateArrived } from "@/utils/date";
 
   export let view: ViewType;
   export let viewId: string | undefined;
   export let searchQuery: string;
   export let store: StoreManager;
+  export let mobile: boolean = false;
   // AI 展示形态（设计文档状态机）：
   // full=AI 面板独立列；button=右下角 ✧ FAB；header=Header 内 ✦＋；compact=Header 仅小 ✦
   export let aiMode: 'full' | 'button' | 'header' | 'compact' = 'button';
@@ -135,6 +137,8 @@
     const todayStartTs = todayStart.getTime();
     const todayEndTs = todayStartTs + 86400000;
     const isToday = (ts?: number) => !!ts && ts >= todayStartTs && ts < todayEndTs;
+    const isActiveToday = (task: Task) => hasStartDateArrived(task.startDate)
+      || (!!task.deadline && isToday(task.deadline));
     const isTonight = (ts?: number) => {
       if (!ts) return false;
       const d = new Date(ts);
@@ -148,10 +152,10 @@
 
       const aDate = a.startDate || a.deadline;
       const bDate = b.startDate || b.deadline;
-      const aIsToday = isToday(aDate);
-      const bIsToday = isToday(bDate);
-      const aIsTonight = isTonight(aDate);
-      const bIsTonight = isTonight(bDate);
+      const aIsToday = isActiveToday(a);
+      const bIsToday = isActiveToday(b);
+      const aIsTonight = isToday(a.startDate) && isTonight(a.startDate);
+      const bIsTonight = isToday(b.startDate) && isTonight(b.startDate);
       // 今天白天（⭐️）在最上面
       const aIsDaytime = aIsToday && !aIsTonight;
       const bIsDaytime = bIsToday && !bIsTonight;
@@ -681,6 +685,17 @@
     headingDropTarget = null;
   }
 
+  async function moveHeadingOnMobile(group: string, delta: -1 | 1, event: MouseEvent) {
+    event.stopPropagation();
+    if (!mobile || !projectObj || !viewId || group === COMPLETED_GROUP) return;
+    const groups = [...groupedTasks.keys()].filter((id) => id !== COMPLETED_GROUP);
+    const index = groups.indexOf(group);
+    const target = index + delta;
+    if (index < 0 || target < 0 || target >= groups.length) return;
+    [groups[index], groups[target]] = [groups[target], groups[index]];
+    await store.projects.reorderHeadings(viewId, groups);
+  }
+
   function closeCreateFormWithoutTaskMotion() {
     suppressTaskLayoutMotion = true;
     showCreateForm = false;
@@ -840,10 +855,16 @@
     }
   }
 
+  function trackTouchDragOver(e: TouchEvent) {
+    const touch = e.touches[0];
+    if (touch) trackDragOver({ clientY: touch.clientY } as MouseEvent);
+  }
+
   function handleGroupDragStart(group: string) {
     dragFromGroup = group;
     document.addEventListener("mousemove", trackDragOver);
     document.addEventListener("mousemove", trackNavHover);
+    if (mobile) document.addEventListener("touchmove", trackTouchDragOver, { passive: true });
   }
 
   function handleGroupDragEnd() {
@@ -854,6 +875,7 @@
     dragFromGroup = null;
     dragOverGroup = null;
     document.removeEventListener("mousemove", trackDragOver);
+    document.removeEventListener("touchmove", trackTouchDragOver);
     clearNavHover();
   }
 
@@ -1022,7 +1044,7 @@
 
   // 通用拖拽处理器：支持 "+" 和 "✨" 两个按钮
   function handleFabDragDown(
-    e: MouseEvent,
+    e: MouseEvent | TouchEvent,
     fab: HTMLButtonElement,
     onDrop: (
       target: { group: string; index: number } | null,
@@ -1030,10 +1052,13 @@
       interaction: 'click' | 'drop'
     ) => void
   ) {
-    if (e.button !== 0) return;
+    if ('button' in e && e.button !== 0) return;
+    const startPoint = 'touches' in e ? e.touches[0] : e;
+    if (!startPoint) return;
     e.preventDefault();
-    const startX = e.clientX;
-    const startY = e.clientY;
+    const startX = startPoint.clientX;
+    const startY = startPoint.clientY;
+    const touchInteraction = 'touches' in e;
     const home = fab.getBoundingClientRect(); // 按钮原位（用于回弹）
     let dragging = false;
     let hoverNav: HTMLElement | null = null;
@@ -1083,8 +1108,9 @@
       if (!itemsEl) return;
       const rows = Array.from(itemsEl.querySelectorAll(".task-list__item-wrapper")) as HTMLElement[];
       const box = itemsEl.getBoundingClientRect();
-      const left = box.left + 72;       // items 有 72px 内边距
-      const width = box.width - 144;
+      const horizontalInset = mobile ? 12 : 72;
+      const left = box.left + horizontalInset;
+      const width = Math.max(40, box.width - horizontalInset * 2);
       const minTop = box.top + 16;
       const maxBottom = box.bottom - 16;
 
@@ -1118,11 +1144,17 @@
       overList = true;
     };
 
-    const onMove = (ev: MouseEvent) => {
+    const onMove = (ev: MouseEvent | TouchEvent) => {
+      const point = 'touches' in ev ? ev.touches[0] : ev;
+      if (!point) return;
+      if ('touches' in ev) ev.preventDefault();
       if (!dragging) {
-        if (Math.abs(ev.clientX - startX) < 5 && Math.abs(ev.clientY - startY) < 5) return; // 阈值：区分点击与拖动
+        if (Math.abs(point.clientX - startX) < 7 && Math.abs(point.clientY - startY) < 7) return; // 阈值：区分点击与拖动
         // 进入拖拽：按钮本体脱离原布局跟随光标（不做幽灵）
         dragging = true;
+        if (touchInteraction) {
+          try { navigator.vibrate?.(12); } catch { /* optional */ }
+        }
         fab.classList.add("is-dragging");
         fab.style.position = "fixed";
         fab.style.left = `${home.left}px`;
@@ -1131,14 +1163,14 @@
         fab.style.pointerEvents = "none"; // 让命中检测"透过"按钮看到下方内容
       }
       // 按钮跟随光标（保持抓取时偏移，不跳变）
-      fab.style.left = `${home.left + (ev.clientX - startX)}px`;
-      fab.style.top = `${home.top + (ev.clientY - startY)}px`;
+      fab.style.left = `${home.left + (point.clientX - startX)}px`;
+      fab.style.top = `${home.top + (point.clientY - startY)}px`;
 
       // 命中检测：侧边栏导航项 / 任务列表
       clearNav();
       cancelOpen();
       clearIndicator();
-      const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+      const el = document.elementFromPoint(point.clientX, point.clientY) as HTMLElement | null;
       if (!el) return;
       const nav = el.closest(".things-nav__item[data-view]") as HTMLElement | null;
       if (nav && isCreatableNav(nav)) {
@@ -1155,13 +1187,16 @@
         return;
       }
       if (itemsEl && itemsEl.contains(el)) {
-        moveIndicator(ev.clientY);
+        moveIndicator(point.clientY);
       }
     };
 
     const onUp = () => {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
+      document.removeEventListener("touchmove", onMove);
+      document.removeEventListener("touchend", onUp);
+      document.removeEventListener("touchcancel", onUp);
       cancelOpen();
       if (!dragging) {
         onDrop(null, { view, viewId }, 'click'); // 直接点击 → 当前视图顶部
@@ -1195,12 +1230,26 @@
       // 两者都不是：仅回弹，不做任何操作
     };
 
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
+    if (touchInteraction) {
+      document.addEventListener("touchmove", onMove, { passive: false });
+      document.addEventListener("touchend", onUp);
+      document.addEventListener("touchcancel", onUp);
+    } else {
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    }
   }
 
   // "+" 按钮拖拽
   function handleFabMouseDown(e: MouseEvent) {
+    handleFabDragDown(e, fabBtnEl, (target, dest) => {
+      const isCurrentView = dest.view === view && dest.viewId === viewId;
+      if (!target && isCurrentView) openCreateAtCurrentPosition(dest);
+      else openCreate(target || getDefaultCreateTarget(dest.view), dest);
+    });
+  }
+
+  function handleFabTouchStart(e: TouchEvent) {
     handleFabDragDown(e, fabBtnEl, (target, dest) => {
       const isCurrentView = dest.view === view && dest.viewId === viewId;
       if (!target && isCurrentView) openCreateAtCurrentPosition(dest);
@@ -1311,7 +1360,7 @@
   }
 </script>
 
-<div class="task-list" class:is-compact={aiMode === 'compact'} class:is-tag-view={view === 'tag'}>
+<div class="task-list" class:is-compact={aiMode === 'compact'} class:is-mobile={mobile} class:is-tag-view={view === 'tag'}>
   <!-- 大标题 -->
   <div class="task-list__header">
     <div class="task-list__header-top has-border" class:has-project-menu={view === "project" && !!projectObj}>
@@ -1328,7 +1377,13 @@
       <h1 class="task-list__title">{viewTitle}</h1>
 
       <!-- Header 操作区（AI_HEADER / COMPACT 状态：AI Button 移到 Header） -->
-      {#if aiEnabled && aiMode === 'header'}
+      {#if mobile}
+        <div class="task-list__header-actions">
+          <button class="task-list__header-btn task-list__header-btn--mini" title="新建任务" aria-label="新建任务" on:click={() => openCreateAtCurrentPosition({ view, viewId })}>
+            <svg><use xlink:href="#iconThingsAdd" /></svg>
+          </button>
+        </div>
+      {:else if aiEnabled && aiMode === 'header'}
         <div class="task-list__header-actions">
           <button class="task-list__header-btn" title="AI 任务整理" on:click={openAICreatorDefault}>
             <svg><use xlink:href="#iconThingsSparkles" /></svg>
@@ -1415,6 +1470,7 @@
   {#if showCreateForm && !activeCreateSlot}
     <TaskCard
       mode="create"
+      {mobile}
       {store}
       currentView={view}
       currentViewId={viewId}
@@ -1539,14 +1595,14 @@
                 class:is-heading-dragging={headingDragId === group}
                 class:is-drop-before={headingDropTarget?.id === group && headingDropTarget?.pos === "before"}
                 class:is-drop-after={headingDropTarget?.id === group && headingDropTarget?.pos === "after"}
-                draggable="true"
+                draggable={!mobile}
                 on:dragstart={(event) => handleHeadingDragStart(event, group)}
                 on:dragend={handleHeadingDragEnd}
               >
                 <button
                   class="task-list__heading-toggle"
                   title="点击折叠/展开，拖动标题行调整分组顺序"
-                  draggable="true"
+                  draggable={!mobile}
                   on:dragstart|stopPropagation={(event) => handleHeadingDragStart(event, group)}
                   on:dragend|stopPropagation={handleHeadingDragEnd}
                   on:click={() => toggleGroupCollapse(group)}
@@ -1556,6 +1612,12 @@
                   {#if isGroupCollapsed(group)}<span class="task-list__heading-count">{groupItems.length}</span>{/if}
                 </button>
                 <div class="task-list__day-line"></div>
+                {#if mobile}
+                  <div class="task-list__heading-actions task-list__heading-actions--mobile">
+                    <button class="task-list__heading-move" aria-label="上移分组" on:click={(event) => moveHeadingOnMobile(group, -1, event)}>↑</button>
+                    <button class="task-list__heading-move" aria-label="下移分组" on:click={(event) => moveHeadingOnMobile(group, 1, event)}>↓</button>
+                  </div>
+                {/if}
               </div>
             {:else if projectObj.headings.find((h) => h.id === group)}
               <div
@@ -1563,7 +1625,7 @@
                 class:is-heading-dragging={headingDragId === group}
                 class:is-drop-before={headingDropTarget?.id === group && headingDropTarget?.pos === "before"}
                 class:is-drop-after={headingDropTarget?.id === group && headingDropTarget?.pos === "after"}
-                draggable={editingHeadingId !== group}
+                draggable={!mobile && editingHeadingId !== group}
                 on:dragstart={(e) => handleHeadingDragStart(e, group)}
                 on:dragend={handleHeadingDragEnd}
               >
@@ -1584,7 +1646,7 @@
                   <button
                     class="task-list__heading-toggle"
                     title="点击折叠/展开，拖动标题行调整分组顺序"
-                    draggable="true"
+                    draggable={!mobile}
                     on:dragstart|stopPropagation={(event) => handleHeadingDragStart(event, group)}
                     on:dragend|stopPropagation={handleHeadingDragEnd}
                     on:click={() => toggleGroupCollapse(group)}
@@ -1595,7 +1657,11 @@
                   </button>
                 {/if}
                 <div class="task-list__day-line"></div>
-                <div class="task-list__heading-actions">
+                <div class="task-list__heading-actions" class:task-list__heading-actions--mobile={mobile}>
+                  {#if mobile}
+                    <button class="task-list__heading-move" aria-label="上移分组" on:click={(event) => moveHeadingOnMobile(group, -1, event)}>↑</button>
+                    <button class="task-list__heading-move" aria-label="下移分组" on:click={(event) => moveHeadingOnMobile(group, 1, event)}>↓</button>
+                  {/if}
                   <button
                     class="task-list__heading-edit"
                     title="重命名分组"
@@ -1633,6 +1699,7 @@
                   <div class="task-list__create-slot" bind:this={createCardHostEl}>
                     <TaskCard
                       mode="create"
+                      {mobile}
                       {store}
                       currentView={view}
                       currentViewId={viewId}
@@ -1659,6 +1726,7 @@
                   {/if}
                   <TaskCard
                     mode="edit"
+                    {mobile}
                     {task}
                     {store}
                     inlineDate={view === "upcoming" && group.startsWith("m-")}
@@ -1677,6 +1745,7 @@
               <div class="task-list__create-slot" bind:this={createCardHostEl}>
                 <TaskCard
                   mode="create"
+                  {mobile}
                   {store}
                   currentView={view}
                   currentViewId={viewId}
@@ -1717,6 +1786,7 @@
         bind:this={fabBtnEl}
         title="新建任务（可拖到侧边栏或列表）"
         on:mousedown={handleFabMouseDown}
+        on:touchstart|nonpassive={handleFabTouchStart}
       >
         <svg><use xlink:href="#iconThingsAdd" /></svg>
       </button>
@@ -1762,6 +1832,87 @@
 
       .task-list__day-num {
         font-size: 24px;
+      }
+    }
+
+    // 移动端在思源 Dock 的全屏容器中作为二级页面显示。
+    &.is-mobile {
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+      padding: 0 12px;
+
+      .task-list__header {
+        min-width: 0;
+        padding-top: 12px;
+      }
+
+      .task-list__header-top {
+        min-width: 0;
+        min-height: 42px;
+        padding-bottom: 10px;
+      }
+
+      .task-list__title {
+        font-size: 20px;
+      }
+
+      .task-list__description {
+        display: none;
+      }
+
+      .task-list__items {
+        width: auto;
+        min-width: 0;
+        margin: 0 -12px;
+        padding: 8px 0 calc(24px + env(safe-area-inset-bottom));
+        padding-right: 12px;
+        padding-left: 12px;
+        box-sizing: border-box;
+        overflow-x: hidden;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .task-list__group-block,
+      .task-list__animated-slot,
+      .task-list__item-wrapper,
+      .task-list__create-slot {
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+      }
+
+      .task-list__heading-actions--mobile {
+        visibility: visible;
+        opacity: 1;
+        pointer-events: auto;
+        gap: 3px;
+        padding-left: 4px;
+      }
+
+      .task-list__heading {
+        padding-right: 76px;
+      }
+
+      .task-list__heading-actions--mobile:has(.task-list__heading-edit) {
+        position: static;
+        transform: none;
+        flex: 0 0 auto;
+        margin-left: auto;
+        padding-left: 4px;
+      }
+
+      .task-list__heading:has(.task-list__heading-actions--mobile:has(.task-list__heading-edit)) {
+        padding-right: 0;
+      }
+
+      .task-list__day,
+      .task-list__month,
+      .task-list__group {
+        margin-top: 20px;
       }
     }
 
@@ -2036,6 +2187,21 @@
         background: var(--b3-theme-primary-light);
         color: var(--b3-theme-primary);
       }
+    }
+
+    &__heading-move {
+      width: 28px;
+      height: 28px;
+      border: none;
+      border-radius: 6px;
+      background: var(--b3-theme-surface-light);
+      cursor: pointer;
+      color: var(--b3-theme-primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font: inherit;
+      font-size: 15px;
     }
 
     // 分组拖拽排序：被拖行半透明；落点亮主色指引线（box-shadow 不占布局）

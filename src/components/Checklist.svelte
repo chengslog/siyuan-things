@@ -151,12 +151,22 @@
   function handleDragMouseDown(e: MouseEvent, id: string) {
     e.preventDefault();
     e.stopPropagation();
+    startDrag(id, e.clientY);
+  }
 
+  function handleDragTouchStart(e: TouchEvent, id: string) {
+    if (e.touches.length !== 1) return;
+    e.preventDefault();
+    e.stopPropagation();
+    try { navigator.vibrate?.(12); } catch { /* optional */ }
+    startDrag(id, e.touches[0].clientY);
+  }
+
+  function startDrag(id: string, clientY: number) {
     const el = itemElements.get(id);
     if (!el) return;
 
     const rect = el.getBoundingClientRect();
-    const clientY = e.clientY;
     const index = items.findIndex(item => item.id === id);
 
     // 记录所有元素的初始位置
@@ -190,15 +200,18 @@
     // 绑定事件
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onEnd);
+    document.addEventListener('touchmove', onMove, { passive: false });
+    document.addEventListener('touchend', onEnd);
+    document.addEventListener('touchcancel', onEnd);
 
     dispatch('dragstart', { id, index });
   }
 
-  function onMove(e: MouseEvent) {
+  function onMove(e: MouseEvent | TouchEvent) {
     if (!draggedId || !ghostEl) return;
     e.preventDefault();
 
-    currentY = e.clientY;
+    currentY = 'touches' in e ? (e.touches[0]?.clientY ?? currentY) : e.clientY;
     const deltaY = currentY - startY;
 
     // 计算新的幽灵位置
@@ -236,7 +249,7 @@
     }
   }
 
-  function onEnd(e: MouseEvent) {
+  function onEnd() {
     if (!draggedId) return;
 
     const fromIndex = draggedIndex;
@@ -306,6 +319,9 @@
 
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onEnd);
+    document.removeEventListener('touchmove', onMove);
+    document.removeEventListener('touchend', onEnd);
+    document.removeEventListener('touchcancel', onEnd);
 
     draggedId = null;
     draggedIndex = -1;
@@ -376,6 +392,7 @@
             class="checklist__drag"
             title="拖动排序"
             on:mousedown={(e) => handleDragMouseDown(e, item.id)}
+            on:touchstart|nonpassive={(e) => handleDragTouchStart(e, item.id)}
           >
             <svg viewBox="0 0 24 24" fill="currentColor">
               <circle cx="9" cy="6" r="1.5"/>

@@ -8,12 +8,18 @@
     "windows",
     "linux",
     "darwin",
+    "android",
+    "ios",
+    "harmony",
     "docker"
   ],
   "backends": [
     "windows",
     "linux",
     "darwin",
+    "android",
+    "ios",
+    "harmony",
     "docker"
   ],
   "frontends": [

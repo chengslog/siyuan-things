@@ -32,23 +32,28 @@ export function smartPosition(node: HTMLElement) {
       node.style.bottom = 'auto';
 
       const triggerRect = trigger.getBoundingClientRect();
+      const visualViewport = window.visualViewport;
+      const viewportLeft = visualViewport?.offsetLeft || 0;
+      const viewportTop = visualViewport?.offsetTop || 0;
+      const viewportWidth = visualViewport?.width || document.documentElement.clientWidth;
+      const viewportHeight = visualViewport?.height || document.documentElement.clientHeight;
+      const maxPopupWidth = Math.max(160, viewportWidth - margin * 2);
+      node.style.maxWidth = `${maxPopupWidth}px`;
       const popupRect = node.getBoundingClientRect();
-      const viewportWidth = document.documentElement.clientWidth;
-      const viewportHeight = document.documentElement.clientHeight;
       const maxPopupHeight = Math.max(120, viewportHeight - margin * 2);
       const maxHeight = `${maxPopupHeight}px`;
       if (node.style.maxHeight !== maxHeight) node.style.maxHeight = maxHeight;
 
       let left = alignRight ? triggerRect.right - popupRect.width : triggerRect.left;
-      left = Math.max(margin, Math.min(left, viewportWidth - popupRect.width - margin));
+      left = Math.max(viewportLeft + margin, Math.min(left, viewportLeft + viewportWidth - popupRect.width - margin));
 
-      const spaceBelow = viewportHeight - triggerRect.bottom;
-      const spaceAbove = triggerRect.top;
+      const spaceBelow = viewportTop + viewportHeight - triggerRect.bottom;
+      const spaceAbove = triggerRect.top - viewportTop;
       let top = triggerRect.bottom + margin;
       if (spaceBelow < popupRect.height + margin && spaceAbove > spaceBelow) {
         top = triggerRect.top - popupRect.height - margin;
       }
-      top = Math.max(margin, Math.min(top, viewportHeight - popupRect.height - margin));
+      top = Math.max(viewportTop + margin, Math.min(top, viewportTop + viewportHeight - popupRect.height - margin));
 
       node.style.left = `${Math.round(left)}px`;
       node.style.top = `${Math.round(top)}px`;
@@ -61,6 +66,8 @@ export function smartPosition(node: HTMLElement) {
   const resizeObserver = new ResizeObserver(place);
   resizeObserver.observe(node);
   window.addEventListener('resize', place);
+  window.visualViewport?.addEventListener('resize', place);
+  window.visualViewport?.addEventListener('scroll', place);
   document.addEventListener('scroll', place, true);
 
   return {
@@ -68,6 +75,8 @@ export function smartPosition(node: HTMLElement) {
       cancelAnimationFrame(frame);
       resizeObserver.disconnect();
       window.removeEventListener('resize', place);
+      window.visualViewport?.removeEventListener('resize', place);
+      window.visualViewport?.removeEventListener('scroll', place);
       document.removeEventListener('scroll', place, true);
       // The action portals this element outside its original Svelte block.
       // Remove it explicitly so a conditional/card teardown cannot leave an

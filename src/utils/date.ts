@@ -25,6 +25,14 @@ export function isToday(timestamp: number): boolean {
   return timestamp >= start && timestamp <= end;
 }
 
+/** 开始日期已经到达：任务从 Upcoming 激活并持续属于 Today，直至完成或改期。 */
+export function hasStartDateArrived(timestamp?: number, now: number = Date.now()): boolean {
+  if (!timestamp) return false;
+  const end = new Date(now);
+  end.setHours(23, 59, 59, 999);
+  return timestamp <= end.getTime();
+}
+
 /**
  * 判断时间戳是否已过期
  */
