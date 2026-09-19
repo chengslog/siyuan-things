@@ -755,6 +755,7 @@
     if (target && isGroupCollapsed(target.group)) await toggleGroupCollapse(target.group);
     openCreate(target, dest);
     await tick();
+    if (mobile && !target && itemsEl) itemsEl.scrollTop = 0;
     createCardHostEl?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 
@@ -1191,15 +1192,15 @@
       }
     };
 
-    const onUp = () => {
+    const finish = (cancelled = false) => {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
       document.removeEventListener("touchmove", onMove);
       document.removeEventListener("touchend", onUp);
-      document.removeEventListener("touchcancel", onUp);
+      document.removeEventListener("touchcancel", onCancel);
       cancelOpen();
       if (!dragging) {
-        onDrop(null, { view, viewId }, 'click'); // 直接点击 → 当前视图顶部
+        if (!cancelled) onDrop(null, { view, viewId }, 'click'); // 直接点击 → 当前视图顶部
         return;
       }
       const nav = hoverNav;
@@ -1217,23 +1218,26 @@
         fab.classList.remove("is-dragging");
       }, 420);
 
-      if (nav) {
+      if (!cancelled && nav) {
         // 在侧边栏视图上松手 → 打开该视图并在顶部弹出
         const nv = nav.dataset.view as ViewType;
         const nid = nav.dataset.id;
         window.dispatchEvent(new CustomEvent("things-navigate", { detail: { view: nv, viewId: nid } }));
         onDrop(null, { view: nv, viewId: nid }, 'drop');
-      } else if (list) {
+      } else if (!cancelled && list) {
         // 在任务列表上松手 → 在插入位置弹出
         onDrop(insertTarget, { view, viewId }, 'drop');
       }
       // 两者都不是：仅回弹，不做任何操作
     };
 
+    const onUp = () => finish(false);
+    const onCancel = () => finish(true);
+
     if (touchInteraction) {
       document.addEventListener("touchmove", onMove, { passive: false });
       document.addEventListener("touchend", onUp);
-      document.addEventListener("touchcancel", onUp);
+      document.addEventListener("touchcancel", onCancel);
     } else {
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
@@ -1377,13 +1381,7 @@
       <h1 class="task-list__title">{viewTitle}</h1>
 
       <!-- Header 操作区（AI_HEADER / COMPACT 状态：AI Button 移到 Header） -->
-      {#if mobile}
-        <div class="task-list__header-actions">
-          <button class="task-list__header-btn task-list__header-btn--mini" title="新建任务" aria-label="新建任务" on:click={() => openCreateAtCurrentPosition({ view, viewId })}>
-            <svg><use xlink:href="#iconThingsAdd" /></svg>
-          </button>
-        </div>
-      {:else if aiEnabled && aiMode === 'header'}
+      {#if !mobile && aiEnabled && aiMode === 'header'}
         <div class="task-list__header-actions">
           <button class="task-list__header-btn" title="AI 任务整理" on:click={openAICreatorDefault}>
             <svg><use xlink:href="#iconThingsSparkles" /></svg>
@@ -1467,7 +1465,7 @@
   {/if}
 
   <!-- 创建任务表单（顶部）：点击新建、拖到侧边栏切视图后新建等场景；拖到列表的插入式新建在下方对应分组内渲染 -->
-  {#if showCreateForm && !activeCreateSlot}
+  {#if showCreateForm && !activeCreateSlot && !mobile}
     <TaskCard
       mode="create"
       {mobile}
@@ -1483,6 +1481,19 @@
 
   <!-- 任务列表 -->
   <div class="task-list__items" class:is-create-closing={suppressTaskLayoutMotion} bind:this={itemsEl}>
+    {#if mobile && showCreateForm && !activeCreateSlot}
+      <TaskCard
+        mode="create"
+        {mobile}
+        {store}
+        currentView={view}
+        currentViewId={viewId}
+        presetView={createDestView}
+        presetViewId={createDestViewId}
+        on:created={handleTaskCreated}
+        on:cancel={handleCancelCreate}
+      />
+    {/if}
     {#if view === "search" && !searchQuery.trim()}
       <div class="task-list__empty task-list__empty--search">
         <Icon name="iconThingsSearch" size={42} klass="task-list__empty-icon" />
@@ -1555,7 +1566,7 @@
                 </div>
               </div>
             {/if}
-          {:else if view === "today" && group === "今晚"}
+          {:else if view === "today" && group === "今晚" && (!mobile || groupItems.length > 0 || dragFromGroup || activeCreateSlot?.group === group)}
             <div class="task-list__group task-list__group--fixed" class:is-tonight={group === "今晚"}>
               <Icon
                 name={group === "今晚" ? "iconThingsMoonFilled" : "iconThingsToday"}
@@ -1841,22 +1852,43 @@
       max-width: 100%;
       min-width: 0;
       box-sizing: border-box;
-      padding: 0 12px;
+      padding: 0 16px;
 
       .task-list__header {
         min-width: 0;
-        padding-top: 12px;
+        padding-top: calc(max(env(safe-area-inset-top), var(--mobile-top-safe-area, 0px)) + 12px);
       }
 
       .task-list__header-top {
         min-width: 0;
-        min-height: 42px;
-        padding-bottom: 10px;
+        min-height: 54px;
+        padding-bottom: 2px;
+      }
+
+      .task-list__header-top.has-border {
+        padding-bottom: 18px;
+        border-bottom: 0;
       }
 
       .task-list__title {
-        font-size: 20px;
+        font-size: 28px;
+        font-weight: 700;
+        letter-spacing: -.5px;
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
+
+      .task-list__header-btn { min-width: 44px; min-height: 44px; padding: 8px; }
+      .task-list__area-tab { min-height: 40px; }
+      .task-list__search-box { margin-top: 10px; padding: 4px 10px; }
+      .task-list__search-box input { min-height: 44px; font-size: 16px; }
+      .task-list__search-box button { width: 44px; height: 44px; flex-shrink: 0; }
+      .task-list__heading-input { width: 100%; min-width: 0; box-sizing: border-box; min-height: 44px; font-size: 16px; }
+      .task-list__heading-toggle { min-height: 44px; }
+      .task-list__heading-edit, .task-list__heading-del, .task-list__heading-move { width: 36px; height: 44px; flex-shrink: 0; }
 
       .task-list__description {
         display: none;
@@ -1865,14 +1897,16 @@
       .task-list__items {
         width: auto;
         min-width: 0;
-        margin: 0 -12px;
-        padding: 8px 0 calc(24px + env(safe-area-inset-bottom));
-        padding-right: 12px;
-        padding-left: 12px;
+        min-height: 0;
+        margin: 0 -16px;
+        padding: 3px 0 calc(96px + env(safe-area-inset-bottom));
+        padding-right: 16px;
+        padding-left: 16px;
         box-sizing: border-box;
         overflow-x: hidden;
         overscroll-behavior: contain;
         -webkit-overflow-scrolling: touch;
+        scroll-padding-block: 12px 32px;
       }
 
       .task-list__group-block,
@@ -1886,6 +1920,10 @@
       }
 
       .task-list__heading-actions--mobile {
+        position: static;
+        transform: none;
+        flex: 0 0 auto;
+        margin-left: auto;
         visibility: visible;
         opacity: 1;
         pointer-events: auto;
@@ -1894,18 +1932,6 @@
       }
 
       .task-list__heading {
-        padding-right: 76px;
-      }
-
-      .task-list__heading-actions--mobile:has(.task-list__heading-edit) {
-        position: static;
-        transform: none;
-        flex: 0 0 auto;
-        margin-left: auto;
-        padding-left: 4px;
-      }
-
-      .task-list__heading:has(.task-list__heading-actions--mobile:has(.task-list__heading-edit)) {
         padding-right: 0;
       }
 
@@ -1913,6 +1939,22 @@
       .task-list__month,
       .task-list__group {
         margin-top: 20px;
+      }
+
+      :global(.project-panel__notes-edit), :global(.project-panel__notes-expand) { opacity: 1; min-height: 36px; }
+      :global(.project-panel__notes-edit), :global(.project-panel__notes-done) { width: 36px; height: 36px; }
+
+      .things-fab-group {
+        right: calc(16px + env(safe-area-inset-right));
+        bottom: calc(20px + env(safe-area-inset-bottom));
+      }
+
+      .things-fab__btn { width: 54px; height: 54px; }
+
+      &:has(:global(.task-card.is-expanded), :global(.task-card.is-swipe-selected)) .things-fab-group {
+        opacity: 0;
+        pointer-events: none;
+        transform: scale(.82);
       }
     }
 

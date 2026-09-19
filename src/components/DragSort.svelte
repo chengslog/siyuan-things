@@ -139,10 +139,13 @@
   }
 
   export function handleDragStart(e: MouseEvent | TouchEvent, id: string) {
-    e.preventDefault();
+    // touchstart 的长按计时回调已经离开原事件；在后续 touchmove 中阻止滚动。
+    if (!('touches' in e)) e.preventDefault();
 
     const el = itemElements.get(id);
     if (!el) return;
+    window.getSelection()?.removeAllRanges();
+    document.addEventListener('selectstart', preventSelection);
 
     const rect = el.getBoundingClientRect();
     const clientY = getClientY(e);
@@ -187,13 +190,16 @@
     document.addEventListener('mouseup', onEnd);
     document.addEventListener('touchmove', onMove, { passive: false });
     document.addEventListener('touchend', onEnd);
-    document.addEventListener('touchcancel', onEnd);
+    document.addEventListener('touchcancel', onCancel);
+    window.addEventListener('blur', onCancel);
 
     dispatch('dragstart', { id, index });
   }
 
   function onMove(e: MouseEvent | TouchEvent) {
     if (!draggedId || !ghostEl) return;
+    if ('touches' in e && e.touches.length !== 1) { onCancel(); return; }
+    if ('touches' in e && !e.cancelable) { onCancel(); return; }
     e.preventDefault();
 
     currentY = getClientY(e);
@@ -265,7 +271,8 @@
     const clientY = getClientY(e);
     const clientX = getClientX(e);
     const fromIndex = draggedIndex;
-    const toIndex = insertIndex;
+    // insertIndex 是原数组中的插入边界；先移除源项后，向下移动需减一。
+    const toIndex = insertIndex > draggedIndex ? insertIndex - 1 : insertIndex;
     const id = draggedId;
     // 松手时指针还在本组内 → 组内排序（reorder）；否则交给父级做跨组判定（drop）
     const withinSelf = containerEl ? containsPoint(clientY) : true;
@@ -278,6 +285,14 @@
 
     dispatch('drop', { id, clientX, clientY, fromGroup: groupKey, withinSelf });
     dispatch('dragend', { id });
+  }
+
+  function preventSelection(event: Event) { event.preventDefault(); }
+
+  function onCancel() {
+    const id = draggedId;
+    cleanup();
+    if (id) dispatch('dragend', { id });
   }
 
   // 更新所有元素位置
@@ -300,7 +315,7 @@
     // 向下拖拽：原位置 < 目标位置
     // 例：A(0)拖到C之后(insertIndex=2)，B需要上移1格
     if (draggedIndex < insertIndex) {
-      if (index > draggedIndex && index <= insertIndex) {
+      if (index > draggedIndex && index < insertIndex) {
         return -itemHeight; // 上移
       }
     }
@@ -341,7 +356,9 @@
     document.removeEventListener('mouseup', onEnd);
     document.removeEventListener('touchmove', onMove);
     document.removeEventListener('touchend', onEnd);
-    document.removeEventListener('touchcancel', onEnd);
+    document.removeEventListener('touchcancel', onCancel);
+    document.removeEventListener('selectstart', preventSelection);
+    window.removeEventListener('blur', onCancel);
 
     draggedId = null;
     draggedIndex = -1;
@@ -384,7 +401,10 @@
       border-radius: 8px;
       margin: 0;
       box-sizing: border-box;
-      background: white;
+      background: var(--b3-theme-background);
+      color: var(--b3-theme-on-background);
+      user-select: none;
+      -webkit-user-select: none;
       transition: none;
     `;
   }

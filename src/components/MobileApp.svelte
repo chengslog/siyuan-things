@@ -2,6 +2,7 @@
   import { onDestroy, onMount, setContext, tick } from "svelte";
   import { showMessage } from "siyuan";
   import EntityForm from "./EntityForm.svelte";
+  import { touchSort } from "@/utils/touchSort";
   import type { StoreManager } from "@/stores";
   import type { Area, Project, Tag, ViewType } from "@/types";
 
@@ -13,7 +14,6 @@
   setContext("plugin", plugin);
 
   type CreateKind = "project" | "area" | "tag";
-  type ReorderKind = "project" | "area" | "tag";
   type TagRow = { tag: Tag; depth: number };
 
   const mainGroups: { view: ViewType; icon: string; label: string }[][] = [
@@ -32,7 +32,6 @@
   let navigationScroll: HTMLElement;
   let savedScrollTop = 0;
   let createKind: CreateKind | null = null;
-  let reorderKind: ReorderKind | null = null;
   let tagName = "";
   let tagInput: HTMLInputElement;
   let projects: Project[] = [];
@@ -78,13 +77,11 @@
   export function showTasks(view: ViewType, viewId?: string, query = "") {
     if (navigationScroll) savedScrollTop = navigationScroll.scrollTop;
     createKind = null;
-    reorderKind = null;
     plugin?.openMobileTaskPage?.(view, viewId, query);
   }
 
   export async function showNavigation() {
     createKind = null;
-    reorderKind = null;
     await tick();
     if (navigationScroll) navigationScroll.scrollTop = savedScrollTop;
   }
@@ -93,15 +90,9 @@
     revision += 1;
   }
 
-  function toggleReorder(kind: ReorderKind, event: MouseEvent) {
-    event.stopPropagation();
-    createKind = null;
-    reorderKind = reorderKind === kind ? null : kind;
-  }
-
-  async function moveEntity(kind: ReorderKind, id: string, delta: -1 | 1, event: MouseEvent) {
-    event.stopPropagation();
-    let siblings: Array<{ id: string; order: number }> = [];
+  async function reorderEntities({ group, id, beforeId }: { group: string; id: string; beforeId: string | null }) {
+    const kind = group.split(':')[0];
+    let siblings: Array<Project | Area | Tag> = [];
     if (kind === "project") siblings = [...projects];
     if (kind === "area") siblings = [...areas];
     if (kind === "tag") {
@@ -111,14 +102,17 @@
         .sort((a, b) => a.order - b.order);
     }
     const index = siblings.findIndex((item) => item.id === id);
-    const target = index + delta;
-    if (index < 0 || target < 0 || target >= siblings.length) return;
-    [siblings[index], siblings[target]] = [siblings[target], siblings[index]];
-    for (let order = 0; order < siblings.length; order += 1) {
-      if (kind === "project") await store.projects.updateProject(siblings[order].id, { order });
-      if (kind === "area") await store.areas.updateArea(siblings[order].id, { order });
-      if (kind === "tag") await store.tags.updateTag(siblings[order].id, { order });
-    }
+    if (index < 0 || beforeId === id) return;
+    const original = siblings.map(item => item.id).join(',');
+    const [moved] = siblings.splice(index, 1);
+    const target = beforeId === null ? siblings.length : siblings.findIndex(item => item.id === beforeId);
+    if (target < 0) return;
+    siblings.splice(target, 0, moved);
+    if (siblings.map(item => item.id).join(',') === original) return;
+    const entityStore = kind === 'project' ? store.projects : kind === 'area' ? store.areas : store.tags;
+    await entityStore.batch(() => {
+      siblings.forEach((item, order) => { item.order = order; item.updated = Date.now(); });
+    });
   }
 
   function openCreate(kind: CreateKind, event: MouseEvent) {
@@ -171,13 +165,13 @@
       <span class="mobile-things__version">v{version}</span>
     </header>
 
-    <main class="mobile-things__navigation" bind:this={navigationScroll}>
+    <main class="mobile-things__navigation" bind:this={navigationScroll} use:touchSort={reorderEntities}>
       {#each mainGroups as group, groupIndex}
         <section class="mobile-things__group" class:is-search={groupIndex === 0}>
           {#each group as item}
             <button class="mobile-things__nav-row" class:is-search-row={item.view === "search"} on:click={() => showTasks(item.view)}>
               <svg class="mobile-things__nav-icon" aria-hidden="true"><use xlink:href={`#${item.icon}`} /></svg>
-              <span>{item.label}</span>
+              <span class="mobile-things__nav-label">{item.label}</span>
               {#if counts[item.view]}
                 <span class="mobile-things__count">{counts[item.view]}</span>
               {/if}
@@ -193,20 +187,14 @@
             <svg aria-hidden="true"><use xlink:href="#iconThingsProject" /></svg><span>项目</span>
           </button>
           <span class="mobile-things__section-actions">
-            <button class="mobile-things__sort-action" class:is-active={reorderKind === "project"} aria-label="调整项目顺序" on:click={(event) => toggleReorder("project", event)}>{reorderKind === "project" ? "完成" : "排序"}</button>
-            <button aria-label="新建项目" on:click={(event) => openCreate("project", event)}>＋</button>
+            <button aria-label="新建项目" on:click={(event) => openCreate("project", event)}><svg aria-hidden="true"><use xlink:href="#iconThingsAdd" /></svg></button>
           </span>
         </div>
         {#each projects as project (project.id)}
-          <div class="mobile-things__nav-row mobile-things__nav-row--child" role="button" tabindex="0" on:click={() => showTasks("project", project.id)} on:keydown={(event) => event.key === "Enter" && showTasks("project", project.id)}>
+          <div class="mobile-things__nav-row mobile-things__nav-row--child" data-sort-id={project.id} data-sort-group="project" role="button" tabindex="0" on:click={() => showTasks("project", project.id)} on:keydown={(event) => event.key === "Enter" && showTasks("project", project.id)}>
             <svg class="mobile-things__nav-icon" aria-hidden="true"><use xlink:href="#iconThingsFolder" /></svg>
-            <span>{project.name}</span>
-            {#if reorderKind === "project"}
-              <span class="mobile-things__reorder-actions">
-                <button aria-label="上移项目" on:click={(event) => moveEntity("project", project.id, -1, event)}>↑</button>
-                <button aria-label="下移项目" on:click={(event) => moveEntity("project", project.id, 1, event)}>↓</button>
-              </span>
-            {:else}<svg class="mobile-things__chevron" aria-hidden="true"><use xlink:href="#iconRight" /></svg>{/if}
+            <span class="mobile-things__nav-label" title={project.name}>{project.name}</span>
+            <svg class="mobile-things__chevron" aria-hidden="true"><use xlink:href="#iconRight" /></svg>
           </div>
         {/each}
       </section>
@@ -217,20 +205,14 @@
             <svg aria-hidden="true"><use xlink:href="#iconThingsArea" /></svg><span>区域</span>
           </button>
           <span class="mobile-things__section-actions">
-            <button class="mobile-things__sort-action" class:is-active={reorderKind === "area"} aria-label="调整区域顺序" on:click={(event) => toggleReorder("area", event)}>{reorderKind === "area" ? "完成" : "排序"}</button>
-            <button aria-label="新建区域" on:click={(event) => openCreate("area", event)}>＋</button>
+            <button aria-label="新建区域" on:click={(event) => openCreate("area", event)}><svg aria-hidden="true"><use xlink:href="#iconThingsAdd" /></svg></button>
           </span>
         </div>
         {#each areas as area (area.id)}
-          <div class="mobile-things__nav-row mobile-things__nav-row--child" role="button" tabindex="0" on:click={() => showTasks("area", area.id)} on:keydown={(event) => event.key === "Enter" && showTasks("area", area.id)}>
+          <div class="mobile-things__nav-row mobile-things__nav-row--child" data-sort-id={area.id} data-sort-group="area" role="button" tabindex="0" on:click={() => showTasks("area", area.id)} on:keydown={(event) => event.key === "Enter" && showTasks("area", area.id)}>
             <svg class="mobile-things__nav-icon" aria-hidden="true"><use xlink:href="#iconThingsLayers" /></svg>
-            <span>{area.name}</span>
-            {#if reorderKind === "area"}
-              <span class="mobile-things__reorder-actions">
-                <button aria-label="上移区域" on:click={(event) => moveEntity("area", area.id, -1, event)}>↑</button>
-                <button aria-label="下移区域" on:click={(event) => moveEntity("area", area.id, 1, event)}>↓</button>
-              </span>
-            {:else}<svg class="mobile-things__chevron" aria-hidden="true"><use xlink:href="#iconRight" /></svg>{/if}
+            <span class="mobile-things__nav-label" title={area.name}>{area.name}</span>
+            <svg class="mobile-things__chevron" aria-hidden="true"><use xlink:href="#iconRight" /></svg>
           </div>
         {/each}
       </section>
@@ -241,27 +223,24 @@
             <svg aria-hidden="true"><use xlink:href="#iconThingsTagColor" /></svg><span>标签</span>
           </button>
           <span class="mobile-things__section-actions">
-            <button class="mobile-things__sort-action" class:is-active={reorderKind === "tag"} aria-label="调整标签顺序" on:click={(event) => toggleReorder("tag", event)}>{reorderKind === "tag" ? "完成" : "排序"}</button>
-            <button aria-label="新建标签" on:click={(event) => openCreate("tag", event)}>＋</button>
+            <button aria-label="新建标签" on:click={(event) => openCreate("tag", event)}><svg aria-hidden="true"><use xlink:href="#iconThingsAdd" /></svg></button>
           </span>
         </div>
         {#each tagRows as row (row.tag.id)}
           <div
             class="mobile-things__nav-row mobile-things__nav-row--child"
+            data-sort-id={row.tag.id}
+            data-sort-group={`tag:${row.tag.parentId || ''}`}
+            data-sort-depth={row.depth}
             role="button"
             tabindex="0"
-            style={`padding-left:${20 + row.depth * 18}px`}
+            style={`padding-left:${20 + Math.min(row.depth, 4) * 12}px`}
             on:click={() => showTasks("tag", row.tag.id)}
             on:keydown={(event) => event.key === "Enter" && showTasks("tag", row.tag.id)}
           >
             <span class="mobile-things__tag-dot" style:background-color={row.tag.color || "var(--b3-theme-primary)"}></span>
-            <span>{row.tag.name}</span>
-            {#if reorderKind === "tag"}
-              <span class="mobile-things__reorder-actions">
-                <button aria-label="上移标签" on:click={(event) => moveEntity("tag", row.tag.id, -1, event)}>↑</button>
-                <button aria-label="下移标签" on:click={(event) => moveEntity("tag", row.tag.id, 1, event)}>↓</button>
-              </span>
-            {:else}<svg class="mobile-things__chevron" aria-hidden="true"><use xlink:href="#iconRight" /></svg>{/if}
+            <span class="mobile-things__nav-label" title={row.tag.name}>{row.tag.name}</span>
+            <svg class="mobile-things__chevron" aria-hidden="true"><use xlink:href="#iconRight" /></svg>
           </div>
         {/each}
       </section>
@@ -308,6 +287,7 @@
     width: 100%;
     height: 100%;
     min-height: 0;
+    min-width: 0;
     overflow: hidden;
     color: var(--b3-theme-on-background);
     background: var(--b3-theme-background);
@@ -343,7 +323,8 @@
     &__navigation {
       flex: 1 1 auto;
       min-height: 0;
-      overflow: auto;
+      overflow-y: auto;
+      overflow-x: hidden;
       overscroll-behavior: contain;
       padding: 2px 12px calc(20px + env(safe-area-inset-bottom));
     }
@@ -359,6 +340,16 @@
     &__group + &__group { margin-top: 6px; }
 
     &__group.is-search { margin-bottom: 10px; }
+
+    &__group:not(.is-search) &__nav-row {
+      font-size: 16px;
+      font-weight: 650;
+    }
+
+    &__group.is-search &__nav-row {
+      font-size: 15px;
+      font-weight: 400;
+    }
 
     &__section {
       margin: 12px 0 0;
@@ -392,6 +383,8 @@
       > span:not(.mobile-things__count):not(.mobile-things__tag-dot) { flex: 1; min-width: 0; }
     }
 
+    &__nav-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
     &__nav-row.is-search-row {
       min-height: 42px;
       border-radius: 11px;
@@ -401,7 +394,15 @@
       .mobile-things__nav-icon { color: var(--b3-theme-on-surface-light); }
     }
 
-    &__nav-row--child { min-height: 40px; padding: 5px 10px 5px 18px; font-size: 14px; }
+    &__nav-row--child {
+      min-height: 48px;
+      padding: 5px 10px 5px 18px;
+      font-size: 15px;
+      font-weight: 400;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+    }
 
     &__nav-icon,
     &__section-title svg {
@@ -432,6 +433,7 @@
       align-items: center;
       gap: 0;
       padding: 0;
+      font-size: 16px;
       font-weight: 600;
       border: 0;
 
@@ -461,48 +463,26 @@
 
     &__section-actions {
       flex: 0 0 auto !important;
-      padding-right: 8px;
+      padding-right: 10px;
 
       button {
-        width: 34px;
-        height: 34px;
+        display: grid;
+        place-items: center;
+        width: 44px;
+        height: 44px;
         border: 0;
-        border-radius: 50%;
-        color: var(--b3-theme-primary);
+        border-radius: 10px;
+        color: var(--b3-theme-on-surface-light);
         background: transparent;
-        font-size: 23px;
-        line-height: 1;
-      }
+        -webkit-tap-highlight-color: transparent;
 
-      button:last-child { display: grid; place-items: center; }
-      button.is-active { color: var(--b3-theme-on-primary); background: var(--b3-theme-primary); }
+        svg { width: 16px; height: 16px; color: inherit; fill: currentColor; opacity: .65; }
 
-      .mobile-things__sort-action {
-        width: auto;
-        min-width: 42px;
-        padding: 0 7px;
-        border-radius: 8px;
-        font-size: 12px;
-        font-weight: 550;
-      }
-    }
-
-    &__reorder-actions {
-      flex: 0 0 auto !important;
-      display: flex !important;
-      align-items: center;
-      gap: 4px;
-
-      button {
-        width: 34px;
-        height: 34px;
-        padding: 0;
-        border: 0;
-        border-radius: 8px;
-        color: var(--b3-theme-primary);
-        background: var(--b3-theme-surface-light);
-        font: inherit;
-        font-size: 17px;
+        &:active {
+          color: var(--b3-theme-primary);
+          background: var(--b3-theme-primary-light);
+          transform: scale(.96);
+        }
       }
     }
 
@@ -530,6 +510,11 @@
       padding: 8px 12px calc(12px + env(safe-area-inset-bottom));
       border-radius: 18px 18px 0 0;
       background: var(--b3-theme-background);
+      overscroll-behavior: contain;
+
+      :global(.entity-form) { margin: 0; padding: 16px 8px; box-shadow: none; background: transparent; }
+      :global(.entity-form__input), :global(.entity-form__select) { box-sizing: border-box; min-width: 0; min-height: 44px; font-size: 16px; }
+      :global(.entity-form__btn) { min-height: 44px; }
     }
 
     &__tag-form {

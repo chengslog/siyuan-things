@@ -16,6 +16,7 @@
   import { renderMarkdown } from "@/utils/markdown";
   import { uploadImage } from "@/utils/upload";
   import { smartPosition } from "@/utils/popup";
+  import { mobileSheet } from "@/utils/mobileSheet";
   import { formatTaskAsMarkdown } from "@/utils/taskMarkdown";
 
   // 模式：create 或 edit
@@ -127,9 +128,52 @@
   let notesExpanded = false;
   let copyFeedback: 'idle' | 'copied' | 'failed' = 'idle';
   let copyFeedbackTimer: ReturnType<typeof setTimeout> | undefined;
+  let swipeToolsOpen = false;
+  let swipeCandidate = false;
   let titleInput: HTMLTextAreaElement;
   let previousAiPreviewFocusKey = aiPreviewFocusKey;
   let previousAiPreviewActive = aiPreviewActive;
+
+  function closeMobilePicker() {
+    showDatePicker = false;
+    showDeadlinePicker = false;
+    showRepeatPicker = false;
+    showTagPicker = false;
+    showProjectAreaPicker = false;
+  }
+
+  function taskPickerPosition(node: HTMLElement) {
+    return mobile ? mobileSheet(node, closeMobilePicker) : smartPosition(node);
+  }
+
+  function preventMobileSelection(node: HTMLElement) {
+    const prevent = (event: Event) => {
+      if (mobile && !expanded) event.preventDefault();
+    };
+    node.addEventListener('selectstart', prevent);
+    return { destroy() { node.removeEventListener('selectstart', prevent); } };
+  }
+
+  // 挂到页面容器，避免卡片变换和滚动裁切改变 fixed 的定位参照。
+  function mobileToolbarPortal(node: HTMLElement) {
+    const host = node.closest('.things-mobile-page') || document.body;
+    host.appendChild(node);
+    const update = () => {
+      const viewport = window.visualViewport;
+      const keyboardInset = Math.max(0, window.innerHeight - (viewport ? viewport.offsetTop + viewport.height : window.innerHeight));
+      const safeInset = keyboardInset > 0 ? '0px' : 'env(safe-area-inset-bottom, 0px)';
+      node.style.bottom = `calc(${keyboardInset + 12}px + ${safeInset})`;
+    };
+    update();
+    window.visualViewport?.addEventListener('resize', update);
+    window.visualViewport?.addEventListener('scroll', update);
+    return { destroy() {
+      window.visualViewport?.removeEventListener('resize', update);
+      window.visualViewport?.removeEventListener('scroll', update);
+      node.remove();
+    } };
+  }
+
 
   // 新一轮对话出现时，所有已经成为历史轮的未添加卡片自动收起。
   // 仅在焦点轮次发生变化时收起，因此历史卡片之后仍可由用户手动展开。
@@ -239,6 +283,7 @@
   });
 
   onDestroy(() => {
+    document.removeEventListener('click', handleOutsideClick);
     window.removeEventListener('card-expanded', handleCardExpanded as EventListener);
     document.removeEventListener('mousedown', handleDropdownOutside, true);
     if (mode === 'edit' && task) {
@@ -282,6 +327,10 @@
   // 卡片互斥：其他卡片展开时，收起当前卡片
   function handleCardExpanded(e: CustomEvent) {
     const { cardId } = e.detail;
+    if (task && cardId !== task.id && swipeToolsOpen) {
+      swipeToolsOpen = false;
+      saveAndCollapse();
+    }
     if (mode === 'edit' && task && cardId !== task.id && expanded) {
       saveAndCollapse();
     }
@@ -376,6 +425,7 @@
   $: resolvedSomeday = someday;
   $: resolvedDeadline = deadline;
   $: dateDisplay = getStartDateDisplay(resolvedStartDate, resolvedSomeday, currentView);
+  $: mobileDateDisplay = getStartDateDisplay(resolvedStartDate, resolvedSomeday, '');
   $: dateReminderDisplay = resolvedSomeday ? null : getReminderDisplay(resolvedStartDate);
   $: deadlineDisplay = getDeadlineDisplay(resolvedDeadline);
   $: deadlineReminderDisplay = getReminderDisplay(resolvedDeadline);
@@ -575,6 +625,10 @@
       }
     }
 
+    // 手机端展开后只由卡片外部点击保存并收起，避免在卡片空白处误关闭编辑。
+    if (mobile && expanded && mode === 'edit') {
+      return;
+    }
     expanded = !expanded;
     if (expanded && mode === 'create' && collapsibleCreate) {
       setTimeout(() => document.addEventListener('click', handleOutsideClick), 10);
@@ -610,7 +664,7 @@
     // Dropdowns are portaled to document.body by smartPosition, so they are no
     // longer descendants of cardEl. Treat interaction inside a portaled picker
     // as card interaction; the picker change/close handler owns its lifecycle.
-    if (target.closest('.task-card__dropdown')) return;
+    if (target.closest('.task-card__dropdown, .task-card__mobile-more-shell')) return;
     if (!cardEl?.contains(target)) {
       showDatePicker = false;
       showDeadlinePicker = false;
@@ -627,6 +681,12 @@
 
   // 保存并折叠
   async function saveAndCollapse() {
+    swipeToolsOpen = false;
+    showDatePicker = false;
+    showDeadlinePicker = false;
+    showRepeatPicker = false;
+    showTagPicker = false;
+    showProjectAreaPicker = false;
     if (mode === 'edit' && task) {
       // 构建变更对象：比较本地状态与 task
       const changes: Partial<Task> = {};
@@ -888,7 +948,7 @@
       checklist = [...checklist, { id: Date.now().toString(), title: "", completed: false }];
     } else if (task) {
       // 编辑模式：追加到本地检查清单（编辑/失焦时同步到 store），确保新项立即可见
-      localChecklist = [...localChecklist, { id: Date.now().toString(), title: "", completed: false }];
+      localChecklist = [...(mobile ? localChecklist.filter(item => item.id !== 'empty' || item.title.trim()) : localChecklist), { id: Date.now().toString(), title: "", completed: false }];
     }
   }
 
@@ -1124,39 +1184,71 @@
 
   // 移动端沿用思源文件树的交互：短按打开，长按后进入触控排序。
   function handleTouchStart(e: TouchEvent) {
+    swipeCandidate = false;
+    if (mobile && cardEl && e.touches.length === 1) {
+      const x = e.touches[0].clientX;
+      if (x <= 28 || x >= window.innerWidth - 28) cardEl.removeAttribute('data-prevent-swipe');
+      else cardEl.setAttribute('data-prevent-swipe', 'true');
+    }
+    if (touchDragTimer) clearTimeout(touchDragTimer);
+    touchDragTimer = null;
     if (!mobile || expanded || collapsedPreview || mode !== 'edit' || !task || e.touches.length !== 1) return;
+    suppressMobileClick = false;
     const target = e.target as HTMLElement;
-    if (target.closest('button') || target.closest('input') || target.closest('textarea') || target.closest('.task-card__aux')) return;
+    if (target.closest('button') || target.closest('input') || target.closest('textarea')) return;
     const touch = e.touches[0];
     touchStartX = touch.clientX;
     touchStartY = touch.clientY;
+    swipeCandidate = touch.clientX > 28 && touch.clientX < window.innerWidth - 28;
     touchDragActive = false;
     if (touchDragTimer) clearTimeout(touchDragTimer);
     touchDragTimer = setTimeout(() => {
       touchDragTimer = null;
       touchDragActive = true;
       suppressMobileClick = true;
+      window.getSelection()?.removeAllRanges();
       try { navigator.vibrate?.(18); } catch { /* WebView may not expose vibration */ }
       dispatch('dragstart', { event: e });
     }, 450);
   }
 
   function handleTouchMove(e: TouchEvent) {
-    if (!mobile || e.touches.length !== 1) return;
+    if (!mobile) return;
+    if (e.touches.length !== 1) {
+      if (touchDragTimer) clearTimeout(touchDragTimer);
+      touchDragTimer = null;
+      return;
+    }
     const touch = e.touches[0];
     if (!touchDragActive && (Math.abs(touch.clientX - touchStartX) > 8 || Math.abs(touch.clientY - touchStartY) > 8)) {
       if (touchDragTimer) clearTimeout(touchDragTimer);
       touchDragTimer = null;
     }
-    if (touchDragActive) e.preventDefault();
+    if (swipeCandidate && !touchDragActive && touchStartX - touch.clientX > 24 && Math.abs(touch.clientY - touchStartY) < 20) {
+      e.stopPropagation();
+      if (e.cancelable) e.preventDefault();
+    }
+    if (touchDragActive && e.cancelable) e.preventDefault();
   }
 
   function handleTouchEnd(e: TouchEvent) {
     if (!mobile) return;
     if (touchDragTimer) clearTimeout(touchDragTimer);
     touchDragTimer = null;
+    const touch = e.changedTouches[0];
+    if (e.type !== 'touchcancel' && swipeCandidate && !touchDragActive && touch &&
+        touchStartX - touch.clientX > 60 && Math.abs(touch.clientY - touchStartY) < 30) {
+      swipeToolsOpen = true;
+      e.stopPropagation();
+      if (e.cancelable) e.preventDefault();
+      suppressMobileClick = true;
+      window.dispatchEvent(new CustomEvent('card-expanded', { detail: { cardId: task?.id } }));
+      setTimeout(() => document.addEventListener('click', handleOutsideClick), 10);
+      window.setTimeout(() => { suppressMobileClick = false; }, 500);
+    }
+    swipeCandidate = false;
     if (touchDragActive) {
-      e.preventDefault();
+      if (e.cancelable) e.preventDefault();
       window.setTimeout(() => { suppressMobileClick = false; }, 500);
     }
     touchDragActive = false;
@@ -1282,7 +1374,7 @@
 
   // 焦点丢失
   function handleBlur(e: FocusEvent) {
-    if (mode !== 'create' || isInteracting || !createOnBlur) return;
+    if (mode !== 'create' || mobile || isInteracting || !createOnBlur) return;
     setTimeout(() => {
       const activeElement = document.activeElement;
       if (cardEl && !cardEl.contains(activeElement)) {
@@ -1307,28 +1399,32 @@
   class:is-edit={mode === 'edit'}
   class:is-done={task?.status === "done"}
   class:is-expanded={expanded}
+  class:is-swipe-selected={swipeToolsOpen}
   class:is-moving={isMoving}
   class:is-dragging={isDragging}
   class:is-moving-out={isMovingOut}
   data-task-id={task?.id}
+  data-prevent-swipe={mobile ? 'true' : undefined}
   bind:this={cardEl}
+  use:preventMobileSelection
   on:mousedown={mobile ? undefined : handleMouseDown}
   on:mouseup={mobile ? undefined : handleMouseUp}
   on:touchstart={mobile ? handleTouchStart : undefined}
   on:touchmove|nonpassive={mobile ? handleTouchMove : undefined}
   on:touchend={mobile ? handleTouchEnd : undefined}
   on:touchcancel={mobile ? handleTouchEnd : undefined}
+  on:contextmenu={(event) => { if (mobile && !expanded) event.preventDefault(); }}
   on:click={mobile ? handleCardClick : undefined}
   on:focusout={mode === 'create' ? handleBlur : undefined}
 >
   <!-- 标题区域 -->
   <div class="task-card__header">
     <!-- 日志、项目、区域和标签视图：已完成任务在行首显示完成日期，仅收缩态显示 -->
-    {#if doneDateColumn && !expanded}
+    {#if !mobile && doneDateColumn && !expanded}
       <span class="task-card__log-date">{formatLogDate(task?.completedDate || task?.updated)}</span>
     {/if}
     <!-- 计划视图月度组：行首固定宽度开始日期列（同日志样式，x月x日），仅收缩态显示 -->
-    {#if inlineDate && mode === 'edit' && !expanded}
+    {#if !mobile && inlineDate && mode === 'edit' && !expanded}
       <span class="task-card__month-date">{formatMonthDate(task?.startDate)}</span>
     {/if}
     <!-- 复选框 -->
@@ -1336,6 +1432,8 @@
       <button
         class="task-card__check"
         class:is-checked={task?.status === "done" || pendingDone}
+        aria-label={task?.status === "done" || pendingDone ? "标记为未完成" : "完成任务"}
+        aria-pressed={task?.status === "done" || pendingDone}
         on:click={handleToggle}
       >
         {#if task?.status === "done" || pendingDone}
@@ -1359,7 +1457,7 @@
     {/if}
 
     <!-- 日期/图标（有日期或今天图标时显示，无日期不渲染；已完成任务由行首完成日期列呈现时间线） -->
-    {#if !expanded && showTodayIndicator && task?.status !== 'done'}
+    {#if !mobile && !expanded && showTodayIndicator && task?.status !== 'done'}
       {#if isTodayInAnytime}
         <span class="task-card__date-col"><Icon name="iconThingsStarFilled" size={14} color="#FFB900" klass="task-card__today-indicator" /></span>
       {:else if isTonightInAnytime}
@@ -1367,7 +1465,7 @@
       {:else if showCollapsedDate}
         <span class="task-card__date-col task-card__inline-date">{formatMonthDay(task?.startDate)}</span>
       {/if}
-    {:else if showCollapsedDate && !expanded && !doneDateColumn}
+    {:else if !mobile && showCollapsedDate && !expanded && !doneDateColumn}
       <span class="task-card__date-col task-card__inline-date">{formatMonthDay(task?.startDate)}</span>
     {/if}
 
@@ -1389,7 +1487,7 @@
         <div class="task-card__title" class:is-done={task?.status === "done" || pendingDone}>
           {mode === 'create' ? title : task?.title}
         </div>
-        {#if subtitleDisplay}
+        {#if !mobile && subtitleDisplay}
           <span class="task-card__subtitle">
             <Icon name={subtitleDisplay.icon} size={13} />
             <span class="task-card__subtitle-name">{subtitleDisplay.name}</span>
@@ -1398,6 +1496,20 @@
       </div>
 
       <!-- 右侧辅助信息（收缩态，弱化显示） -->
+      {#if mobile}
+        <div class="task-card__mobile-indicators" aria-label="任务属性">
+          {#if (startDate && currentView !== 'today') || someday || showTimeBadge}<span title="已设置日期"><Icon name="iconThingsStar" size={12} /></span>{/if}
+          {#if resolvedDeadline}<span title="已设置截止日期"><Icon name="iconThingsFlag" size={12} /></span>{/if}
+          {#if selectedTags.length}<span title="已设置标签"><Icon name="iconThingsTag" size={12} /></span>{/if}
+          {#if checklistCount}<span title="包含清单"><Icon name="iconThingsChecklist" size={12} /></span>{/if}
+          {#if notes.trim()}<span title="包含备注"><Icon name="iconThingsNote" size={12} /></span>{/if}
+          {#if projectId || areaId}<span title="已设置归属"><Icon name="iconThingsProject" size={12} /></span>{/if}
+          {#if repeatRule}<span title="重复任务">↻</span>{/if}
+        </div>
+        {#if swipeToolsOpen}
+          <input class="task-card__selection-mark" type="radio" checked aria-label="当前选中的任务" tabindex="-1" on:click|stopPropagation={() => { swipeToolsOpen = false; }} />
+        {/if}
+      {:else}
       <div class="task-card__aux">
           {#if showTimeBadge}
             <span class="task-card__aux-item task-card__aux-time" title="开始提醒（到点通知）">
@@ -1429,7 +1541,7 @@
               {/each}
             </span>
           {/if}
-          {#if mode === 'edit'}
+          {#if mode === 'edit' && !mobile}
             <button
               class="task-card__copy-btn task-card__copy-btn--compact"
               class:is-copied={copyFeedback === 'copied'}
@@ -1450,6 +1562,7 @@
             </button>
           {/if}
       </div>
+      {/if}
     {/if}
     {#if collapsedPreview && collapsedStatusLabel}
       <span class="task-card__collapsed-status" role="status" title={collapsedStatusLabel}>
@@ -1517,6 +1630,7 @@
       {/if}
 
       <!-- 检查清单 -->
+      {#if !mobile || checklistItems.some(item => item.id !== 'empty' || item.title.trim()) || (mode === 'create' && showChecklist)}
       <div class="task-card__subtasks">
         <Checklist
           items={checklistItems}
@@ -1524,7 +1638,38 @@
           on:change={handleChecklistChange}
         />
       </div>
+      {/if}
 
+      {#if mobile}
+        <div class="task-card__mobile-properties" aria-label="已设置的任务属性">
+          {#if mobileDateDisplay}
+            <button on:click={() => { closeMobilePicker(); showDatePicker = true; }} aria-label="修改日期">
+              <Icon name={mobileDateDisplay.icon} size={16} color={mobileDateDisplay.color || ''} />
+              <span>{mobileDateDisplay.text || (someday ? '某天' : mobileDateDisplay.icon === 'iconThingsMoonFilled' ? '今晚' : '今天')}{dateReminderDisplay ? ` · ${dateReminderDisplay.text}` : ''}</span>
+            </button>
+          {/if}
+          {#if deadlineDisplay}
+            <button on:click={() => { closeMobilePicker(); showDeadlinePicker = true; }} aria-label="修改截止日期">
+              <Icon name={deadlineDisplay.icon} size={16} /><span>{deadlineDisplay.text}{deadlineReminderDisplay ? ` · ${deadlineReminderDisplay.text}` : ''}</span>
+            </button>
+          {/if}
+          {#each tags as tag}
+            <button on:click={() => { closeMobilePicker(); showTagPicker = true; }} aria-label={`修改标签 ${tag.name}`}>
+              <Icon name="iconThingsTag" size={16} /><span>{tag.name}</span>
+            </button>
+          {/each}
+          {#if repeatRule}
+            <button on:click={toggleRepeatPicker}><span>{repeatLabel}</span></button>
+          {/if}
+          {#if assignmentProject || assignmentArea}
+            <button on:click={() => { closeMobilePicker(); showProjectAreaPicker = true; }}>
+              <Icon name={assignmentProject ? 'iconThingsProject' : 'iconThingsArea'} size={16} />
+              <span>{assignmentProject ? assignmentProject.name : assignmentArea?.name}</span>
+            </button>
+          {/if}
+        </div>
+      {/if}
+      {#if !mobile}
       <!-- 工具栏 -->
       <div class="task-card__toolbar">
         <!-- 左侧：已设置项 -->
@@ -1728,7 +1873,7 @@
             </div>
           {/if}
 
-          {#if !repeatRule}
+          {#if !mobile && !repeatRule}
             <div class="task-card__action-group">
               <button class="task-card__tool-btn" title="重复" on:click|stopPropagation={toggleRepeatPicker}>
                 <span class="task-card__repeat-icon task-card__repeat-icon--tool">↻</span>
@@ -1810,7 +1955,7 @@
           {/if}
 
           <!-- 项目/区域（未设置时） -->
-          {#if !assignmentProject && !assignmentArea}
+          {#if !mobile && !assignmentProject && !assignmentArea}
             <div class="task-card__action-group">
               <button
                 class="task-card__tool-btn"
@@ -1836,7 +1981,7 @@
           {/if}
 
           <!-- 删除（编辑模式） -->
-          {#if mode === 'edit'}
+          {#if !mobile && mode === 'edit'}
             <button
               class="task-card__tool-btn task-card__copy-btn"
               class:is-copied={copyFeedback === 'copied'}
@@ -1862,7 +2007,7 @@
             </button>
           {/if}
 
-          {#if mode === 'create' && showCreateButton}
+          {#if mode === 'create' && (showCreateButton || mobile)}
             <button
               class="task-card__create-btn"
               disabled={isCreating}
@@ -1871,13 +2016,134 @@
             >
               {isCreating ? "添加中…" : createButtonLabel}
             </button>
+            {#if mobile}
+              <button class="task-card__collapse-btn" on:click|stopPropagation={() => dispatch('cancel')}>取消</button>
+            {/if}
           {/if}
         </div>
 
       </div>
+      {:else if mode === 'create'}
+        <div class="task-card__mobile-submit">
+          <button class="task-card__create-btn" disabled={isCreating} on:click|stopPropagation={handleCreate}>{isCreating ? '添加中…' : createButtonLabel}</button>
+          <button class="task-card__collapse-btn" on:click|stopPropagation={() => dispatch('cancel')}>取消</button>
+        </div>
+      {/if}
     </div>
   {/if}
 </div>
+
+        {#if mobile && (expanded || swipeToolsOpen)}
+          <div
+            class="task-card__mobile-more-shell"
+            class:is-editor-footer={expanded && mode !== 'create'}
+            use:mobileToolbarPortal
+            role="toolbar"
+            aria-label="任务操作"
+            data-prevent-swipe
+          >
+            <div class="task-card__mobile-more">
+              <div class="task-card__action-group">
+                <button class="task-card__tool-btn" class:is-active={!!dateDisplay} title="日期" on:click|stopPropagation={() => { closeMobilePicker(); showDatePicker = true; }}>
+                  <Icon name="iconThingsStar" size={16} /><span class="task-card__tool-label">日期</span>
+                </button>
+                {#if showDatePicker}
+                  <div class="task-card__dropdown" use:taskPickerPosition>
+                    <DatePicker timestamp={startDate} showClear={false} on:change={handleDateChange} on:close={closeMobilePicker} />
+                    {#if startDate || someday}<button class="task-card__sheet-clear" on:click={() => { clearStartDate(); closeMobilePicker(); }}>移除日期</button>{/if}
+                  </div>
+                {/if}
+              </div>
+              <div class="task-card__action-group">
+                <button class="task-card__tool-btn" class:is-active={!!deadlineDisplay} title="截止日期" on:click|stopPropagation={() => { closeMobilePicker(); showDeadlinePicker = true; }}>
+                  <Icon name="iconThingsFlag" size={16} /><span class="task-card__tool-label">截止</span>
+                </button>
+                {#if showDeadlinePicker}
+                  <div class="task-card__dropdown" use:taskPickerPosition>
+                    <DeadlinePicker timestamp={deadline} showClear={false} on:change={handleDeadlineChange} on:close={closeMobilePicker} />
+                    {#if deadline}<button class="task-card__sheet-clear" on:click={() => { clearDeadline(); closeMobilePicker(); }}>移除截止日期</button>{/if}
+                  </div>
+                {/if}
+              </div>
+              <button class="task-card__tool-btn" class:is-active={checklistCount > 0} title="清单" on:click|stopPropagation={() => { if (!expanded) { suppressMobileClick = false; handleCardClick(); } if (mode === 'edit') addSubTask(); else showChecklist = !showChecklist; }}>
+                <Icon name="iconThingsSubtask" size={16} /><span class="task-card__tool-label">清单</span>
+              </button>
+              <div class="task-card__action-group">
+                <button class="task-card__tool-btn" class:is-active={selectedTags.length > 0} title="标签" on:click|stopPropagation={() => { closeMobilePicker(); showTagPicker = true; }}>
+                  <Icon name="iconThingsTag" size={16} /><span class="task-card__tool-label">标签</span>
+                </button>
+                {#if showTagPicker}
+                  <div class="task-card__dropdown" use:taskPickerPosition>
+                    <TagPicker {store} {selectedTags} on:change={handleTagChange} />
+                  </div>
+                {/if}
+              </div>
+              {#if mobile}
+                <div class="task-card__action-group">
+                  <button class="task-card__tool-btn" title="重复" on:click|stopPropagation={toggleRepeatPicker}>
+                    <span class="task-card__repeat-icon task-card__repeat-icon--tool">↻</span>
+                    <span class="task-card__tool-label">重复</span>
+                  </button>
+                  {#if showRepeatPicker}
+                    <div class="task-card__dropdown task-card__dropdown--right task-card__repeat-menu" use:taskPickerPosition>
+                      {#each repeatOptions as option}
+                        <button class:is-active={option.value === repeatRule} on:click|stopPropagation={() => selectRepeatRule(option.value)}>
+                          <span>{option.label}</span><span>{option.value === repeatRule ? "✓" : ""}</span>
+                        </button>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+
+              {#if mobile}
+                <div class="task-card__action-group">
+                  <button class="task-card__tool-btn" title="项目与区域" on:click|stopPropagation={toggleProjectAreaPicker}>
+                    <Icon name="iconThingsProject" size={16} />
+                    <span class="task-card__tool-label">归属</span>
+                  </button>
+                  {#if showProjectAreaPicker}
+                    <div class="task-card__dropdown task-card__dropdown--right" use:taskPickerPosition>
+                      <ProjectAreaPicker
+                        store={store}
+                        selectedProjectId={assignment.projectId}
+                        selectedAreaId={assignment.areaId}
+                        on:change={handleProjectAreaChange}
+                        on:close={() => showProjectAreaPicker = false}
+                      />
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+
+              {#if mode === 'edit'}
+                <button
+                  class="task-card__tool-btn task-card__copy-btn"
+                  class:is-copied={copyFeedback === 'copied'}
+                  class:is-failed={copyFeedback === 'failed'}
+                  title={taskCopyButtonLabel()}
+                  aria-label={taskCopyButtonLabel()}
+                  aria-live="polite"
+                  on:click|stopPropagation={copyTaskAsMarkdown}
+                >
+                  {#if copyFeedback !== 'idle'}
+                    <span aria-hidden="true">{copyFeedback === 'copied' ? '✓' : '!'}</span>
+                  {:else}
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <rect x="5" y="5" width="8" height="8" rx="1.5"></rect>
+                      <path d="M3.5 10.5H3A1.5 1.5 0 0 1 1.5 9V3A1.5 1.5 0 0 1 3 1.5h6A1.5 1.5 0 0 1 10.5 3v.5"></path>
+                    </svg>
+                  {/if}
+                  <span class="task-card__tool-label">复制</span>
+                </button>
+                <button class="task-card__tool-btn task-card__tool-btn--delete" title="删除" on:click|stopPropagation={handleDelete}>
+                  <Icon name="iconThingsX" size={14} />
+                  <span class="task-card__tool-label">删除</span>
+                </button>
+              {/if}
+            </div>
+          </div>
+        {/if}
 
 <dialog
   class="task-card__image-preview"
@@ -2055,14 +2321,39 @@
 
     // 手机端保持单列全宽，展开卡片不能继续使用桌面端的大外边距。
     &.is-mobile {
+      &.is-swipe-selected {
+        background: var(--b3-theme-primary-light);
+        border-radius: 10px;
+      }
+      &:not(.is-expanded),
+      &:not(.is-expanded) :global(*) {
+        user-select: none !important;
+        -webkit-user-select: none !important;
+        -webkit-touch-callout: none !important;
+      }
+
       width: 100%;
       max-width: 100%;
       min-width: 0;
       box-sizing: border-box;
-      padding: 9px 4px;
+      padding: 10px 0;
+      min-height: 44px;
       margin-right: 0;
       margin-left: 0;
       border-radius: 0;
+      &.is-swipe-selected {
+        padding: 10px 10px;
+        border-radius: 14px;
+        background: color-mix(in srgb, var(--b3-theme-primary) 20%, var(--b3-theme-background));
+      }
+      .task-card__selection-mark {
+        appearance: auto;
+        accent-color: var(--b3-theme-primary);
+        width: 22px;
+        height: 22px;
+        flex: 0 0 22px;
+        margin: 0 0 0 auto;
+      }
 
       &.is-create,
       &.is-expanded {
@@ -2072,30 +2363,46 @@
         margin: 6px 0;
         padding: 14px 12px;
         border-radius: 12px;
+        border: 1px solid color-mix(in srgb, var(--b3-theme-primary) 28%, var(--b3-border-color));
+        background: var(--b3-theme-background);
+        box-shadow: 0 3px 14px rgba(0,0,0,.05);
+      }
+
+      &.is-expanded:not(.is-create) {
+        position: relative;
+        z-index: 10;
+        padding: 18px 14px;
+        border-radius: 20px;
+        border: var(--things-editor-border, 1px solid var(--b3-border-color));
+        background: var(--things-editor-glass, var(--b3-theme-background));
+        box-shadow: var(--things-editor-shadow, 0 8px 28px rgba(0,0,0,.12));
+        backdrop-filter: blur(24px) saturate(160%);
+        -webkit-backdrop-filter: blur(24px) saturate(160%);
+        animation: things-editor-reveal 180ms ease-out;
       }
 
       .task-card__header {
         width: 100%;
         min-width: 0;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
         column-gap: 8px;
         row-gap: 4px;
       }
 
       .task-card__info {
-        flex: 1 1 150px;
+        flex: 0 1 auto;
         min-width: 0;
         flex-wrap: wrap;
         gap: 3px 8px;
       }
 
       .task-card__title {
-        flex-basis: 100%;
-        display: -webkit-box;
-        white-space: normal;
-        overflow-wrap: anywhere;
-        -webkit-box-orient: vertical;
-        -webkit-line-clamp: 2;
+        font-weight: 400;
+        flex-basis: auto;
+        display: block;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
         line-height: 1.35;
       }
 
@@ -2115,9 +2422,65 @@
         padding-left: 26px;
       }
 
+      .task-card__aux-remove { display: none; }
+      .task-card__mobile-indicators {
+        display: flex;
+        align-items: center;
+        flex: 0 0 auto;
+        gap: 3px;
+        margin-top: 4px;
+        color: var(--b3-theme-on-surface-light);
+        opacity: .65;
+        span { display: inline-flex; }
+        &:empty { display: none; }
+      }
+      .task-card__mobile-submit {
+        display: flex;
+        gap: 8px;
+        .task-card__create-btn, .task-card__collapse-btn { flex: 1 1 0; width: auto; min-width: 0; }
+      }
+      .task-card__check { position: relative; }
+      .task-card__check::before { content: ''; position: absolute; inset: -12px -8px; }
+      .task-card__title-input, .task-card__notes { font-size: 16px; }
+      .task-card__title-input { font-weight: 400; font-size: 17px; line-height: 1.5; }
+      .task-card__details { margin-top: 10px; padding-left: 26px; gap: 16px; }
+      .task-card__notes-md { overflow-wrap: anywhere; padding-right: 0; font-size: 16px; line-height: 1.55; max-height: none; }
+      .task-card__notes-edit { display: none; }
+      .task-card__notes-wrap { min-height: 0; border: 0; padding: 0; }
+      .task-card__mobile-properties {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 16px;
+        margin-top: 8px;
+        padding-top: 8px;
+        &:empty { display: none; }
+        button {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          min-height: 36px;
+          max-width: 100%;
+          padding: 0;
+          border: 0;
+          background: transparent;
+          color: var(--b3-theme-on-background);
+          font: inherit;
+          font-size: 15px;
+          text-align: left;
+          span { overflow-wrap: anywhere; }
+          :global(svg) { flex-shrink: 0; }
+        }
+      }
+      .task-card__notes-edit, .task-card__notes-done, .task-card__notes-expand { opacity: 1; min-width: 36px; min-height: 36px; }
+      .task-card__notes-expand { right: 40px; }
+      .task-card__notes-wrap--editing { padding-right: 40px; }
+      :global(.checklist__input) { font-size: 16px; }
+      :global(.checklist__delete), :global(.checklist__drag) { width: 36px; height: 44px; }
+
       .task-card__tags-inline {
         min-width: 0;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
+        overflow: hidden;
       }
 
       .task-card__tag-name {
@@ -2143,7 +2506,7 @@
         width: 100%;
         min-width: 0;
         box-sizing: border-box;
-        padding-left: 0;
+        padding-left: 26px;
       }
 
       .task-card__notes,
@@ -2178,23 +2541,96 @@
         width: 100%;
         display: flex;
         align-items: center;
-        justify-content: flex-end;
+        justify-content: flex-start;
         flex-wrap: wrap;
-        gap: 3px;
+        gap: 6px;
+      }
+
+      @at-root .task-card__mobile-more-shell {
+        position: fixed;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 100;
+        bottom: calc(8px + env(safe-area-inset-bottom));
+        align-self: flex-end;
+        display: flex;
+        align-items: center;
+        max-width: calc(100vw - 32px);
+        margin: 0;
+        border: 1px solid color-mix(in srgb, var(--b3-theme-primary) 28%, var(--b3-border-color));
+        border-radius: 24px;
+        background: color-mix(in srgb, var(--b3-theme-background) 68%, transparent);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, .18), inset 0 1px 1px rgba(255,255,255,.65), inset 0 -1px 1px rgba(255,255,255,.15);
+        backdrop-filter: blur(24px) saturate(180%);
+        -webkit-backdrop-filter: blur(24px) saturate(180%);
+        overflow: hidden;
+        transition: max-width 180ms ease, box-shadow 180ms ease;
+        touch-action: pan-y;
+
+        &.is-editor-footer {
+          border-radius: 20px;
+          border: var(--things-editor-border, 1px solid var(--b3-border-color));
+          background: var(--things-editor-glass, var(--b3-theme-background));
+          box-shadow: var(--things-editor-shadow, 0 8px 28px rgba(0,0,0,.12));
+          animation: things-editor-reveal 180ms ease-out;
+        }
+
+      }
+      @at-root .task-card__mobile-more {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        max-width: calc(100vw - 36px);
+        min-width: 0;
+        flex: 1 1 auto;
+        box-sizing: border-box;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: none;
+        &::-webkit-scrollbar { display: none; }
+        overscroll-behavior-x: contain;
+        touch-action: pan-x;
+        padding: 7px 12px;
+        opacity: 1;
+        transition: max-width 180ms ease, padding 180ms ease, opacity 120ms ease, transform 180ms ease;
+
+        .task-card__action-group,
+        .task-card__tool-btn {
+          width: 44px;
+          height: 44px;
+          flex: 0 0 44px;
+        }
+
+        .task-card__tool-btn {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-direction: column;
+          border: 0;
+          background: transparent;
+          color: var(--b3-theme-on-surface-light);
+          gap: 3px;
+          border-radius: 10px;
+        }
+
+        .task-card__tool-btn.is-active { color: var(--b3-theme-on-surface-light); background: transparent; }
+        .task-card__tool-label { font-size: 10px; line-height: 1; }
+        .task-card__copy-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; }
       }
 
       .task-card__action-group {
-        width: 38px;
-        flex: 0 0 38px;
+        width: 52px;
+        flex: 0 0 52px;
         min-width: 0;
       }
 
       .task-card__tool-btn {
-        width: 38px;
-        height: 38px;
+        width: 52px;
+        height: 52px;
         box-sizing: border-box;
-        flex-direction: row;
-        gap: 0;
+        flex: 0 0 52px;
+        flex-direction: column;
+        gap: 5px;
         border-radius: 8px;
         background: transparent;
         font-size: 16px;
@@ -2204,16 +2640,23 @@
       }
 
       .task-card__tool-label {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        overflow: hidden;
-        clip: rect(0 0 0 0);
-        white-space: nowrap;
-        clip-path: inset(50%);
+        font-size: 11px;
+        line-height: 1;
+      }
+
+      .task-card__collapse-btn {
+        width: 100%;
+        min-height: 44px;
+        border: 0;
+        border-radius: 8px;
+        background: var(--b3-theme-primary-light);
+        color: var(--b3-theme-primary);
+        font: inherit;
       }
 
       .task-card__tag-item {
+        max-width: 100%;
+        min-width: 0;
         min-height: 36px;
         box-sizing: border-box;
         padding: 2px 4px 2px 8px;
@@ -2223,12 +2666,19 @@
         font-size: 13px;
       }
 
+      .task-card__tag-group { min-width: 0; max-width: 100%; }
+
       .task-card__tag-btn {
+        min-width: 0;
+        overflow: hidden;
         min-height: 28px;
         font-size: 13px;
+
+        span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       }
 
       .task-card__tag-remove {
+        flex-shrink: 0;
         width: 26px;
         height: 28px;
         font-size: 15px;

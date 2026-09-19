@@ -2315,10 +2315,8 @@ export default class ThingsPlugin extends Plugin {
     this.closeMobileTaskPage();
     const host = document.createElement("div");
     host.className = "things-mobile-task-host";
-    // 思源移动端的文档同样渲染在 #editor；把二级页挂到这里，保留原生顶部栏、
-    // 底部栏和安全区，只替换中间的主内容区域。
-    const mobileEditor = document.getElementById("editor") || document.body;
-    mobileEditor.appendChild(host);
+    // 原生侧滑监听在 document 上；独立容器避免编辑器变换、裁切与隐藏状态影响任务页。
+    document.body.appendChild(host);
     this.mobileTaskHost = host;
     this.mobileTaskApp = new MobileTaskPage({ target: host, props });
   }
