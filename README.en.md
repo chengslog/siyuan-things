@@ -99,12 +99,6 @@ Tasks and plugin settings are stored in the SiYuan workspace through the plugin 
 - The plugin settings page provides a dedicated Support and Feedback section.
 - Report problems through [GitHub Issues](https://github.com/chengslog/siyuan-things/issues) with the SiYuan version, plugin version, reproduction steps, and safe screenshots. Never include API keys or private task content.
 
-## Support the project
-
-If this plugin is useful to you, you can support its continued development. Donations are entirely optional and do not affect access to any feature.
-
-<img src="./asset/sponsor.jpg" alt="WeChat donation QR code" width="280" />
-
 ## License
 
 [MIT](./LICENSE)

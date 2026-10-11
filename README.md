@@ -100,14 +100,6 @@ pnpm run build
 - 问题与建议请提交到 [GitHub Issues](https://github.com/chengslog/siyuan-things/issues)。
 - 提交问题时请附上思源版本、插件版本、操作步骤和必要截图；请勿提交 API Key 或私人任务内容。
 
-## 支持项目
-
-如果这个插件对你有帮助，可以请作者喝杯咖啡。赞赏完全自愿，不影响任何功能的使用。
-
-<div align="center">
-  <kbd><img src="./asset/sponsor.jpg" alt="微信赞赏码" width="280" /></kbd>
-</div>
-
 ## 开源协议
 
 本项目基于 [MIT License](./LICENSE) 开源。
