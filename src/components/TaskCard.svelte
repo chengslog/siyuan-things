@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
   import { fade } from "svelte/transition";
+  import { autoSizeTextarea as autoGrow } from '@/utils/autoSizeTextarea';
   import { showMessage } from "siyuan";
   import type { Task, Priority, RepeatRule, TaskStatus } from "@/types";
   import type { StoreManager } from "@/stores";
@@ -18,6 +19,13 @@
   import { smartPosition } from "@/utils/popup";
   import { mobileSheet } from "@/utils/mobileSheet";
   import { formatTaskAsMarkdown } from "@/utils/taskMarkdown";
+  import {
+    snapshotTaskDraft, planTaskDraft, reconcileTaskDraft, acknowledgeTaskDraft,
+    rememberTaskDraft, recalledTaskDraft,
+    type TaskDraft, type TaskDraftField,
+  } from "@/utils/taskDraft";
+  import { planChecklistDraft, rememberChecklistDraft, recalledChecklistDraft,
+    type ChecklistBaselineItem, type ChecklistDraftItem } from "@/utils/taskChecklistDraft";
 
   // 模式：create 或 edit
   export let mode: 'create' | 'edit' = 'edit';
@@ -133,6 +141,127 @@
   let titleInput: HTMLTextAreaElement;
   let previousAiPreviewFocusKey = aiPreviewFocusKey;
   let previousAiPreviewActive = aiPreviewActive;
+  let draftBaseline: TaskDraft | null = null;
+  let draftTaskId: string | undefined;
+  let draftSaveQueue: Promise<boolean> = Promise.resolve(true);
+  let destroyed = false;
+  let draftConflicts: TaskDraftField[] = [];
+  const draftFieldLabels: Record<TaskDraftField, string> = {
+    title: '标题', notes: '备注', startDate: '日期', deadline: '截止日期', repeatRule: '重复',
+    someday: '某天', tags: '标签', priority: '优先级', projectId: '项目', areaId: '区域', headingId: '分组',
+  };
+
+  function currentDraft(): TaskDraft {
+    return snapshotTaskDraft({ title, notes, startDate, deadline, repeatRule, someday,
+      tags: selectedTags, priority, projectId, areaId, headingId });
+  }
+
+  function displayDraft(value: TaskDraft) {
+    title = value.title;
+    notes = value.notes;
+    startDate = value.startDate;
+    deadline = value.deadline;
+    repeatRule = value.repeatRule;
+    someday = value.someday ?? false;
+    selectedTags = [...value.tags];
+    priority = value.priority;
+    projectId = value.projectId;
+    areaId = value.areaId;
+    headingId = value.headingId;
+  }
+
+  function rememberDraft() {
+    if (task && draftBaseline) rememberTaskDraft(store, task.id, draftBaseline, currentDraft());
+  }
+
+  function syncTaskDraft(value: Task) {
+    const remote = snapshotTaskDraft(value);
+    if (!draftBaseline || draftTaskId !== value.id) {
+      const recalled = recalledTaskDraft(store, value.id);
+      draftBaseline = recalled?.baseline ?? remote;
+      displayDraft(recalled?.draft ?? remote);
+      draftTaskId = value.id;
+    }
+    const next = reconcileTaskDraft(draftBaseline, currentDraft(), remote);
+    draftBaseline = next.baseline;
+    displayDraft(next.draft);
+    draftConflicts = planTaskDraft(draftBaseline, next.draft, remote).conflicts;
+    rememberDraft();
+    if (!expanded && !swipeToolsOpen) syncChecklistDraft(value.id);
+  }
+
+  function useLatestConflictingFields() {
+    const latest = task && store.tasks.get(task.id);
+    if (!latest || !draftBaseline) return;
+    const fields = [...draftConflicts];
+    // Assignment/schedule conflicts cover their associated fields as one choice.
+    if (fields.some(field => ['projectId', 'areaId', 'headingId'].includes(field))) fields.push('projectId', 'areaId', 'headingId');
+    if (fields.some(field => ['startDate', 'someday'].includes(field))) fields.push('startDate', 'someday');
+    const remote = snapshotTaskDraft(latest);
+    displayDraft(acknowledgeTaskDraft(currentDraft(), remote, fields));
+    draftBaseline = acknowledgeTaskDraft(draftBaseline, remote, fields);
+    syncTaskDraft(latest);
+  }
+
+  // A task refresh may update a collapsed card too. Never mistake its old local values for edits.
+  // Depend only on the incoming task: typing must not reset the editing baseline.
+  $: if (mode === 'edit' && task) syncTaskDraft(task);
+
+  function persistDraft(fields?: readonly TaskDraftField[], animate = false): Promise<boolean> {
+    const save = async () => {
+      if (mode !== 'edit' || !task || !draftBaseline) return true;
+      const id = task.id;
+      const baseline = snapshotTaskDraft(draftBaseline);
+      const submitted = currentDraft();
+      if (!Object.keys(planTaskDraft(baseline, submitted, baseline, fields).changes).length) return true;
+      const conflict = (names: readonly TaskDraftField[]) => {
+        draftConflicts = [...names];
+        rememberDraft();
+        if (!destroyed) expanded = true;
+        showMessage(`这些内容已在别处更新：${names.map(name => draftFieldLabels[name]).join('、')}。未覆盖外部修改，草稿已保留；请在卡片中处理冲突。`, 10000);
+        return false;
+      };
+      try {
+        const remote = store.tasks.get(id);
+        if (!remote) {
+          rememberDraft();
+          showMessage('任务已被移走或删除，未重新创建；未保存的草稿已保留在本次会话中。', 10000);
+          return false;
+        }
+        let plan = planTaskDraft(baseline, submitted, snapshotTaskDraft(remote), fields);
+        if (plan.conflicts.length) return conflict(plan.conflicts);
+        if (Object.keys(plan.changes).length === 0) {
+          syncTaskDraft(remote);
+          return true;
+        }
+        if (animate && willChangeCauseMove(plan.changes)) {
+          isMovingOut = true;
+          // Keep the draft mounted until the write succeeds or a conflict can be shown.
+          await new Promise(resolve => setTimeout(resolve, 300));
+          const latest = store.tasks.get(id);
+          if (!latest) throw new Error('任务已被移走或删除');
+          plan = planTaskDraft(baseline, submitted, snapshotTaskDraft(latest), fields);
+          if (plan.conflicts.length) return conflict(plan.conflicts);
+        }
+        const saved = Object.keys(plan.changes).length
+          ? await store.tasks.updateTask(id, plan.changes)
+          : store.tasks.get(id);
+        if (!saved) throw new Error('任务已被移走或删除');
+        draftBaseline = acknowledgeTaskDraft(draftBaseline, snapshotTaskDraft(saved), Object.keys(plan.changes) as TaskDraftField[]);
+        syncTaskDraft(saved);
+        return true;
+      } catch {
+        rememberDraft();
+        showMessage('任务未保存成功，草稿已保留，请稍后重试。', 7000);
+        return false;
+      } finally {
+        isMovingOut = false;
+      }
+    };
+    // Blur, collapse and destroy can happen together; serialize their acknowledgements.
+    draftSaveQueue = draftSaveQueue.then(save, save);
+    return draftSaveQueue;
+  }
 
   function closeMobilePicker() {
     showDatePicker = false;
@@ -174,6 +303,27 @@
     } };
   }
 
+  // Keep primary controls with the card; a collapsed swipe selection uses the dock.
+  function mobilePrimaryPortal(node: HTMLElement, open: boolean) {
+    let alive = true;
+    let current = open;
+    const origin = document.createComment('primary controls');
+    node.before(origin);
+    const place = (value: boolean) => {
+      const slot = value ? cardEl?.querySelector('.task-card__mobile-primary-slot') : null;
+      if (slot) slot.append(node);
+      else origin.parentNode?.insertBefore(node, origin.nextSibling);
+    };
+    const update = (value: boolean) => {
+      current = value;
+      place(value);
+      // On a newly created card, the root bind:this is assigned after child actions.
+      void tick().then(() => { if (alive) place(current); });
+    };
+    update(open);
+    return { update, destroy() { alive = false; node.remove(); origin.remove(); } };
+  }
+
 
   // 新一轮对话出现时，所有已经成为历史轮的未添加卡片自动收起。
   // 仅在焦点轮次发生变化时收起，因此历史卡片之后仍可由用户手动展开。
@@ -199,22 +349,6 @@
   }
 
   // 标题输入框自动增高：编辑态长文本换行可见（收缩态仍是单行+省略号）
-  function autoGrow(node: HTMLTextAreaElement) {
-    const resize = () => {
-      node.style.height = 'auto';
-      node.style.height = node.scrollHeight + 'px';
-    };
-    resize();
-    const t = setTimeout(resize, 50); // 字体/布局稳定后再测一次
-    node.addEventListener('input', resize);
-    return {
-      update: resize,
-      destroy() {
-        node.removeEventListener('input', resize);
-        clearTimeout(t);
-      },
-    };
-  }
 
   // 拖拽状态
   let dragTimer: any = null;
@@ -232,29 +366,8 @@
     window.addEventListener('card-expanded', handleCardExpanded as EventListener);
     document.addEventListener('mousedown', handleDropdownOutside, true);
     if (mode === 'edit' && task) {
-      title = task.title;
-      notes = task.notes || "";
-      startDate = task.startDate;
-      deadline = task.deadline;
-      repeatRule = task.repeatRule;
-      someday = task.someday || false;
-      selectedTags = [...(task.tags || [])];
-      priority = task.priority || 'none';
-      // 初始化项目/区域归属（之前漏掉了，导致编辑后失去焦点会清除归属）
-      projectId = task.projectId;
-      areaId = task.areaId;
-      repeatRule = task.repeatRule;
-      // 加载子任务到本地状态
-      const subTasks = store.tasks.getSubTasks(task.id);
-      if (subTasks.length > 0) {
-        localChecklist = subTasks.map(t => ({
-          id: t.id,
-          title: t.title,
-          completed: t.status === 'done'
-        }));
-      } else {
-        localChecklist = [{ id: "empty", title: "", completed: false }];
-      }
+      syncTaskDraft(task);
+      syncChecklistDraft(task.id);
       // 注册元素
       if (cardEl) {
         registerItem(task.id, cardEl);
@@ -276,52 +389,36 @@
       if (destView === 'project' && presetHeadingId) headingId = presetHeadingId;
       if (destView === 'someday') someday = true;
       if (!collapsedPreview && (!aiPreview || aiPreviewActive)) setTimeout(() => titleInput?.focus(), 100);
-      if (collapsibleCreate && expanded) {
+      if ((mobile || collapsibleCreate) && expanded) {
         setTimeout(() => document.addEventListener('click', handleOutsideClick), 10);
       }
     }
   });
 
   onDestroy(() => {
+    destroyed = true;
     document.removeEventListener('click', handleOutsideClick);
     window.removeEventListener('card-expanded', handleCardExpanded as EventListener);
     document.removeEventListener('mousedown', handleDropdownOutside, true);
     if (mode === 'edit' && task) {
       unregisterItem(task.id);
       // 组件销毁前保存待处理的变更（如切换视图时）
-      savePendingChanges();
+      rememberDraft();
+      rememberChecklistDraft(store, task.id, checklistBaseline, localChecklist);
+      void savePendingChanges();
     }
     if (moveTimeout) clearTimeout(moveTimeout);
     if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer);
     if (touchDragTimer) clearTimeout(touchDragTimer);
     // 若组件在完成延迟结束前被销毁（如切换视图），立即完成任务，避免丢失用户的勾选操作
-    if (pendingDone && !completionApplied && task) {
-      store.tasks.toggleTask(task.id);
+    if (pendingDone && !completionApplied && !completionInFlight && task) {
+      void applyCompletion(task.id, 'done');
     }
   });
 
   // 保存待处理的变更（不执行动画，直接写 store）
   async function savePendingChanges() {
-    if (mode !== 'edit' || !task) return;
-
-    const changes: Partial<Task> = {};
-    if (title !== task.title) changes.title = title;
-    if (notes !== (task.notes || "")) changes.notes = notes;
-    if (startDate !== task.startDate) changes.startDate = startDate;
-    if (deadline !== task.deadline) changes.deadline = deadline;
-    if (repeatRule !== task.repeatRule) changes.repeatRule = repeatRule;
-    if (someday !== (task.someday || false)) changes.someday = someday;
-    if (projectId !== task.projectId) changes.projectId = projectId;
-    if (areaId !== task.areaId) changes.areaId = areaId;
-
-    const oldTags = task.tags || [];
-    const tagsChanged = selectedTags.length !== oldTags.length ||
-      selectedTags.some(t => !oldTags.includes(t));
-    if (tagsChanged) changes.tags = selectedTags;
-
-    if (Object.keys(changes).length > 0) {
-      await store.tasks.updateTask(task.id, changes);
-    }
+    return persistDraft();
   }
 
   // 卡片互斥：其他卡片展开时，收起当前卡片
@@ -364,6 +461,36 @@
 
   // 编辑模式：本地维护检查清单状态，避免 store 更新导致重置
   let localChecklist: Array<{ id: string; title: string; completed: boolean }> = [];
+  let checklistBaseline: ChecklistBaselineItem[] = [];
+  let checklistTaskId: string | undefined;
+  let checklistSaveQueue: Promise<void> = Promise.resolve();
+  let checklistSaving = false;
+  let checklistConflict = false;
+  const checklistCreatedIds = new Map<string, string>();
+
+  function syncChecklistDraft(id: string, discard = false) {
+    if (checklistSaving) return;
+    if (checklistTaskId !== id) {
+      const recalled = recalledChecklistDraft(store, id);
+      if (recalled) {
+        checklistBaseline = recalled.baseline;
+        localChecklist = recalled.draft;
+        checklistTaskId = id;
+        checklistConflict = planChecklistDraft(checklistBaseline, localChecklist, store.tasks.getSubTasks(id)).conflicts.length > 0;
+      }
+    }
+    const pending = planChecklistDraft(checklistBaseline, localChecklist, checklistBaseline);
+    if (!discard && checklistTaskId === id &&
+      (pending.updates.length || pending.additions.length || pending.deletions.length)) return;
+    const rows = store.tasks.getSubTasks(id);
+    checklistBaseline = rows.map(({ id, title, status, order }) => ({ id, title, status, order }));
+    localChecklist = rows.length
+      ? rows.map(row => ({ id: row.id, title: row.title, completed: row.status === 'done' }))
+      : [{ id: 'empty', title: '', completed: false }];
+    checklistTaskId = id;
+    checklistConflict = false;
+    rememberChecklistDraft(store, id, checklistBaseline, localChecklist);
+  }
   $: checklistItems = mode === 'edit' ? localChecklist : checklist;
 
   // 收缩态：标题后的所属项目/区域（图标+名称，项目=文件夹、区域=图层，单色随文字灰）
@@ -629,25 +756,19 @@
     if (mobile && expanded && mode === 'edit') {
       return;
     }
+    if (expanded && mode === 'edit') {
+      void saveAndCollapse();
+      return;
+    }
     expanded = !expanded;
     if (expanded && mode === 'create' && collapsibleCreate) {
       setTimeout(() => document.addEventListener('click', handleOutsideClick), 10);
     } else if (expanded && task) {
-      title = task.title;
-      notes = task.notes || "";
+      syncTaskDraft(task);
       // 主任务创建会先触发列表渲染，检查项随后才逐条写入。
       // 每次展开都从 store 重载，避免首次挂载时读到空清单后一直不更新。
-      const subTasks = store.tasks.getSubTasks(task.id);
-      localChecklist = subTasks.length > 0
-        ? subTasks.map(t => ({
-            id: t.id,
-            title: t.title,
-            completed: t.status === 'done'
-          }))
-        : [{ id: "empty", title: "", completed: false }];
+      syncChecklistDraft(task.id);
       // 重新加载归属状态，防止外部更新后本地状态不同步
-      projectId = task.projectId;
-      areaId = task.areaId;
       window.dispatchEvent(new CustomEvent('card-expanded', { detail: { cardId: task.id } }));
       setTimeout(() => {
         document.addEventListener('click', handleOutsideClick);
@@ -669,7 +790,13 @@
       showDatePicker = false;
       showDeadlinePicker = false;
       showTagPicker = false;
-      if (mode === 'create' && collapsibleCreate) {
+      if (mode === 'create' && mobile) {
+        if (title.trim() || notes.trim() || checklist.some(item => item.title.trim())) {
+          void handleCreate();
+        } else {
+          dispatch('cancel');
+        }
+      } else if (mode === 'create' && collapsibleCreate) {
         expanded = false;
         notesExpanded = false;
         document.removeEventListener('click', handleOutsideClick);
@@ -688,71 +815,21 @@
     showTagPicker = false;
     showProjectAreaPicker = false;
     if (mode === 'edit' && task) {
-      // 构建变更对象：比较本地状态与 task
-      const changes: Partial<Task> = {};
-
-      if (title !== task.title) changes.title = title;
-      if (notes !== (task.notes || "")) changes.notes = notes;
-      if (startDate !== task.startDate) changes.startDate = startDate;
-      if (deadline !== task.deadline) changes.deadline = deadline;
-      if (repeatRule !== task.repeatRule) changes.repeatRule = repeatRule;
-      if (someday !== (task.someday || false)) changes.someday = someday;
-      if (projectId !== task.projectId) changes.projectId = projectId;
-      if (areaId !== task.areaId) changes.areaId = areaId;
-      if (priority !== (task.priority || 'none')) changes.priority = priority;
-
-      // 比较标签数组
-      const oldTags = task.tags || [];
-      const tagsChanged = selectedTags.length !== oldTags.length ||
-        selectedTags.some(t => !oldTags.includes(t));
-      if (tagsChanged) changes.tags = selectedTags;
-
-      // 先保存标题和备注（不触发动画）
-      await saveTitle();
-      await saveNotes();
-
-      // 检查是否有日期/标签/归属等变更需要处理
-      const hasOtherChanges = Object.keys(changes).some(k =>
-        k !== 'title' && k !== 'notes'
-      );
-
-      if (hasOtherChanges && willChangeCauseMove(changes)) {
-        // 需要迁移：执行动画
-        isMovingOut = true;
-        expanded = false;
-        notesExpanded = false;
-        await new Promise(resolve => setTimeout(resolve, 300));
-        // 写入 store（排除已单独保存的 title/notes）
-        const { title: _, notes: __, ...restChanges } = changes;
-        if (Object.keys(restChanges).length > 0) {
-          await store.tasks.updateTask(task.id, restChanges);
-        }
-        isMovingOut = false;
-      } else {
-        // 不需要迁移：直接保存
-        const { title: _, notes: __, ...restChanges } = changes;
-        if (Object.keys(restChanges).length > 0) {
-          await store.tasks.updateTask(task.id, restChanges);
-        }
-        expanded = false;
-        notesExpanded = false;
-      }
+      if (!await persistDraft(undefined, true)) return;
+      expanded = false;
+      notesExpanded = false;
     }
     document.removeEventListener('click', handleOutsideClick);
   }
 
   // 保存标题
   async function saveTitle() {
-    if (task && title !== task.title) {
-      await store.tasks.updateTask(task.id, { title });
-    }
+    return persistDraft(['title']);
   }
 
   // 保存备注
   async function saveNotes() {
-    if (task && notes !== (task.notes || "")) {
-      await store.tasks.updateTask(task.id, { notes });
-    }
+    return persistDraft(['notes']);
   }
 
   // —— 备注 Markdown 展示/编辑 + 图片粘贴/拖拽 ——
@@ -885,15 +962,38 @@
   let isMoving = false;
   let pendingDone = false;        // 本地预显示“已完成”状态（勾选框打勾）
   let completionApplied = false;  // 完成操作是否已写入 store
+  let completionInFlight = false;
+
+  async function applyCompletion(id: string, status: 'done' | 'todo') {
+    if (completionInFlight) return;
+    completionInFlight = true;
+    completionApplied = false;
+    try {
+      // Write the intended state, never invert an uncertain result on retry.
+      const updated = await store.tasks.updateTask(id, status === 'todo' ? { status, completedDate: undefined } : { status });
+      if (!updated) {
+        showMessage('任务已被移走或删除，请刷新任务列表。', 7000);
+        return;
+      }
+      completionApplied = true;
+    } catch (error) {
+      completionApplied = false;
+      console.error('[Things] Failed to update task completion:', error);
+      showMessage('任务状态未保存成功，请稍后重试；若提示数据库待恢复，请先重新加载 Things。', 7000);
+    } finally {
+      completionInFlight = false;
+      pendingDone = false;
+      isMoving = false;
+    }
+  }
 
   async function handleToggle(e: Event) {
     e.stopPropagation();
-    if (!task) return;
+    if (!task || completionInFlight) return;
 
     if (task.status === "done") {
       // 取消完成
-      await store.tasks.toggleTask(task.id);
-      await store.tasks.updateTask(task.id, { completedDate: undefined });
+      await applyCompletion(task.id, 'todo');
     } else if (pendingDone && !completionApplied) {
       // 置灰等待期间再点一次 = 取消勾选（3s 窗口内的反悔机会）
       if (moveTimeout) {
@@ -922,12 +1022,10 @@
         document.removeEventListener('click', handleOutsideClick);
       }
 
-      moveTimeout = setTimeout(async () => {
+      const completingId = task.id;
+      moveTimeout = setTimeout(() => {
         moveTimeout = null;
-        completionApplied = true;
-        await store.tasks.toggleTask(task.id);
-        pendingDone = false;
-        isMoving = false;
+        void applyCompletion(completingId, 'done');
       }, sinksInCurrentList ? (collapseBeforeSink ? 260 : 180) : 3000);
     }
   }
@@ -1008,34 +1106,54 @@
       checklist = newItems;
     } else if (task) {
       // 更新本地状态（保留空项）
-      localChecklist = [...newItems];
-
-      // 同步到 store
-      const currentSubTasks = store.tasks.getSubTasks(task.id);
-      for (const newItem of newItems) {
-        const oldItem = currentSubTasks.find(t => t.id === newItem.id);
-        if (oldItem) {
-          if (oldItem.title !== newItem.title || (oldItem.status === 'done') !== newItem.completed) {
-            await store.tasks.updateTask(newItem.id, {
-              title: newItem.title,
-              status: newItem.completed ? 'done' : 'todo'
+      localChecklist = newItems.map((item: ChecklistDraftItem) => ({ ...item }));
+      const submitted: ChecklistDraftItem[] = localChecklist.map(item => ({ ...item }));
+      const parentId = task.id;
+      const save = async () => {
+        checklistSaving = true;
+        try {
+          const resolved = submitted.map(item => ({ ...item, id: checklistCreatedIds.get(item.id) ?? item.id }));
+          const plan = planChecklistDraft(checklistBaseline, resolved, store.tasks.getSubTasks(parentId));
+          if ((plan.updates.length || plan.additions.length || plan.deletions.length) && !store.tasks.get(parentId)) {
+            throw new Error('父任务已被移走或删除');
+          }
+          if (plan.conflicts.length) {
+            checklistConflict = true;
+            if (!destroyed) expanded = true;
+            showMessage('检查清单已在别处修改，未覆盖外部内容。请先复制草稿，再重新加载清单。', 10000);
+            return;
+          }
+          if (plan.updates.length) {
+            await store.tasks.updateTasksBatch(plan.updates);
+            checklistBaseline = checklistBaseline.map(row => {
+              const patch = plan.updates.find(update => update.id === row.id);
+              return patch ? { ...row, ...patch.changes } : row;
             });
           }
-        } else {
-          if (newItem.title.trim()) {
-            await store.tasks.createTask({
-              title: newItem.title,
-              parentId: task.id,
-              status: newItem.completed ? 'done' : 'todo'
-            });
+          for (const item of plan.additions) {
+            const created = await store.tasks.createTask({ title: item.title, parentId,
+              status: item.completed ? 'done' : 'todo', order: resolved.findIndex(row => row.id === item.id) });
+            checklistCreatedIds.set(item.id, created.id);
+            checklistBaseline.push({ id: created.id, title: created.title, status: created.status, order: created.order });
+            localChecklist = localChecklist.map(row => row.id === item.id ? { ...row, id: created.id } : row);
           }
+          for (const id of plan.deletions) {
+            await store.tasks.delete(id);
+            checklistBaseline = checklistBaseline.filter(row => row.id !== id);
+          }
+          if (plan.updates.some(update => 'order' in update.changes) || plan.additions.length || plan.deletions.length) {
+            checklistBaseline = [...checklistBaseline].sort((a, b) => a.order - b.order);
+          }
+          checklistConflict = false;
+        } catch {
+          showMessage('检查清单未保存成功，当前草稿仍保留，请稍后重试。', 7000);
+        } finally {
+          checklistSaving = false;
+          rememberChecklistDraft(store, parentId, checklistBaseline, localChecklist);
         }
-      }
-      for (const oldItem of currentSubTasks) {
-        if (!newItems.find((n: any) => n.id === oldItem.id)) {
-          await store.tasks.delete(oldItem.id);
-        }
-      }
+      };
+      checklistSaveQueue = checklistSaveQueue.then(save, save);
+      await checklistSaveQueue;
     }
   }
 
@@ -1132,18 +1250,7 @@
 
   // 应用变更：若会导致视图迁移，先播放置灰动画再写入 store（列表移除的滑出动画由 TaskList 的 outro 负责）
   async function applyChangeWithAnimation(changes: Partial<Task>) {
-    if (!task) return;
-
-    if (willChangeCauseMove(changes)) {
-      isMovingOut = true;   // 置灰
-      expanded = false;     // 收起卡片
-      notesExpanded = false; // 重置备注展开状态
-      await new Promise(resolve => setTimeout(resolve, 300)); // 等待置灰动画
-      await store.tasks.updateTask(task.id, changes); // 写入 store → 任务移出当前视图 → outro 滑出
-      isMovingOut = false;
-    } else {
-      await store.tasks.updateTask(task.id, changes);
-    }
+    return persistDraft(Object.keys(changes) as TaskDraftField[], true);
   }
 
   // 拖拽处理
@@ -1201,19 +1308,12 @@
     touchStartY = touch.clientY;
     swipeCandidate = touch.clientX > 28 && touch.clientX < window.innerWidth - 28;
     touchDragActive = false;
-    if (touchDragTimer) clearTimeout(touchDragTimer);
-    touchDragTimer = setTimeout(() => {
-      touchDragTimer = null;
-      touchDragActive = true;
-      suppressMobileClick = true;
-      window.getSelection()?.removeAllRanges();
-      try { navigator.vibrate?.(18); } catch { /* WebView may not expose vibration */ }
-      dispatch('dragstart', { event: e });
-    }, 450);
+    // Long-press sorting belongs to the shared SortableJS sensor on the list.
   }
 
   function handleTouchMove(e: TouchEvent) {
     if (!mobile) return;
+    touchDragActive = document.body.classList.contains('things-touch-sorting');
     if (e.touches.length !== 1) {
       if (touchDragTimer) clearTimeout(touchDragTimer);
       touchDragTimer = null;
@@ -1233,6 +1333,7 @@
 
   function handleTouchEnd(e: TouchEvent) {
     if (!mobile) return;
+    touchDragActive ||= document.body.classList.contains('things-touch-sorting');
     if (touchDragTimer) clearTimeout(touchDragTimer);
     touchDragTimer = null;
     const touch = e.changedTouches[0];
@@ -1259,55 +1360,73 @@
   // 重置又发生在首次创建完成之后——两次并发会造出同名重复任务，
   // 检查项全挂到第一个任务上，用户看到的第二个就是"检查项没了"。
   let isCreating = false;
+  let pendingCreateGroup: Task[] | null = null;
+  let pendingCreateView: string | undefined;
+  let createError = '';
+
+  function cancelCreate() {
+    if (!isCreating) dispatch('cancel');
+  }
+
   async function handleCreate() {
-    if (isCreating) return;
+    if (isCreating || destroyed) return;
     isCreating = true;
+    createError = '';
     try {
-      if (!title.trim()) {
-        const firstChecklist = checklist.find(item => item.title.trim());
-        if (firstChecklist) {
-          title = firstChecklist.title;
-          checklist = checklist.filter(item => item.id !== firstChecklist.id);
-        } else {
-          return;
+      if (!pendingCreateGroup) {
+        if (!title.trim()) {
+          const firstChecklist = checklist.find(item => item.title.trim());
+          if (firstChecklist) {
+            title = firstChecklist.title;
+            checklist = checklist.filter(item => item.id !== firstChecklist.id);
+          } else if (mobile && notes.trim()) {
+            title = notes.trim().split('\n')[0].slice(0, 80);
+          } else {
+            return;
+          }
         }
-      }
 
-      const taskData: Partial<Task> & { title: string } = {
-        title: title.trim(),
-        notes: notes.trim(),
-        startDate,
-        deadline,
-        repeatRule,
-        someday,
-        tags: selectedTags,
-        projectId,
-        areaId,
-        headingId,
-        priority,
-        status: prefilledData?.status || 'todo',
-      };
+        const taskData: Partial<Task> & { title: string } = {
+          title: title.trim(),
+          notes: notes.trim(),
+          startDate,
+          deadline,
+          repeatRule,
+          someday,
+          tags: selectedTags,
+          projectId,
+          areaId,
+          headingId,
+          priority,
+          status: prefilledData?.status || 'todo',
+        };
 
-      // 目标视图以显式 preset 为准（拖 + 切视图时 currentView 可能还是旧视图），
-      // 杜绝"拖到某天却建进收件箱"一类的落错视图事故
-      const destView = presetView || currentView;
+        // 目标视图以显式 preset 为准（拖 + 切视图时 currentView 可能还是旧视图），
+        // 杜绝"拖到某天却建进收件箱"一类的落错视图事故
+        const destView = presetView || currentView;
 
-      if (destView === "today" && !startDate) {
-        taskData.startDate = getTodayStart();
-      }
-      // 某天视图里新建的任务必须是 someday——兜底防挂载时序偏差导致状态丢失
-      if (destView === "someday" && !startDate) {
-        taskData.someday = true;
-      }
-      // 计划视图没设具体日期 → 默认明天（否则裸任务不满足计划条件会掉进收件箱）
-      if (destView === "upcoming" && !startDate) {
-        const d = new Date();
-        d.setHours(0, 0, 0, 0);
-        d.setDate(d.getDate() + 1);
-        taskData.startDate = d.getTime();
-      }
+        if (destView === "today" && !startDate) {
+          taskData.startDate = getTodayStart();
+        }
+        // 某天视图里新建的任务必须是 someday——兜底防挂载时序偏差导致状态丢失
+        if (destView === "someday" && !startDate) {
+          taskData.someday = true;
+        }
+        // 计划视图没设具体日期 → 默认明天（否则裸任务不满足计划条件会掉进收件箱）
+        if (destView === "upcoming" && !startDate) {
+          const d = new Date();
+          d.setHours(0, 0, 0, 0);
+          d.setDate(d.getDate() + 1);
+          taskData.startDate = d.getTime();
+        }
 
-      const newTask = await store.tasks.createTask(taskData);
+        pendingCreateGroup = store.tasks.prepareTaskGroup(taskData, checklist);
+        pendingCreateView = destView;
+        closeMobilePicker();
+      }
+      const newTask = await store.tasks.createTaskGroup(pendingCreateGroup);
+      const taskData = pendingCreateGroup[0];
+      const destView = pendingCreateView;
 
       // 随时视图要求任务带项目/区域/标签，都不带时任务实际归收件箱，明确告知用户
       if (
@@ -1318,16 +1437,11 @@
         showMessage("任务未设置项目/区域/标签，已归入收件箱（随时视图只显示带项目/区域/标签的任务）", 7000);
       }
 
-      for (const item of checklist) {
-        if (item.title.trim()) {
-          await store.tasks.createTask({
-            title: item.title,
-            parentId: newTask.id,
-            status: item.completed ? "done" : "todo",
-          });
-        }
+      pendingCreateGroup = null;
+      if (destroyed) {
+        showMessage('任务和检查清单已添加。', 4000);
+        return;
       }
-
       dispatch("created", { task: newTask });
 
       // 重置
@@ -1343,6 +1457,12 @@
       headingId = currentView === "project" ? presetHeadingId : undefined;
       checklist = [{ id: "empty", title: "", completed: false }];
       titleInput?.focus();
+    } catch (error) {
+      console.error('[Things] Failed to create task and checklist:', error);
+      createError = error instanceof Error ? error.message : '保存失败，请稍后重试。';
+      showMessage(destroyed
+        ? '任务添加未完成，请重新加载 Things 核对任务列表后重试。'
+        : '任务添加未完成，这次提交的内容已保留，请点“重试添加”；若提示数据库待恢复，请先重新加载 Things。', 10000);
     } finally {
       isCreating = false;
     }
@@ -1365,7 +1485,7 @@
     }
     if (e.key === "Escape") {
       if (mode === 'create') {
-        dispatch("cancel");
+        cancelCreate();
       } else {
         saveAndCollapse();
       }
@@ -1418,7 +1538,7 @@
   on:focusout={mode === 'create' ? handleBlur : undefined}
 >
   <!-- 标题区域 -->
-  <div class="task-card__header">
+  <div class="task-card__header" inert={pendingCreateGroup ? true : undefined}>
     <!-- 日志、项目、区域和标签视图：已完成任务在行首显示完成日期，仅收缩态显示 -->
     {#if !mobile && doneDateColumn && !expanded}
       <span class="task-card__log-date">{formatLogDate(task?.completedDate || task?.updated)}</span>
@@ -1434,6 +1554,8 @@
         class:is-checked={task?.status === "done" || pendingDone}
         aria-label={task?.status === "done" || pendingDone ? "标记为未完成" : "完成任务"}
         aria-pressed={task?.status === "done" || pendingDone}
+        aria-busy={completionInFlight}
+        disabled={completionInFlight}
         on:click={handleToggle}
       >
         {#if task?.status === "done" || pendingDone}
@@ -1574,7 +1696,33 @@
 
   <!-- 展开详情 -->
   {#if expanded}
-    <div class="task-card__details" on:click|stopPropagation transition:fade={{ duration: 150 }}>
+    <div class="task-card__details" on:click|stopPropagation transition:fade={{ duration: mobile ? 0 : 150 }}>
+      {#if pendingCreateGroup}
+        <div class="task-card__draft-conflict" role={createError ? 'alert' : 'status'}>
+          <span>{isCreating ? '正在保存任务和检查清单…' : '这次提交的内容已保留。重试会继续添加同一条任务，保存后可在列表中编辑。'}</span>
+          {#if createError}<span>{createError}</span>{/if}
+          <button type="button" disabled={isCreating} on:click={handleCreate}>{isCreating ? '添加中…' : '重试添加'}</button>
+          <button type="button" disabled={isCreating} on:click={cancelCreate}>关闭</button>
+        </div>
+        {#if pendingCreateGroup[0].notes}<p>{pendingCreateGroup[0].notes}</p>{/if}
+        {#if pendingCreateGroup.length > 1}
+          <ul>{#each pendingCreateGroup.slice(1) as item}<li>{item.title}</li>{/each}</ul>
+        {/if}
+      {:else}
+      {#if draftConflicts.length}
+        <div class="task-card__draft-conflict" role="alert">
+          <span>{draftConflicts.map(field => draftFieldLabels[field]).join('、')}已在别处更新。当前显示的是你的草稿；可先复制，再采用最新内容。</span>
+          <button type="button" on:click|stopPropagation={copyTaskAsMarkdown}>复制草稿</button>
+          <button type="button" on:click|stopPropagation={useLatestConflictingFields}>采用最新内容</button>
+        </div>
+      {/if}
+      {#if checklistConflict}
+        <div class="task-card__draft-conflict" role="alert">
+          <span>检查清单与外部修改冲突，尚未覆盖。可先复制草稿，再重新加载清单。</span>
+          <button type="button" on:click|stopPropagation={copyTaskAsMarkdown}>复制草稿</button>
+          <button type="button" on:click|stopPropagation={() => task && syncChecklistDraft(task.id, true)}>重新加载清单</button>
+        </div>
+      {/if}
       {#if mode === 'create' && prefilledData?.unresolved?.length}
         <div class="task-card__ai-warning">
           未找到{prefilledData.unresolved.join('、')}，添加前可手动选择已有项。
@@ -1596,7 +1744,7 @@
               placeholder="添加备注...（支持 Markdown，可粘贴/拖入图片）"
               rows="2"
             ></textarea>
-            <button class="task-card__notes-done" on:click|stopPropagation={saveAndCloseNotes} title="完成编辑">✓</button>
+            {#if !mobile}<button class="task-card__notes-done" on:click|stopPropagation={saveAndCloseNotes} title="完成编辑">✓</button>{/if}
           </div>
         {:else}
           <div class="task-card__notes-wrap" class:task-card__notes-wrap--has-content={notes.trim()} on:mousedown|stopPropagation on:mouseup|stopPropagation on:click|stopPropagation={handleNotesDisplayClick}>
@@ -1634,6 +1782,7 @@
       <div class="task-card__subtasks">
         <Checklist
           items={checklistItems}
+          {mobile}
           showDragHandle={mode === 'edit'}
           on:change={handleChecklistChange}
         />
@@ -1641,6 +1790,7 @@
       {/if}
 
       {#if mobile}
+        <div class="task-card__mobile-footer">
         <div class="task-card__mobile-properties" aria-label="已设置的任务属性">
           {#if mobileDateDisplay}
             <button on:click={() => { closeMobilePicker(); showDatePicker = true; }} aria-label="修改日期">
@@ -1667,6 +1817,8 @@
               <span>{assignmentProject ? assignmentProject.name : assignmentArea?.name}</span>
             </button>
           {/if}
+        </div>
+        <div class="task-card__mobile-primary-slot" aria-label="任务属性操作"></div>
         </div>
       {/if}
       {#if !mobile}
@@ -2017,32 +2169,29 @@
               {isCreating ? "添加中…" : createButtonLabel}
             </button>
             {#if mobile}
-              <button class="task-card__collapse-btn" on:click|stopPropagation={() => dispatch('cancel')}>取消</button>
+              <button class="task-card__collapse-btn" disabled={isCreating} on:click|stopPropagation={cancelCreate}>取消</button>
             {/if}
           {/if}
         </div>
 
       </div>
-      {:else if mode === 'create'}
-        <div class="task-card__mobile-submit">
-          <button class="task-card__create-btn" disabled={isCreating} on:click|stopPropagation={handleCreate}>{isCreating ? '添加中…' : createButtonLabel}</button>
-          <button class="task-card__collapse-btn" on:click|stopPropagation={() => dispatch('cancel')}>取消</button>
-        </div>
+      {/if}
       {/if}
     </div>
   {/if}
 </div>
 
-        {#if mobile && (expanded || swipeToolsOpen)}
+        {#if mobile && (expanded || swipeToolsOpen) && !pendingCreateGroup}
           <div
             class="task-card__mobile-more-shell"
-            class:is-editor-footer={expanded && mode !== 'create'}
+            class:is-editor-footer={expanded}
             use:mobileToolbarPortal
             role="toolbar"
             aria-label="任务操作"
             data-prevent-swipe
           >
             <div class="task-card__mobile-more">
+              <div class="task-card__mobile-primary" use:mobilePrimaryPortal={expanded}>
               <div class="task-card__action-group">
                 <button class="task-card__tool-btn" class:is-active={!!dateDisplay} title="日期" on:click|stopPropagation={() => { closeMobilePicker(); showDatePicker = true; }}>
                   <Icon name="iconThingsStar" size={16} /><span class="task-card__tool-label">日期</span>
@@ -2077,6 +2226,7 @@
                     <TagPicker {store} {selectedTags} on:change={handleTagChange} />
                   </div>
                 {/if}
+              </div>
               </div>
               {#if mobile}
                 <div class="task-card__action-group">
@@ -2159,6 +2309,34 @@
 </dialog>
 
 <style lang="scss">
+  .task-card__draft-conflict {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 10px;
+    margin-bottom: 10px;
+    border: 1px solid var(--b3-theme-primary);
+    border-radius: 6px;
+    font-size: 12px;
+
+    span { flex-basis: 100%; }
+    button {
+      border: 1px solid var(--b3-border-color);
+      border-radius: 4px;
+      padding: 4px 8px;
+      background: var(--b3-theme-background);
+      color: var(--b3-theme-on-background);
+      cursor: pointer;
+    }
+  }
+
+  .task-card.is-mobile .task-card__draft-conflict {
+    font-size: 14px;
+    line-height: 1.5;
+    button { min-width: 80px; min-height: 44px; font: inherit; }
+  }
+
   .task-card__image-preview {
     width: 100vw;
     max-width: none;
@@ -2321,6 +2499,7 @@
 
     // 手机端保持单列全宽，展开卡片不能继续使用桌面端的大外边距。
     &.is-mobile {
+      transition: opacity 220ms ease, box-shadow 180ms ease;
       &.is-swipe-selected {
         background: var(--b3-theme-primary-light);
         border-radius: 10px;
@@ -2368,7 +2547,7 @@
         box-shadow: 0 3px 14px rgba(0,0,0,.05);
       }
 
-      &.is-expanded:not(.is-create) {
+      &.is-expanded {
         position: relative;
         z-index: 10;
         padding: 18px 14px;
@@ -2442,7 +2621,8 @@
       .task-card__check { position: relative; }
       .task-card__check::before { content: ''; position: absolute; inset: -12px -8px; }
       .task-card__title-input, .task-card__notes { font-size: 16px; }
-      .task-card__title-input { font-weight: 400; font-size: 17px; line-height: 1.5; }
+      .task-card__title-input { font-weight: 400; font-size: 17px; line-height: 1.5; max-height: 30dvh; overflow-y: auto; }
+      .task-card__notes { max-height: 35dvh; overflow-y: auto; }
       .task-card__details { margin-top: 10px; padding-left: 26px; gap: 16px; }
       .task-card__notes-md { overflow-wrap: anywhere; padding-right: 0; font-size: 16px; line-height: 1.55; max-height: none; }
       .task-card__notes-edit { display: none; }
@@ -2451,8 +2631,10 @@
         display: flex;
         flex-wrap: wrap;
         gap: 6px 16px;
-        margin-top: 8px;
-        padding-top: 8px;
+        margin-top: 0;
+        padding-top: 0;
+        flex: 1 1 100px;
+        min-width: 0;
         &:empty { display: none; }
         button {
           display: flex;
@@ -2473,7 +2655,8 @@
       }
       .task-card__notes-edit, .task-card__notes-done, .task-card__notes-expand { opacity: 1; min-width: 36px; min-height: 36px; }
       .task-card__notes-expand { right: 40px; }
-      .task-card__notes-wrap--editing { padding-right: 40px; }
+      .task-card__notes-wrap--editing { padding-right: 0; }
+      :global(.checklist__input) { max-height: 30dvh; overflow-y: auto; }
       :global(.checklist__input) { font-size: 16px; }
       :global(.checklist__delete), :global(.checklist__drag) { width: 36px; height: 44px; }
 
@@ -2617,6 +2800,29 @@
         .task-card__tool-label { font-size: 10px; line-height: 1; }
         .task-card__copy-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; }
       }
+
+      @at-root .task-card__mobile-primary {
+        display: flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 2px;
+      }
+      .task-card__mobile-primary-slot {
+        display: flex;
+        justify-content: flex-end;
+        margin-left: auto;
+        :global(.task-card__mobile-primary) { gap: 4px; }
+        :global(.task-card__tool-btn), :global(.task-card__action-group) {
+          width: 40px !important; height: 40px !important; flex: 0 0 40px !important;
+        }
+        :global(.task-card__tool-btn) {
+          padding: 0; border: 0; background: transparent;
+          color: var(--b3-theme-on-surface-light);
+          display: flex; align-items: center; justify-content: center;
+        }
+        :global(.task-card__tool-label) { display: none; }
+      }
+      .task-card__mobile-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 
       .task-card__action-group {
         width: 52px;

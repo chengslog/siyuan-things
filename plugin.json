@@ -2,8 +2,8 @@
   "name": "siyuan-things",
   "author": "ccriss",
   "url": "https://github.com/chengslog/siyuan-things",
-  "version": "0.6.2",
-  "minAppVersion": "3.7.0",
+  "version": "0.7.0",
+  "minAppVersion": "3.8.8",
   "kernels": [
     "windows",
     "linux",
@@ -40,11 +40,6 @@
     "default": "README.md",
     "zh-CN": "README.md",
     "en": "README.en.md"
-  },
-  "funding": {
-    "custom": [
-      "https://github.com/chengslog/siyuan-things/blob/main/README.md#支持项目"
-    ]
   },
   "keywords": [
     "things",

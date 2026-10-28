@@ -9,6 +9,9 @@
   import { isOverdue } from "@/utils/date";
   import { Icon } from "@/icons";
   import { onMount, onDestroy } from "svelte";
+  import { mobileSheet } from '@/utils/mobileSheet';
+  export let mobile = false;
+  function statusPosition(node: HTMLElement) { return mobile ? mobileSheet(node, () => statusMenuProjectId = null) : {}; }
 
   export let store: StoreManager;
   // 外部传入的刷新计数（projects store 变更时自增），保证本组件重算
@@ -100,7 +103,7 @@
       <div class="projects-ov__group">{g.label} · {list.length}</div>
       {#each list as p (p.id)}
         {@const prog = progress(p)}
-        <button class="projects-ov__row" on:click={() => open(p)}>
+        <div class="projects-ov__row" role="button" tabindex="0" on:click={() => open(p)} on:keydown={(event) => { if (event.target === event.currentTarget && event.key === 'Enter') open(p); }}>
           <Icon name="iconThingsProject" size={16} />
           <div class="projects-ov__main">
             <span class="projects-ov__name">{p.name}</span>
@@ -124,7 +127,7 @@
             <span class="projects-ov__status-label">{STATUS_LABELS[p.status]}</span>
             <span class="projects-ov__status-arrow">▾</span>
             {#if statusMenuProjectId === p.id}
-              <div class="projects-ov__status-menu" on:click|stopPropagation>
+              <div class="projects-ov__status-menu" on:click|stopPropagation use:statusPosition>
                 {#each GROUPS as opt}
                   <button
                     class="projects-ov__status-option"
@@ -137,7 +140,7 @@
               </div>
             {/if}
           </div>
-        </button>
+        </div>
       {/each}
     {/if}
   {/each}

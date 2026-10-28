@@ -14,6 +14,7 @@
   let name = "";
   let areaId: string | undefined = undefined;
   let inputEl: HTMLInputElement;
+  let saving = false;
 
   $: areas = store.areas.getAll().sort((a, b) => a.order - b.order);
 
@@ -22,19 +23,30 @@
   });
 
   async function submit() {
+    if (saving) return;
     const n = name.trim();
     if (!n) {
       inputEl?.focus();
       return;
     }
-    if (kind === "project") {
-      await store.projects.createProject({ name: n, areaId });
-      showMessage(`项目已创建：${n}`);
-    } else {
-      await store.areas.createArea({ name: n });
-      showMessage(`区域已创建：${n}`);
+    saving = true;
+    dispatch("busy", true);
+    try {
+      if (kind === "project") {
+        await store.projects.createProject({ name: n, areaId });
+        showMessage(`项目已创建：${n}`);
+      } else {
+        await store.areas.createArea({ name: n });
+        showMessage(`区域已创建：${n}`);
+      }
+      dispatch("created");
+    } catch (error) {
+      console.error("[Things] Create entity failed:", error);
+      showMessage("创建失败，已保留输入，请稍后重试。", 7000);
+    } finally {
+      saving = false;
+      dispatch("busy", false);
     }
-    dispatch("created");
   }
 </script>
 
@@ -47,14 +59,16 @@
     class="entity-form__input"
     placeholder={kind === "project" ? "项目名称" : "区域名称"}
     bind:value={name}
+    disabled={saving}
     on:keydown={(e) => {
+      if (e.isComposing || e.keyCode === 229 || saving) return;
       if (e.key === "Enter") submit();
       if (e.key === "Escape") dispatch("cancel");
     }}
   />
 
   {#if kind === "project"}
-    <select class="entity-form__select" bind:value={areaId}>
+    <select class="entity-form__select" bind:value={areaId} disabled={saving}>
       <option value={undefined}>无区域</option>
       {#each areas as area (area.id)}
         <option value={area.id}>{area.name}</option>
@@ -63,8 +77,8 @@
   {/if}
 
   <div class="entity-form__actions">
-    <button class="entity-form__btn" on:click={() => dispatch("cancel")}>取消</button>
-    <button class="entity-form__btn entity-form__btn--primary" on:click={submit}>创建</button>
+    <button class="entity-form__btn" disabled={saving} on:click={() => dispatch("cancel")}>取消</button>
+    <button class="entity-form__btn entity-form__btn--primary" disabled={saving} on:click={submit}>{saving ? "创建中…" : "创建"}</button>
   </div>
 </div>
 

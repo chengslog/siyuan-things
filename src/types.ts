@@ -131,7 +131,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
 };
 
 // ===== Store 事件 =====
-export type StoreEventType = 'change' | 'add' | 'update' | 'delete';
+export type StoreEventType = 'change' | 'add' | 'update' | 'delete' | 'recurrence';
 
 export interface StoreEvent {
   type: StoreEventType;

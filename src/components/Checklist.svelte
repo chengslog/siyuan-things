@@ -1,8 +1,19 @@
 <script lang="ts">
   import { createEventDispatcher, onDestroy, tick } from "svelte";
+  import { autoSizeTextarea as autoGrow } from '@/utils/autoSizeTextarea';
+  import { mobileSort, type MobileSortDrop } from '@/utils/mobileSort';
+  function mobileDrop(drop: MobileSortDrop) {
+    const next = [...items];
+    const [item] = next.splice(drop.fromIndex, 1);
+    if (!item) return;
+    next.splice(drop.toIndex, 0, item);
+    items = next;
+    dispatch('change', { items });
+  }
 
   export let items: Array<{ id: string; title: string; completed: boolean }> = [];
   export let showDragHandle: boolean = false;
+  export let mobile = false;
 
   const dispatch = createEventDispatcher();
 
@@ -99,24 +110,10 @@
   }
 
   // 检查项输入框自动增高：长文本换行显示（回车仍是新建项，不产生换行符）
-  function autoGrow(node: HTMLTextAreaElement) {
-    const resize = () => {
-      node.style.height = 'auto';
-      node.style.height = node.scrollHeight + 'px';
-    };
-    resize();
-    const t = setTimeout(resize, 50); // 字体/布局稳定后再测一次
-    node.addEventListener('input', resize);
-    return {
-      update: resize, // 组件重渲染（store 载入等外部赋值）后重测
-      destroy() {
-        node.removeEventListener('input', resize);
-        clearTimeout(t);
-      },
-    };
-  }
 
   function handleKeydown(e: KeyboardEvent, id: string) {
+    // iOS/macOS Chinese IMEs also use Enter to confirm a composing word.
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter') {
       e.preventDefault();
 
@@ -149,12 +146,14 @@
 
   // 拖动功能 - 只有点击拖动按钮才能触发
   function handleDragMouseDown(e: MouseEvent, id: string) {
+    if (mobile) return;
     e.preventDefault();
     e.stopPropagation();
     startDrag(id, e.clientY);
   }
 
   function handleDragTouchStart(e: TouchEvent, id: string) {
+    if (mobile) return;
     if (e.touches.length !== 1) return;
     e.preventDefault();
     e.stopPropagation();
@@ -353,10 +352,11 @@
   }
 </script>
 
-<div class="checklist">
+<div class="checklist" use:mobileSort={{ enabled: mobile && showDragHandle, handle: '.checklist__drag', onDrop: mobileDrop }}>
   {#each items as item (item.id)}
     <div
       class="checklist__item"
+      data-sort-id={item.id}
       class:is-dragging={draggedId === item.id}
       use:registerItemAction={item.id}
     >

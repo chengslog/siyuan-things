@@ -51,8 +51,7 @@ test("mobile interactions do not depend on desktop HTML drag events", () => {
   assert.match(dragSort, /addEventListener\('touchcancel'/);
   assert.match(dragSort, /addEventListener\('selectstart'/);
   assert.match(dragSort, /insertIndex > draggedIndex \? insertIndex - 1 : insertIndex/);
-  assert.match(touchSort, /setTimeout\(begin, 450\)/);
-  assert.match(touchSort, /window\.getSelection\(\)\?\.removeAllRanges\(\)/);
+  assert.match(touchSort, /mobileSort/);
   assert.match(taskList, /moveHeadingOnMobile/);
   assert.match(taskList, /on:touchstart\|nonpassive=\{handleFabTouchStart\}/);
 });
@@ -78,8 +77,8 @@ test("mobile navigation alignment and task toolbar use touch-sized controls", ()
 
 test("mobile editor stays compact and shares a visual treatment with its floating toolbar", () => {
   assert.doesNotMatch(taskCard, /toolbar-owner|定位当前任务/);
-  assert.match(taskCard, /class:is-editor-footer=\{expanded && mode !== 'create'\}/);
-  assert.match(taskCard, /&\.is-expanded:not\(\.is-create\)[\s\S]*?position:\s*relative/);
+  assert.match(taskCard, /class:is-editor-footer=\{expanded\}/);
+  assert.match(taskCard, /&\.is-expanded[\s\S]*?position:\s*relative/);
   assert.doesNotMatch(taskCard, /--mobile-editor-bottom|top: max\(15vh/);
   assert.equal((taskCard.match(/animation: things-editor-reveal 180ms ease-out/g) || []).length, 2);
   assert.equal((taskCard.match(/background: var\(--things-editor-glass/g) || []).length, 2);

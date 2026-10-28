@@ -254,11 +254,11 @@
       cursor: pointer;
 
       &--has-content {
-        border-color: #f0f0f0;
+        border-color: var(--b3-border-color);
       }
 
       &--editing {
-        border-color: #e0e0e0;
+        border-color: var(--b3-theme-primary-light);
         cursor: default;
       }
     }
@@ -270,7 +270,7 @@
       outline: none;
       font-size: 13px;
       font-family: inherit;
-      color: #4b5563;
+      color: var(--b3-theme-on-surface);
       background: transparent;
       resize: none;
       overflow: auto;
@@ -278,7 +278,7 @@
       line-height: 1.5;
 
       &::placeholder {
-        color: #9ca3af;
+        color: var(--b3-theme-on-surface-light);
       }
     }
 
@@ -286,7 +286,7 @@
       width: 100%;
       font-size: 13px;
       line-height: 1.6;
-      color: #4b5563;
+      color: var(--b3-theme-on-surface);
       word-break: break-word;
       // 展示态固定高度，超出截断
       max-height: 104px; // 约5行高度 (13px * 1.6 * 5 = 104px)
@@ -347,7 +347,7 @@
       padding: 2px 8px;
       border: none;
       background: transparent;
-      color: #9ca3af;
+      color: var(--b3-theme-on-surface-light);
       font-size: 11px;
       border-radius: 4px;
       cursor: pointer;
@@ -359,8 +359,8 @@
       }
 
       &:hover {
-        background: #f3f4f6;
-        color: #374151;
+        background: var(--b3-theme-surface-light);
+        color: var(--b3-theme-on-surface);
       }
     }
 
@@ -375,7 +375,7 @@
       border: none;
       background: transparent;
       cursor: pointer;
-      color: #9ca3af;
+      color: var(--b3-theme-on-surface-light);
       font-size: 13px;
       display: flex;
       align-items: center;
@@ -391,8 +391,8 @@
 
     &__notes-edit:hover,
     &__notes-done:hover {
-      background: #f3f4f6;
-      color: #374151;
+      background: var(--b3-theme-surface-light);
+      color: var(--b3-theme-on-surface);
     }
 
     &__notes-done {
@@ -401,11 +401,11 @@
 
     &__notes-placeholder {
       font-size: 13px;
-      color: #9ca3af;
+      color: var(--b3-theme-on-surface-light);
       cursor: pointer;
 
       &:hover {
-        color: #6b7280;
+        color: var(--b3-theme-on-surface);
       }
     }
   }

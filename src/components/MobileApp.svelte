@@ -34,6 +34,8 @@
   let createKind: CreateKind | null = null;
   let tagName = "";
   let tagInput: HTMLInputElement;
+  let tagSaving = false;
+  let entitySaving = false;
   let projects: Project[] = [];
   let areas: Area[] = [];
   let tagRows: TagRow[] = [];
@@ -123,14 +125,27 @@
   }
 
   async function createTag() {
+    if (tagSaving) return;
     const name = tagName.trim();
     if (!name) {
       tagInput?.focus();
       return;
     }
-    await store.tags.createTag({ name });
-    showMessage(`标签已创建：${name}`);
-    createKind = null;
+    tagSaving = true;
+    try {
+      await store.tags.createTag({ name });
+      showMessage(`标签已创建：${name}`);
+      createKind = null;
+    } catch (error) {
+      console.error("[Things] Create tag failed:", error);
+      showMessage("标签创建失败，已保留输入，请稍后重试。", 7000);
+    } finally {
+      tagSaving = false;
+    }
+  }
+
+  function closeCreate() {
+    if (!tagSaving && !entitySaving) createKind = null;
   }
 
   function handleNavigateEvent(event: Event) {
@@ -247,7 +262,7 @@
     </main>
 
   {#if createKind}
-    <div class="mobile-things__sheet-backdrop" role="presentation" on:click={() => createKind = null}>
+    <div class="mobile-things__sheet-backdrop" role="presentation" on:click={closeCreate}>
       <div class="mobile-things__sheet" role="dialog" aria-modal="true" on:click|stopPropagation>
         {#if createKind === "tag"}
           <div class="mobile-things__tag-form">
@@ -255,23 +270,26 @@
             <input
               bind:this={tagInput}
               bind:value={tagName}
+              disabled={tagSaving}
               placeholder="标签名称"
               on:keydown={(event) => {
+                if (event.isComposing || event.keyCode === 229 || tagSaving) return;
                 if (event.key === "Enter") createTag();
-                if (event.key === "Escape") createKind = null;
+                if (event.key === "Escape") closeCreate();
               }}
             />
             <div>
-              <button on:click={() => createKind = null}>取消</button>
-              <button class="is-primary" on:click={createTag}>创建</button>
+              <button disabled={tagSaving} on:click={closeCreate}>取消</button>
+              <button class="is-primary" disabled={tagSaving} on:click={createTag}>{tagSaving ? "创建中…" : "创建"}</button>
             </div>
           </div>
         {:else}
           <EntityForm
             {store}
             kind={createKind}
+            on:busy={(event) => entitySaving = event.detail}
             on:created={() => createKind = null}
-            on:cancel={() => createKind = null}
+            on:cancel={closeCreate}
           />
         {/if}
       </div>

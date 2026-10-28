@@ -60,21 +60,45 @@
 // Things 二级任务页覆盖移动编辑器时，隐藏思源原生文档名与底部导航栏。
 // body class 由 MobileTaskPage 生命周期维护，关闭任务页后不会影响正常文档。
 body.things-mobile-page-open {
+  .task-card textarea { max-height: calc(var(--things-visible-height, 100dvh) * .32); overflow-y: auto; }
+  .things-mobile-page.is-keyboard-open .task-list__header { padding-top: 8px; }
+  .things-mobile-page.is-keyboard-open .task-list__title { font-size: 22px; }
+  .task-list__area-tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 6px; }
+  .task-list__area-tab { flex: 0 0 auto; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .task-list__search-box { border-radius: 14px; background: var(--b3-theme-surface-light); }
+  .task-list__search-box input { min-width: 0; width: 100%; }
+  .task-list__search-summary { font-size: 12px; line-height: 1.5; margin: 8px 0 0; }
+  .task-list__search-matches { padding-left: 28px; overflow-x: auto; flex-wrap: nowrap; }
+  .task-list__search-matches span { flex-shrink: 0; }
+  .project-menu__trigger { width: 44px; height: 44px; }
+  .projects-ov__row {
+    display: grid; grid-template-columns: 20px minmax(0,1fr) auto;
+    gap: 6px 10px; padding: 14px 4px; min-height: 64px;
+    border-radius: 12px;
+  }
+  .projects-ov__main { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
+  .projects-ov__name { font-size: 16px; font-weight: 400; }
+  .projects-ov__area { font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+  .projects-ov__status-chip { grid-column: 3; grid-row: 1; min-height: 36px; box-sizing: border-box; }
+  .projects-ov__deadline { grid-column: 2; font-size: 12px; }
+  .projects-ov__count { grid-column: 3; justify-self: end; }
+  .projects-ov__bar { grid-column: 2 / -1; width: 100%; }
+  .areas-ov__row { display: grid; grid-template-columns: 22px minmax(0,1fr); gap: 5px 10px; padding: 14px 4px; min-height: 64px; }
+  .areas-ov__name { min-width: 0; font-size: 16px; font-weight: 400; }
+  .areas-ov__meta { grid-column: 2; font-size: 12px; }
+  .project-panel, .area-panel { min-width: 0; padding: 8px 0 16px; }
+  .project-panel__row { flex-wrap: wrap; gap: 8px; }
+  .project-panel__notes-textarea, .area-panel__notes-textarea { font-size: 16px; line-height: 1.55; max-height: 35dvh; overflow-y: auto; }
+  .project-panel__notes-md, .area-panel__notes-md { font-size: 15px; line-height: 1.6; overflow-wrap: anywhere; }
+  .area-panel__project { min-height: 48px; }
+  .task-list__heading-toggle { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
   --things-editor-border: 1px solid color-mix(in srgb, var(--b3-theme-on-background) 10%, transparent);
   --things-editor-glass: color-mix(in srgb, var(--b3-theme-background) 88%, transparent);
   --things-editor-shadow: 0 8px 28px rgba(0, 0, 0, .12), inset 0 1px 1px rgba(255, 255, 255, .65);
-  .things-mobile-page:has(.task-card.is-expanded:not(.is-create))::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    z-index: 8;
-    pointer-events: none;
-    background: rgba(0, 0, 0, .08);
-    animation: things-editor-reveal 180ms ease-out;
-  }
+  .task-card, .task-list__header { transition: opacity 220ms ease; }
+  .task-list:has(.task-card.is-expanded) .task-list__header { opacity: .68; }
   .task-list:has(.task-card.is-expanded, .task-card.is-swipe-selected) .task-card:not(.is-expanded):not(.is-swipe-selected) {
-    opacity: .5;
-    transition: opacity 160ms ease;
+    opacity: .6;
   }
   #mobileTopBar {
     visibility: hidden !important;
@@ -88,6 +112,22 @@ body.things-mobile-page-open {
   #mobileBottomBar {
     display: none !important;
   }
+}
+
+.things-mobile-sheet {
+  .project-menu__item, .projects-ov__status-option { min-height: 48px; font-size: 16px; white-space: normal; overflow-wrap: anywhere; }
+  .project-menu__popup--area { max-height: none; }
+}
+
+.things-sort-ghost { opacity: .2 !important; }
+.things-sort-chosen { user-select: none !important; -webkit-user-select: none !important; }
+.things-sort-fallback {
+  z-index: 100000 !important;
+  pointer-events: none !important;
+  border-radius: 12px;
+  background: var(--b3-theme-background);
+  color: var(--b3-theme-on-background);
+  box-shadow: 0 10px 30px rgba(0,0,0,.16);
 }
 
 @keyframes things-editor-reveal {
@@ -333,6 +373,14 @@ body.things-mobile-page-open {
   #things-tags {
     position: relative;
   }
+}
+
+#things-settings {
+  box-sizing: border-box;
+  max-height: calc(100vh - 120px);
+  max-height: calc(100dvh - 120px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .things-settings__section {
@@ -702,6 +750,10 @@ body.things-mobile-page-open {
   text-decoration: none;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.things-settings__action-button[hidden] {
+  display: none;
 }
 
 .things-settings__action-button:hover {

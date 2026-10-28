@@ -47,11 +47,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const version = JSON.parse(fs.readFileSync('plugin.json', 'utf8')).version;
+          const sections = fs.readFileSync('CHANGELOG.md', 'utf8').split(/\r?\n(?=## )/);
+          const notes = sections.find(section => section.split(/\r?\n/, 1)[0].includes(`v${version}`));
+          if (!notes) throw new Error(`Missing changelog for v${version}`);
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'things-release-notes.md'), notes.trim() + '\n');
+          NODE
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" package.zip --clobber
+            gh release edit "${GITHUB_REF_NAME}" --latest --notes-file "$RUNNER_TEMP/things-release-notes.md"
           else
             gh release create "${GITHUB_REF_NAME}" package.zip \
               --verify-tag \
               --title "${GITHUB_REF_NAME}" \
-              --generate-notes
+              --latest \
+              --notes-file "$RUNNER_TEMP/things-release-notes.md"
           fi

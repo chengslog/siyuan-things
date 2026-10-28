@@ -4,6 +4,11 @@
   import type { Project, ProjectStatus } from "@/types";
   import DeadlinePicker from "./DeadlinePicker.svelte";
   import { smartPosition } from "@/utils/popup";
+  import { mobileSheet } from '@/utils/mobileSheet';
+  export let mobile = false;
+  function positionMenu(node: HTMLElement) {
+    return mobile ? mobileSheet(node, () => { showMenu = false; showPanel = null; }) : smartPosition(node);
+  }
 
   export let store: StoreManager;
   export let project: Project;
@@ -43,6 +48,7 @@
   }
 
   function closeOnOutside(event: MouseEvent) {
+    if ((event.target as HTMLElement).closest('.things-mobile-sheet')) return;
     if (menuEl && !menuEl.contains(event.target as HTMLElement)) {
       showMenu = false;
       showPanel = null;
@@ -87,7 +93,7 @@
   </button>
 
   {#if showMenu}
-    <div class="project-menu__popup" use:smartPosition>
+    <div class="project-menu__popup" use:positionMenu>
       <button class="project-menu__item" on:click={menuAction(() => openPanel("deadline"))}>
         设定截止日期{project.deadline ? "（已有）" : ""}
       </button>
@@ -107,7 +113,7 @@
   {/if}
 
   {#if showPanel === "deadline"}
-    <div class="project-menu__popup" use:smartPosition>
+    <div class="project-menu__popup" use:positionMenu>
       <DeadlinePicker
         timestamp={project.deadline}
         on:change={handleDeadlineChange}
@@ -117,7 +123,7 @@
   {/if}
 
   {#if showPanel === "area"}
-    <div class="project-menu__popup project-menu__popup--area" use:smartPosition>
+    <div class="project-menu__popup project-menu__popup--area" use:positionMenu>
       <button
         class="project-menu__item"
         class:is-selected={!project.areaId}

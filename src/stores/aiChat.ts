@@ -18,6 +18,7 @@ import { parseDate } from "@/utils/date";
 import { normalizeRepeatRule } from "@/utils/recurrence";
 import { findExistingTagName, inferExistingTaskTags } from "@/utils/aiTagMatching";
 import { omitEchoedDraftsForCreate } from "@/utils/aiDrafts";
+import { createPendingTaskPlan, validatePendingTaskPlan, type PendingTaskPlan } from "@/utils/aiPendingOperation";
 
 export interface ChatRound {
   id: string;
@@ -69,8 +70,9 @@ export interface PendingOperation {
   type: 'update' | 'delete';
   targetIds: string[];
   changes: Record<string, any>;
-  status: 'pending' | 'executed' | 'canceled';
+  status: 'pending' | 'executing' | 'executed' | 'canceled';
   baseUpdated: Record<string, number>;
+  plan?: PendingTaskPlan;
 }
 
 export const aiRounds = writable<ChatRound[]>([]);
@@ -366,27 +368,32 @@ export async function sendAiMessage(text: string, config: AIConfig, pageContext?
         bump(previousDraftRound);
       }
     } else if (route.intent === 'update') {
-      const validIds = (route.targetIds || []).filter((id) => !!taskStore!.tasks.get(id));
+      const validIds = [...new Set((route.targetIds || []).filter((id) => !!taskStore!.tasks.get(id)))];
       if (!validIds.length || !route.changes) throw new Error('没有确定要修改的任务，请先查询或明确任务名称');
-      pendingOperation = {
+      const proposed: PendingOperation = {
         operationId: `op-${Date.now()}-${roundSeq++}`,
         type: 'update', targetIds: validIds, changes: route.changes, status: 'pending',
         baseUpdated: Object.fromEntries(validIds.map((id) => [id, taskStore!.tasks.get(id)!.updated])),
       };
+      const resolved = resolvePlannedChanges(route.changes);
+      proposed.plan = createPendingTaskPlan(proposed, resolved.changes, resolved.checklist, taskStore.tasks.getAll());
+      proposed.changes = proposed.plan.identity.changes;
+      pendingOperation = proposed;
       round.mode = 'action';
       round.pendingOperation = pendingOperation;
       round.assistantMessage = route.message || `准备修改 ${validIds.length} 个任务，请确认`;
     } else if (route.intent === 'delete') {
-      const validIds = (route.targetIds || []).filter((id) => {
+      const validIds = [...new Set((route.targetIds || []).filter((id) => {
         const task = taskStore!.tasks.get(id);
         return !!task && !task.parentId;
-      });
+      }))];
       if (!validIds.length) throw new Error('没有确定要删除的任务，请先查询或明确选择任务');
       pendingOperation = {
         operationId: `op-${Date.now()}-${roundSeq++}`,
         type: 'delete', targetIds: validIds, changes: {}, status: 'pending',
         baseUpdated: Object.fromEntries(validIds.map((id) => [id, taskStore!.tasks.get(id)!.updated])),
       };
+      pendingOperation.plan = createPendingTaskPlan(pendingOperation, {}, undefined, taskStore.tasks.getAll());
       round.mode = 'action';
       round.pendingOperation = pendingOperation;
       const titles = validIds.map((id) => taskStore!.tasks.get(id)?.title).filter(Boolean);
@@ -539,7 +546,7 @@ function resolveNamedId(kind: 'project' | 'area' | 'tag', name?: string): string
   return matches[0]?.id;
 }
 
-function resolveQueryScope(plan: any, text: string, recent: Array<{ user: string }>, inherited?: AIResolvedScope, page?: AIPageContext): AIResolvedScope {
+function resolveQueryScope(plan: any, text: string, _recent: Array<{ user: string }>, inherited?: AIResolvedScope, page?: AIPageContext): AIResolvedScope {
   if (!taskStore) return { view: 'all', label: '所有任务' };
   let view = plan.view as AIResolvedScope['view'] | undefined;
   const genericFollowup = /^(?:查看)?(?:全部|所有|都有哪些|有几个|继续)(?:任务)?[?？。\s]*$/.test(text.trim());
@@ -638,76 +645,112 @@ function filterTaskCandidates(plan: any, scope: AIResolvedScope): Task[] {
   return tasks.slice(0, 100);
 }
 
-async function executePendingOperation(): Promise<string> {
-  if (!taskStore || !pendingOperation || pendingOperation.status !== 'pending') return '当前没有等待确认的操作';
-  if (executedOperationIds.has(pendingOperation.operationId)) return '该操作已经执行过了';
-  const op = pendingOperation;
-  if (op.type === 'delete') {
+function resolvePlannedChanges(raw: Record<string, any>): { changes: Partial<Task>; checklist?: string[] } {
+  if (!taskStore) throw new Error('任务库尚未准备好');
+  const changes: Partial<Task> = {};
+  for (const field of ['title', 'notes'] as const) if (field in raw) {
+    if (typeof raw[field] !== 'string') throw new Error('AI 返回的文本修改无效，请重新整理');
+    changes[field] = raw[field];
+  }
+  if ('someday' in raw) {
+    if (typeof raw.someday !== 'boolean') throw new Error('AI 返回的日期修改无效，请重新整理');
+    changes.someday = raw.someday;
+  }
+  // Freeze relative dates now; confirming tomorrow must not reinterpret "tomorrow" again.
+  for (const [field, timeField] of [['startDate', 'startTime'], ['deadline', 'deadlineTime']] as const) {
+    if (raw[field] === null) changes[field] = undefined;
+    else if (typeof raw[field] === 'string') {
+      let timestamp = parseDate(raw[field]);
+      if (timestamp === undefined || !Number.isFinite(timestamp)) throw new Error('无法确定待修改日期，请重新整理');
+      if (typeof raw[timeField] === 'string') {
+        const match = /^(\d{1,2}):(\d{2})$/.exec(raw[timeField]);
+        if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) throw new Error('无法确定待修改时间，请重新整理');
+        const value = new Date(timestamp); value.setHours(Number(match[1]), Number(match[2]), 0, 0); timestamp = value.getTime();
+      }
+      changes[field] = timestamp;
+    }
+  }
+  if ('status' in raw) {
+    if (!['todo', 'done', 'canceled'].includes(raw.status)) throw new Error('AI 返回的任务状态无效，请重新整理');
+    changes.status = raw.status;
+  }
+  if ('repeatRule' in raw) {
+    changes.repeatRule = raw.repeatRule === null ? undefined : normalizeRepeatRule(raw.repeatRule);
+    if (raw.repeatRule !== null && !changes.repeatRule) throw new Error('AI 返回的重复规则无效，请重新整理');
+  }
+  const namedId = (kind: 'project' | 'area' | 'tag', name: string) => {
+    const values = kind === 'project' ? taskStore!.projects.getAll() : kind === 'area' ? taskStore!.areas.getAll() : taskStore!.tags.getAll();
+    const matches = values.filter(value => value.name.toLowerCase() === name.trim().toLowerCase());
+    if (matches.length !== 1) throw new Error(`无法唯一确定“${name}”，请重新整理`);
+    return matches[0].id;
+  };
+  if (typeof raw.project === 'string') changes.projectId = namedId('project', raw.project);
+  if (typeof raw.area === 'string') changes.areaId = namedId('area', raw.area);
+  if (Array.isArray(raw.tags)) {
+    if (raw.tags.some((name: unknown) => typeof name !== 'string')) throw new Error('AI 返回的标签无效，请重新整理');
+    changes.tags = raw.tags.map((name: string) => namedId('tag', name));
+  }
+  let checklist: string[] | undefined;
+  if (Array.isArray(raw.checklist)) {
+    if (raw.checklist.some((title: unknown) => typeof title !== 'string')) throw new Error('AI 返回的检查清单无效，请重新整理');
+    checklist = raw.checklist.map((title: string) => title.trim()).filter(Boolean);
+  }
+  return { changes, checklist };
+}
+
+async function executePendingOperation(expected: PendingOperation | null = pendingOperation): Promise<string> {
+  if (!taskStore || !expected) return '当前没有等待确认的操作';
+  if (expected !== pendingOperation) throw new Error('这条待确认操作已被后续操作替换，请确认最新一条');
+  if (executedOperationIds.has(expected.operationId)) return '该操作已经执行过了';
+  if (expected.status !== 'pending') return '这项操作正在执行或已结束';
+  const op = expected;
+  op.status = 'executing';
+  try {
+    if (!op.plan) throw new Error('这项旧操作缺少原始字段快照，请重新整理后再确认');
+    // Native edits do not necessarily change Things.updated; reload and compare the accepted field snapshot.
+    await taskStore.loadAll();
+    if (pendingOperation !== op) throw new Error('待确认操作已改变，请重新确认');
+    const approved = validatePendingTaskPlan(op.plan, op, taskStore.tasks.getAll());
+    if (approved.changes.projectId && !taskStore.projects.get(approved.changes.projectId)
+      || approved.changes.areaId && !taskStore.areas.get(approved.changes.areaId)
+      || approved.changes.tags?.some(id => !taskStore!.tags.get(id))) {
+      throw new Error('待使用的项目、区域或标签已不存在，请重新整理');
+    }
+    if (op.type === 'delete') {
+      const count = await taskStore.tasks.trashTasks(op.targetIds);
+      executedOperationIds.add(op.operationId); op.status = 'executed';
+      if (pendingOperation === op) pendingOperation = null;
+      return `已删除 ${count} 个任务（已保留可恢复记录）`;
+    }
+    // Validation of every target completes before the first mutation; no baseline is refreshed on retries.
     for (const id of op.targetIds) {
-      const current = taskStore.tasks.get(id);
-      if (!current) throw new Error('待删除任务已不存在，请重新查询');
-      if (op.baseUpdated[id] !== current.updated) throw new Error(`任务“${current.title}”已发生变化，请重新查询后再删除`);
+      if (Object.keys(approved.changes).length) await taskStore.tasks.updateTask(id, approved.changes);
+      if (approved.checklist !== undefined) {
+        const existing = taskStore.tasks.getSubTasks(id);
+        const retained = new Set<string>();
+        for (const [index, title] of approved.checklist.entries()) {
+          const match = existing.find(child => !retained.has(child.id) && child.title === title);
+          if (match) { retained.add(match.id); await taskStore.tasks.updateTask(match.id, { order: index }); }
+          else await taskStore.tasks.createTask({ title, parentId: id, status: 'todo', order: index });
+        }
+        for (const child of existing) if (!retained.has(child.id)) await taskStore.tasks.delete(child.id);
+      }
     }
-    const count = await taskStore.tasks.trashTasks(op.targetIds);
-    executedOperationIds.add(op.operationId);
-    op.status = 'executed';
-    pendingOperation = null;
-    return `已删除 ${count} 个任务（已保留可恢复记录）`;
+    executedOperationIds.add(op.operationId); op.status = 'executed';
+    if (pendingOperation === op) pendingOperation = null;
+    return `已完成 ${op.targetIds.length} 个任务的修改`;
+  } catch (error) {
+    op.status = 'pending';
+    throw error;
   }
-  for (const id of op.targetIds) {
-    const current = taskStore.tasks.get(id);
-    if (!current) continue;
-    if (op.baseUpdated[id] !== current.updated) throw new Error(`任务“${current.title}”已在其他位置发生变化，请重新查询后再修改`);
-    const raw = op.changes;
-    const changes: any = {};
-    for (const field of ['title', 'notes', 'someday']) {
-      if (field in raw) changes[field] = raw[field];
-    }
-    if (typeof raw.startDate === 'string') {
-      changes.startDate = parseDate(raw.startDate);
-      if (changes.startDate && typeof raw.startTime === 'string') {
-        const [hours, minutes] = raw.startTime.split(':').map(Number);
-        const value = new Date(changes.startDate); value.setHours(hours || 0, minutes || 0, 0, 0); changes.startDate = value.getTime();
-      }
-    }
-    else if (raw.startDate === null) changes.startDate = undefined;
-    if (typeof raw.deadline === 'string') {
-      changes.deadline = parseDate(raw.deadline);
-      if (changes.deadline && typeof raw.deadlineTime === 'string') {
-        const [hours, minutes] = raw.deadlineTime.split(':').map(Number);
-        const value = new Date(changes.deadline); value.setHours(hours || 0, minutes || 0, 0, 0); changes.deadline = value.getTime();
-      }
-    }
-    else if (raw.deadline === null) changes.deadline = undefined;
-    if (raw.status && ['todo', 'done', 'canceled'].includes(raw.status)) changes.status = raw.status;
-    if ('repeatRule' in raw) changes.repeatRule = raw.repeatRule === null ? undefined : normalizeRepeatRule(raw.repeatRule);
-    if (typeof raw.project === 'string') changes.projectId = taskStore.projects.getAll().find((p) => p.name.toLowerCase() === raw.project.toLowerCase())?.id;
-    if (typeof raw.area === 'string') changes.areaId = taskStore.areas.getAll().find((a) => a.name.toLowerCase() === raw.area.toLowerCase())?.id;
-    if (Array.isArray(raw.tags)) changes.tags = raw.tags.map((name: string) => taskStore!.tags.getAll().find((tag) => tag.name.toLowerCase() === String(name).toLowerCase())?.id).filter(Boolean);
-    await taskStore.tasks.updateTask(id, changes);
-    if (Array.isArray(raw.checklist)) {
-      const existing = taskStore.tasks.getSubTasks(id);
-      const retained = new Set<string>();
-      for (let index = 0; index < raw.checklist.length; index++) {
-        const title = String(raw.checklist[index]).trim();
-        if (!title) continue;
-        const match = existing.find((child) => !retained.has(child.id) && child.title === title);
-        if (match) { retained.add(match.id); await taskStore.tasks.updateTask(match.id, { order: index }); }
-        else await taskStore.tasks.createTask({ title, parentId: id, status: 'todo', order: index });
-      }
-      for (const child of existing) if (!retained.has(child.id)) await taskStore.tasks.delete(child.id);
-    }
-  }
-  executedOperationIds.add(op.operationId);
-  op.status = 'executed';
-  pendingOperation = null;
-  return `已完成 ${op.targetIds.length} 个任务的修改`;
 }
 
 export async function confirmAiOperation(round: ChatRound) {
   try {
-    round.assistantMessage = await executePendingOperation();
-    round.pendingOperation = undefined;
+    const accepted = round.pendingOperation;
+    if (!accepted) throw new Error('这条消息没有待确认操作');
+    round.assistantMessage = await executePendingOperation(accepted);
+    if (accepted.status === 'executed') round.pendingOperation = undefined;
   } catch (error: any) {
     round.assistantMessage = error?.message || '修改失败，请重新查询后再试';
   }
@@ -715,15 +758,21 @@ export async function confirmAiOperation(round: ChatRound) {
 }
 
 export function cancelAiOperation(round: ChatRound) {
-  if (pendingOperation) pendingOperation.status = 'canceled';
-  pendingOperation = null;
+  const selected = round.pendingOperation;
+  if (selected?.status === 'executing') {
+    round.assistantMessage = '这项操作已经开始执行，请等待执行结果';
+    bump(round);
+    return;
+  }
+  if (selected) selected.status = 'canceled';
+  if (pendingOperation === selected) pendingOperation = null;
   round.pendingOperation = undefined;
   round.assistantMessage = '已取消待执行的修改';
   bump(round);
 }
 
 /** 旧流程保留为暂时的兼容实现，不再由界面调用。 */
-async function legacySendAiMessage(text: string, config: AIConfig) {
+export async function legacySendAiMessage(text: string, config: AIConfig) {
   if (!taskStore) {
     console.error('[aiChat] taskStore is null');
     return;

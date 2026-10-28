@@ -21,7 +21,8 @@ A Things-inspired GTD task manager for SiYuan Note. It provides Inbox, Today, Up
 | **Tab–sidebar following** | Optionally activate and locate the matching sidebar when a document or Things tab is clicked. |
 | **Direct GitHub updates** | Optionally bypass the Marketplace download channel, check stable releases from the official Things repository, verify the archive, and hand it to SiYuan for installation. |
 | **Safer operations** | Preview destructive operations such as deletion before confirmation. |
-| **Workspace data** | Store data through SiYuan's plugin APIs so it can follow workspace sync settings. |
+| **Native databases** | Fresh installations create a Things data center automatically; existing users can preview, back up, and migrate their data. |
+| **Mobile task management** | Dedicated navigation and task pages, touch sorting, and bottom sheets for task properties, with layouts for long titles, notes, and checklists. |
 
 ## AI task assistant
 
@@ -39,7 +40,7 @@ You can also drag Inbox, Today, Upcoming, Anytime, Someday, Logbook, or a specif
 
 ## Requirements
 
-- SiYuan Note 3.7.0 or later.
+- SiYuan Note 3.8.8 or later.
 - An OpenAI-compatible AI service is optional and only required for AI features.
 
 ## Installation
@@ -89,12 +90,27 @@ Task context required to answer a query is sent to the selected AI provider. The
 
 ## Data and sync
 
-Tasks and plugin settings are stored in the SiYuan workspace through the plugin data APIs. Whether these files sync to another device depends on the workspace synchronization configuration. Deleting a tag also removes that tag reference from active, logged, and recoverable tasks. Avoid editing the same task concurrently on multiple devices before synchronization completes.
+Fresh installations automatically create a Things notebook, data center, and seven native database tables. Tasks, projects, areas, tags, headings, and recovery history live in these tables. Notes use each record's rich text field, with images in the same row's **Notes images** asset column. Internal columns are hidden initially. Restarting reuses the same databases, and interrupted initialization can resume.
+
+Find the databases under **Things → Things 数据中心** in the document tree, or use **Open data center** in the maintenance section of Things Settings. Mobile and desktop use the same storage implementation. Installing `package.zip` updates the plugin only; existing database documents and their binding information must sync through the same SiYuan workspace.
+
+Tasks share one table with native Inbox, Today, Upcoming, Anytime, Someday, and Logbook views. Relative date filters change with the current day. Editing through Things or the native database updates the same business records.
+
+Existing data stays on its current source until you migrate it. In Things Settings, use **Check migration data**, review the counts and warnings, and then choose **Back up and migrate**. The plugin saves an original backup, creates the databases, and verifies every imported field before switching sources. Original files remain available. The backup is at `data/storage/petal/siyuan-things/things-storage-original-v1.json` in the workspace. After migration, use the latest native records; switching directly to old files would discard later changes.
+
+Settings, AI configuration, reminder history, and recovery journals remain in the plugin data directory. Sync follows the workspace configuration. Edit Things on one device at a time and finish synchronization before switching devices. Native edits are read on startup, window focus, and periodic refresh; refresh is delayed during card editing, and conflicting drafts are retained.
+
+**Cross-device limitation in v0.7.0:** If the mobile plugin starts in legacy storage before receiving the database binding, completing sync does not automatically change its data source. Fully restart SiYuan or reload Things after synchronization, then check the storage status in settings. **Reload data** alone does not detect this source change in this release. That button can retry a temporary failure when initially loading an existing database.
+
+Existing native databases whose notes still use separate documents can use **Move notes into the database** in Things settings. The upgrade saves `things-notes-original-v1.json`, verifies text and images, and then switches the note source. Original note documents remain as migration backups. An interrupted upgrade can resume; business writes are paused until it completes.
+
+Completing a recurring task in a native table creates its next occurrence and checklist tree without replaying it on restart. Imported completed history is not replayed. While the plugin is closed, transient intermediate changes are not observed; the last observed state is processed when it runs again. Rich notes support common text formatting, lists, quotes, code, and math; images use the row's asset column and appear in the plugin preview. Rich cell contents do not have independent document block identities, so references to old note documents still point to the retained backups. Unsupported structures are rejected before saving. Tag deletion updates current and archived references while native recovery snapshots retain their historical content.
 
 ## Compatibility and feedback
 
-- Requires SiYuan Note 3.7.0 or later.
+- Requires SiYuan Note 3.8.8 or later.
 - Development and validation currently focus on Windows desktop. Compatibility reports for other declared platforms are welcome.
+- Mobile layouts have been checked at phone and iPad browser sizes. On-device iPhone/iPad keyboard and back-gesture behavior has not yet been verified.
 - The current Things version appears at the bottom of the sidebar; click it to open the changelog grouped by date and separated into features and bug fixes.
 - The plugin settings page provides a dedicated Support and Feedback section.
 - Report problems through [GitHub Issues](https://github.com/chengslog/siyuan-things/issues) with the SiYuan version, plugin version, reproduction steps, and safe screenshots. Never include API keys or private task content.

@@ -1,4 +1,16 @@
 <script lang="ts">
+  import { mobileSort, type MobileSortDrop } from '@/utils/mobileSort';
+  import { mobileSheet } from '@/utils/mobileSheet';
+  function entityPosition(node: HTMLElement) { return mobile ? mobileSheet(node, () => showEntityForm = null) : {}; }
+  async function reorderMobileHeading(drop: MobileSortDrop) {
+    if (!viewId) return;
+    const groups = [...groupedTasks.keys()].filter(id => id !== COMPLETED_GROUP);
+    const from = groups.indexOf(drop.id);
+    if (from < 0) return;
+    const [group] = groups.splice(from, 1);
+    groups.splice(drop.toIndex, 0, group);
+    await store.projects.reorderHeadings(viewId, groups);
+  }
   import { onMount, tick, getContext, createEventDispatcher } from "svelte";
   import { cubicOut } from "svelte/easing";
   import { flip } from "svelte/animate";
@@ -1399,7 +1411,7 @@
         </div>
       {/if}
       {#if view === "project" && projectObj}
-        <ProjectMenu store={store} project={projectObj} on:addheading={startAddHeading} />
+        <ProjectMenu store={store} project={projectObj} {mobile} on:addheading={startAddHeading} />
       {/if}
     </div>
     {#if view === "area" && areaObj}
@@ -1434,10 +1446,13 @@
         <input
           bind:this={searchInput}
           bind:value={searchQuery}
-          placeholder="搜索标题、备注、检查项、项目、区域或标签"
+          type="search"
+          enterkeyhint="search"
+          placeholder={mobile ? '搜索任务、备注、项目…' : '搜索标题、备注、检查项、项目、区域或标签'}
           aria-label="搜索任务"
           on:keydown={(event) => {
             if (event.key === "Escape") searchQuery = "";
+            if (mobile && event.key === 'Enter' && !event.isComposing) searchInput.blur();
           }}
         />
         {#if searchQuery}
@@ -1456,12 +1471,14 @@
 
   <!-- 创建项目/区域表单 -->
   {#if showEntityForm}
+    <div use:entityPosition>
     <EntityForm
       store={store}
       kind={showEntityForm}
       on:created={() => (showEntityForm = null)}
       on:cancel={() => (showEntityForm = null)}
     />
+    </div>
   {/if}
 
   <!-- 创建任务表单（顶部）：点击新建、拖到侧边栏切视图后新建等场景；拖到列表的插入式新建在下方对应分组内渲染 -->
@@ -1480,7 +1497,8 @@
   {/if}
 
   <!-- 任务列表 -->
-  <div class="task-list__items" class:is-create-closing={suppressTaskLayoutMotion} bind:this={itemsEl}>
+  <div class="task-list__items" class:is-create-closing={suppressTaskLayoutMotion} bind:this={itemsEl}
+    use:mobileSort={{ enabled: mobile && view === 'project', draggable: '.task-list__group-block[data-sort-id]', handle: '.task-list__heading-toggle', onDrop: reorderMobileHeading }}>
     {#if mobile && showCreateForm && !activeCreateSlot}
       <TaskCard
         mode="create"
@@ -1505,7 +1523,7 @@
       <ProjectPanel store={store} project={projectObj} tasks={projectTasks} />
     {/if}
     {#if view === "projects"}
-      <ProjectOverview store={store} version={refreshKey} />
+      <ProjectOverview store={store} version={refreshKey} {mobile} />
     {/if}
     {#if view === "areas"}
       <AreaOverview store={store} version={refreshKey} />
@@ -1544,6 +1562,7 @@
           : groupItems}
         <div
           class="task-list__group-block"
+          data-sort-id={view === 'project' && group !== COMPLETED_GROUP ? group : undefined}
           class:task-list__group-block--sectioned={view === "project" || view === "area" || view === "tag"}
           class:is-drop-target={dragOverGroup === group && dragOverGroup !== dragFromGroup}
           bind:this={groupBlockRefs[group]}
@@ -1669,10 +1688,6 @@
                 {/if}
                 <div class="task-list__day-line"></div>
                 <div class="task-list__heading-actions" class:task-list__heading-actions--mobile={mobile}>
-                  {#if mobile}
-                    <button class="task-list__heading-move" aria-label="上移分组" on:click={(event) => moveHeadingOnMobile(group, -1, event)}>↑</button>
-                    <button class="task-list__heading-move" aria-label="下移分组" on:click={(event) => moveHeadingOnMobile(group, 1, event)}>↓</button>
-                  {/if}
                   <button
                     class="task-list__heading-edit"
                     title="重命名分组"
@@ -1689,6 +1704,11 @@
           {/if}
           {#if !isGroupCollapsed(group)}
           <DragSort
+            {mobile}
+            sortable={view !== 'search' && group !== COMPLETED_GROUP}
+            on:mobilecross={(event) => moveTaskToGroup(event.detail.id, event.detail.group, event.detail.index)}
+            on:mobilestart={() => dragFromGroup = group}
+            on:mobileend={() => dragFromGroup = null}
             bind:this={dragSortRefs[group]}
             groupKey={group}
             items={orderedItems}
@@ -1705,7 +1725,7 @@
             let:handleDragStart
           >
             {#each displayItems as task, ti (task.id)}
-              <div class="task-list__animated-slot" animate:flip={{ duration: suppressTaskLayoutMotion ? 0 : 360, easing: cubicOut }}>
+              <div class="task-list__animated-slot" data-sort-id={task.id} animate:flip={{ duration: mobile || suppressTaskLayoutMotion ? 0 : 360, easing: cubicOut }}>
                 {#if activeCreateSlot && activeCreateSlot.group === group && activeCreateSlot.index === ti}
                   <div class="task-list__create-slot" bind:this={createCardHostEl}>
                     <TaskCard
@@ -1799,7 +1819,7 @@
         on:mousedown={handleFabMouseDown}
         on:touchstart|nonpassive={handleFabTouchStart}
       >
-        <svg><use xlink:href="#iconThingsAdd" /></svg>
+        <svg viewBox="0 0 32 32" aria-hidden="true"><use xlink:href="#iconThingsAdd" /></svg>
       </button>
     </div>
   {/if}
@@ -1832,6 +1852,7 @@
       }
 
       .task-list__items {
+        overflow-anchor: none;
         padding: 12px 0 32px;
       }
 
@@ -1906,7 +1927,7 @@
         overflow-x: hidden;
         overscroll-behavior: contain;
         -webkit-overflow-scrolling: touch;
-        scroll-padding-block: 12px 32px;
+        scroll-padding-block: 12px 100px;
       }
 
       .task-list__group-block,
@@ -2584,6 +2605,9 @@
   }
 
   .things-fab__btn {
+    padding: 0;
+    line-height: 1;
+    box-sizing: border-box;
     width: 56px;
     height: 56px;
     border-radius: 50%;
@@ -2596,6 +2620,8 @@
     transition: transform 0.2s, box-shadow 0.2s;
 
     svg {
+      display: block;
+      flex: 0 0 24px;
       width: 24px;
       height: 24px;
     }

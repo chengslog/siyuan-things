@@ -1,10 +1,11 @@
 import type { Plugin } from 'siyuan';
-import type { Task, TaskStatus, RepeatRule, ProjectStatus } from '@/types';
-import { BaseStore } from './base';
-import { genUUID } from '@/utils/id';
-import { initialRepeatStartDate, nextRepeatTimestamp } from '@/utils/recurrence';
-import { removeTagId } from '@/utils/tagCleanup';
-import { isTaskVisibleForProjectStatus } from '@/utils/taskVisibility';
+import type { Task, TaskStatus, ProjectStatus } from '@/types';
+import { BaseStore } from './base.ts';
+import { genUUID } from '../utils/id.ts';
+import { initialRepeatStartDate, nextRepeatTimestamp } from '../utils/recurrence.ts';
+import { removeTagId } from '../utils/tagCleanup.ts';
+import { isTaskVisibleForProjectStatus } from '../utils/taskVisibility.ts';
+import { saveFiles, usesNativeStorage } from '../storage/bridge.ts';
 
 export class TaskStore extends BaseStore<Task> {
   private archiveFileName: string;
@@ -23,6 +24,11 @@ export class TaskStore extends BaseStore<Task> {
   private isVisibleInStandardView(task: Task): boolean {
     if (!task.projectId || !this.getProjectStatus) return true;
     return isTaskVisibleForProjectStatus(task, this.getProjectStatus(task.projectId));
+  }
+
+  override async delete(id: string): Promise<void> {
+    if (usesNativeStorage(this.plugin)) { await this.trashTasks([id]); return; }
+    await super.delete(id);
   }
 
   /** 删除标签前批量清理当前、归档和回收记录中的任务引用。 */
@@ -49,7 +55,8 @@ export class TaskStore extends BaseStore<Task> {
       archiveChanged = true;
     }
 
-    for (const batch of this.trashBatches) {
+    // Native recovery snapshots are immutable history, not current task references.
+    for (const batch of usesNativeStorage(this.plugin) ? [] : this.trashBatches) {
       batch.tasks = batch.tasks.map((task) => {
         const tags = removeTagId(task.tags, tagId);
         if (!tags) return task;
@@ -59,11 +66,7 @@ export class TaskStore extends BaseStore<Task> {
       });
     }
 
-    await Promise.all([
-      activeChanged ? this.save() : Promise.resolve(),
-      archiveChanged ? this.saveArchive() : Promise.resolve(),
-      trashChanged ? this.plugin.saveData(this.trashFileName, this.trashBatches) : Promise.resolve(),
-    ]);
+    if (activeChanged || archiveChanged || trashChanged) await this.persistTaskCollections();
     if (changedIds.size > 0) this.emit({ type: 'update', ids: [...changedIds] });
     return [...changedIds];
   }
@@ -73,11 +76,7 @@ export class TaskStore extends BaseStore<Task> {
     this.items.clear();
     this.archivedItems.clear();
     this.trashBatches = [];
-    await Promise.all([
-      this.plugin.saveData(this.fileName, []),
-      this.plugin.saveData(this.archiveFileName, []),
-      this.plugin.saveData(this.trashFileName, []),
-    ]);
+    await this.persistTaskCollections();
     this.emit({ type: 'change', ids: [] });
   }
 
@@ -85,79 +84,79 @@ export class TaskStore extends BaseStore<Task> {
    * 加载数据（包括归档）
    */
   async load(): Promise<void> {
-    await super.load();
-    let migratedRepeatAnchors = false;
-    const now = Date.now();
-    for (const task of this.items.values()) {
-      if (task.status === 'todo' && !task.parentId && task.repeatRule && !task.startDate && !task.deadline) {
-        task.startDate = initialRepeatStartDate(task.repeatRule, undefined, undefined, now);
-        task.updated = now;
-        migratedRepeatAnchors = true;
+    const [data, archive, trash] = await Promise.all([
+      this.plugin.loadData(this.fileName),
+      this.plugin.loadData(this.archiveFileName),
+      this.plugin.loadData(this.trashFileName),
+    ]);
+    const items = this.readCollection(data, this.fileName);
+    const archivedItems = this.readCollection(archive, this.archiveFileName);
+    if ([...items.keys()].some(id => archivedItems.has(id))) throw new Error('当前任务和归档中存在重复 ID，未覆盖数据。');
+    if (trash != null && trash !== '' && !Array.isArray(trash)) throw new Error('Invalid Things trash');
+    const batches = trash || [];
+    for (const batch of batches) {
+      if (!batch || typeof batch.id !== 'string' || !Array.isArray(batch.tasks) ||
+        batch.tasks.some((task: Task) => !task || typeof task.id !== 'string' || !task.id.trim())) {
+        throw new Error('Invalid Things trash batch');
       }
     }
-    if (migratedRepeatAnchors) await this.save();
-    await this.loadArchive();
-    const trash = await this.plugin.loadData(this.trashFileName);
-    this.trashBatches = Array.isArray(trash) ? trash : [];
+    // Publish all three collections only after every collection passes validation.
+    this.items = items;
+    this.archivedItems = archivedItems;
+    this.trashBatches = batches;
+    this.emit({ type: 'change', ids: [] });
   }
 
   /** Move tasks (including checklist children) to a recoverable trash file. */
   async trashTasks(ids: string[]): Promise<number> {
     const selected = new Set(ids);
-    for (const task of this.items.values()) {
-      if (task.parentId && selected.has(task.parentId)) selected.add(task.id);
-    }
+    let added: boolean;
+    do {
+      added = false;
+      for (const task of this.items.values()) {
+        if (task.parentId && selected.has(task.parentId) && !selected.has(task.id)) {
+          selected.add(task.id); added = true;
+        }
+      }
+    } while (added);
     const tasks = Array.from(selected).map((id) => this.items.get(id)).filter((task): task is Task => !!task);
     if (!tasks.length) return 0;
     this.trashBatches.push({ id: `trash-${Date.now()}`, deletedAt: Date.now(), tasks });
     for (const task of tasks) this.items.delete(task.id);
-    await Promise.all([
-      this.save(),
-      this.plugin.saveData(this.trashFileName, this.trashBatches),
-    ]);
+    await this.persistTaskCollections();
     this.emit({ type: 'delete', ids: tasks.map((task) => task.id) });
     return tasks.filter((task) => !task.parentId).length;
   }
 
   /** Restore the most recently deleted AI/user batch. */
   async restoreLastTrashedBatch(): Promise<number> {
-    const batch = this.trashBatches.pop();
+    const batch = this.trashBatches[this.trashBatches.length - 1];
     if (!batch) return 0;
+    if (new Set(batch.tasks.map(task => task.id)).size !== batch.tasks.length ||
+      batch.tasks.some(task => this.items.has(task.id) || this.archivedItems.has(task.id))) {
+      throw new Error('恢复目标与现有任务 ID 冲突，未覆盖当前任务。');
+    }
+    this.trashBatches.pop();
     for (const task of batch.tasks) this.items.set(task.id, task);
-    await Promise.all([
-      this.save(),
-      this.plugin.saveData(this.trashFileName, this.trashBatches),
-    ]);
+    await this.persistTaskCollections();
     this.emit({ type: 'change', ids: batch.tasks.map((task) => task.id) });
     return batch.tasks.filter((task) => !task.parentId).length;
   }
 
   /**
-   * 加载归档数据
-   */
-  private async loadArchive(): Promise<void> {
-    try {
-      const data = await this.plugin.loadData(this.archiveFileName);
-      if (data && Array.isArray(data)) {
-        this.archivedItems.clear();
-        for (const item of data) {
-          this.archivedItems.set(item.id, item);
-        }
-      }
-    } catch (e) {
-      console.error(`[Things] Failed to load archive:`, e);
-    }
-  }
-
-  /**
    * 保存归档数据
    */
-  private async saveArchive(): Promise<void> {
+  private async persistTaskCollections(): Promise<void> {
     try {
-      const data = Array.from(this.archivedItems.values());
-      await this.plugin.saveData(this.archiveFileName, data);
-    } catch (e) {
-      console.error(`[Things] Failed to save archive:`, e);
+      await saveFiles(this.plugin, {
+        [this.fileName]: Array.from(this.items.values()),
+        [this.archiveFileName]: Array.from(this.archivedItems.values()),
+        [this.trashFileName]: this.trashBatches,
+      });
+      await this.load();
+    } catch (error) {
+      try { await this.load(); } catch { /* Keep the original failure. */ }
+      throw error;
     }
   }
 
@@ -191,8 +190,7 @@ export class TaskStore extends BaseStore<Task> {
     }
 
     // 保存
-    await this.save();
-    await this.saveArchive();
+    await this.persistTaskCollections();
 
     console.log(`[Things] Archived ${toArchive.length} tasks`);
     return toArchive.length;
@@ -211,12 +209,12 @@ export class TaskStore extends BaseStore<Task> {
   async restoreTask(id: string): Promise<boolean> {
     const task = this.archivedItems.get(id);
     if (!task) return false;
+    if (this.items.has(id)) throw new Error('恢复目标与当前任务 ID 冲突，未覆盖当前任务。');
 
     this.archivedItems.delete(id);
     this.items.set(id, task);
 
-    await this.save();
-    await this.saveArchive();
+    await this.persistTaskCollections();
 
     return true;
   }
@@ -249,6 +247,41 @@ export class TaskStore extends BaseStore<Task> {
    * 创建新任务
    */
   async createTask(partial: Partial<Task> & { title: string }): Promise<Task> {
+    const task = this.prepareTask(partial);
+    await this.add(task);
+    return task;
+  }
+
+  /** Allocate identities once so a failed group can be retried without creating duplicates. */
+  prepareTaskGroup(partial: Partial<Task> & { title: string }, checklist: readonly { title: string; completed: boolean }[]): Task[] {
+    const parent = this.prepareTask(partial);
+    const children = checklist.filter(item => item.title.trim()).map((item, index) => this.prepareTask({
+      title: item.title, parentId: parent.id, status: item.completed ? 'done' : 'todo', order: parent.order + index + 1,
+    }));
+    return [parent, ...children];
+  }
+
+  /** One logical save for the parent and its checklist. Existing identities are never overwritten. */
+  async createTaskGroup(group: readonly Task[]): Promise<Task> {
+    const parent = group[0];
+    if (!parent || parent.parentId || new Set(group.map(task => task.id)).size !== group.length ||
+        group.slice(1).some(task => task.parentId !== parent.id)) throw new Error('无效的任务创建记录。');
+    // A prior write may have succeeded despite a lost response. Read it back before retrying.
+    await this.load();
+    const removed = new Set([
+      ...this.archivedItems.keys(), ...this.trashBatches.flatMap(batch => batch.tasks.map(task => task.id)),
+    ]);
+    if (group.some(task => removed.has(task.id))) throw new Error('这次添加的任务已被移走或删除，请先检查任务列表。');
+    const missing = group.filter(task => !this.items.has(task.id));
+    if (missing.length) {
+      await this.batch(() => {
+        for (const task of missing) this.items.set(task.id, { ...task, tags: [...task.tags] });
+      });
+    }
+    return this.items.get(parent.id)!;
+  }
+
+  private prepareTask(partial: Partial<Task> & { title: string }): Task {
     const now = Date.now();
     const task: Task = {
       id: genUUID(),
@@ -268,11 +301,10 @@ export class TaskStore extends BaseStore<Task> {
       areaId: partial.areaId,
       parentId: partial.parentId,
       headingId: partial.headingId,
-      tags: partial.tags || [],
+      tags: [...(partial.tags || [])],
       order: partial.order ?? this.getNextOrder(),
       blockId: partial.blockId,
     };
-    await this.add(task);
     return task;
   }
 
@@ -282,6 +314,7 @@ export class TaskStore extends BaseStore<Task> {
   async updateTask(id: string, changes: Partial<Task>): Promise<Task | undefined> {
     const task = this.items.get(id);
     if (!task) return undefined;
+    const native = usesNativeStorage(this.plugin);
 
     const updated = {
       ...task,
@@ -297,11 +330,14 @@ export class TaskStore extends BaseStore<Task> {
     }
 
     // 如果标记完成，设置完成时间
-    if (changes.status === 'done' && task.status !== 'done') {
+    if (!native && changes.status === 'done' && task.status !== 'done') {
       updated.completedDate = Date.now();
     }
 
     await this.update(updated);
+
+    // The native coordinator commits completion, recurrence and its recovery journal together.
+    if (native) return this.get(id);
 
     if (changes.status === 'done' && task.status !== 'done' && updated.repeatRule && !updated.recurrenceGeneratedAt && !updated.parentId) {
       const next = await this.createRecurringOccurrence(updated);
@@ -329,7 +365,7 @@ export class TaskStore extends BaseStore<Task> {
         for (const key of Object.keys(changes) as Array<keyof Task>) {
           const value = changes[key];
           if (task[key] !== value) {
-            (next as Record<string, unknown>)[key] = value;
+            (next as unknown as Record<string, unknown>)[key] = value;
             changed = true;
           }
         }

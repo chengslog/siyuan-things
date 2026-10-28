@@ -28,9 +28,9 @@ export class AttributeViewDB {
    */
   private async findAVByName(name: string): Promise<string | null> {
     try {
-      const result = await fetchSyncPost("/api/av/getAttributeView", { id: "" });
+      await fetchSyncPost("/api/av/getAttributeView", { id: "" });
       // 需要通过 SQL 查询
-      const sqlResult = await fetchSyncPost("/api/query/sql", {
+      await fetchSyncPost("/api/query/sql", {
         stmt: `SELECT * FROM attributes WHERE name = 'custom-av-id' AND value IN (SELECT id FROM blocks WHERE content = '${name}')`
       });
       return null;

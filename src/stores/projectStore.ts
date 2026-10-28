@@ -1,5 +1,5 @@
 import type { Plugin } from 'siyuan';
-import type { Project, ProjectHeading, ProjectStatus } from '@/types';
+import type { Project, ProjectHeading } from '@/types';
 import { BaseStore } from './base';
 import { genUUID } from '@/utils/id';
 import { normalizeProjectGroupOrder } from '@/utils/projectGrouping';

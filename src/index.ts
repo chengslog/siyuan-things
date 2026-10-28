@@ -3,6 +3,7 @@ import {
   showMessage,
   Dialog,
   openTab,
+  openMobileFileById,
   getFrontend,
   getActiveTab,
   expandDocTree,
@@ -15,8 +16,8 @@ import App from "@/components/App.svelte";
 import MobileApp from "@/components/MobileApp.svelte";
 import MobileTaskPage from "@/components/MobileTaskPage.svelte";
 import { StoreManager } from "@/stores";
-import type { ViewType, PluginConfig } from "@/types";
-import { DEFAULT_CONFIG } from "@/types";
+import { MIGRATION_STAGES, migrationCounts, migrationIssues } from './storage/migrationView';
+import type { ViewType } from "@/types";
 import { SettingUtils } from "./libs/setting-utils";
 import { ICON_SPRITE, getViewIconId } from "@/icons";
 import { ReminderService } from "@/reminder";
@@ -108,6 +109,62 @@ export default class ThingsPlugin extends Plugin {
   private githubUpdateCompletionPending = false;
   private githubUpdateHandoffActive = false;
   private unloaded = false;
+  private storageRefreshTimer: number | null = null;
+  private storageRefreshListening = false;
+  private storageRefreshBusy = false;
+  private storageRefreshWarningShown = false;
+  private dataServicesReady = false;
+  private dataServicesPromise: Promise<void> | null = null;
+
+  private initializeDataServices(): Promise<void> {
+    if (this.dataServicesReady || this.unloaded) return Promise.resolve();
+    if (!this.dataServicesPromise) {
+      this.dataServicesPromise = (async () => {
+        await this.store.loadAll();
+        if (this.unloaded) return;
+        await this.settingUtils.load();
+        if (this.unloaded) return;
+        await this.reminderService.start();
+        if (this.unloaded) { this.reminderService.stop(); return; }
+        this.dataServicesReady = true;
+        if (!this.isMobileFrontend) {
+          this.thingsApp?.$set?.({ aiEnabled: this.settingUtils.get("aiEnabled") !== false });
+          window.dispatchEvent(new Event("things-ai-config-change"));
+        }
+      })().finally(() => { this.dataServicesPromise = null; });
+    }
+    return this.dataServicesPromise;
+  }
+
+  private async refreshStorage(): Promise<void> {
+    if (this.unloaded) return;
+    if (this.dataServicesReady) await this.store.loadAll();
+    else await this.initializeDataServices();
+    if (this.unloaded) return;
+    this.storageRefreshWarningShown = false;
+    if (this.isMobileFrontend) this.mobileApp?.refresh?.();
+    else if (this.dockElement) this.updateCounts(this.dockElement);
+  }
+
+  private handleStorageFocus = async () => {
+    if (this.unloaded || this.syncInProgress || this.storageRefreshBusy ||
+      !this.store || (this.dataServicesReady && this.store.storage.mode !== 'database') ||
+      document.visibilityState !== 'visible') return;
+    // Keep draft baselines stable while the user is editing, picking dates or sorting.
+    if (document.querySelector('.task-card.is-expanded, .task-card.is-swipe-selected, .task-card__dropdown, ' +
+      '.project-panel__notes-wrap--editing, .area-panel__notes-wrap--editing, .task-list__heading-input, ' +
+      '.project-menu__popup, .task-card.is-dragging, .is-heading-dragging, .things-drag-indicator, body.things-touch-sorting') ||
+      document.activeElement?.matches('input, textarea, [contenteditable="true"]')) return;
+    this.storageRefreshBusy = true;
+    try {
+      await this.refreshStorage();
+    } catch (error) {
+      if (!this.storageRefreshWarningShown) {
+        showMessage(`Things 数据库刷新失败：${(error as Error).message}`, 7000, 'error');
+        this.storageRefreshWarningShown = true;
+      }
+    } finally { this.storageRefreshBusy = false; }
+  };
   private handleSyncStart = () => {
     if (this.isMobileFrontend) {
       this.syncInProgress = true;
@@ -126,12 +183,12 @@ export default class ThingsPlugin extends Plugin {
   private handleSyncEnd = async () => {
     try {
       // 同步可能替换插件数据文件，先刷新内存和侧边栏内容。
-      await this.store.loadAll();
-      if (this.isMobileFrontend) {
-        this.mobileApp?.refresh?.();
-      } else if (this.dockElement) {
+      await this.refreshStorage();
+      if (!this.isMobileFrontend && this.dockElement) {
         this.renderDock(this.dockElement);
       }
+    } catch (error) {
+      showMessage(`Things 同步后加载失败：${(error as Error).message}。可在设置中重新加载数据。`, 7000, 'error');
     } finally {
       this.syncInProgress = false;
       if (!this.isMobileFrontend && this.hasDockRestoreIntent()) {
@@ -944,7 +1001,6 @@ export default class ThingsPlugin extends Plugin {
 
     // 提醒通知服务：开始/截止时刻到点后消息+系统通知（每 30s 轮询，已提醒不重复）
     this.reminderService = new ReminderService(this, this.store);
-    this.reminderService.start();
 
     this.addIcons(ICON_SPRITE);
 
@@ -966,7 +1022,7 @@ export default class ThingsPlugin extends Plugin {
         const container = document.createElement("div");
         container.style.height = "100%";
         container.style.overflow = "hidden";
-        this.element.style.overflow = "hidden";
+        if (this.element instanceof HTMLElement) this.element.style.overflow = "hidden";
         this.element.appendChild(container);
 
         // 挂载 App 外壳：rail + sidebar + main + AI 面板
@@ -1024,23 +1080,27 @@ export default class ThingsPlugin extends Plugin {
       },
       data: {},
       type: "things_nav",
-      init: (dock) => {
+      init(dock?: { type?: string; element: Element }) {
+        // Newer SDKs bind the dock as `this`; retain older explicit-argument hosts too.
+        const model = dock ?? this;
+        const element = model.element;
+        if (!(element instanceof HTMLElement)) return;
         console.log("[Things] Dock init");
-        this.thingsDockType = (dock as any).type || this.thingsDockType;
-        this.dockElement = dock.element as HTMLElement;
-        dock.element.classList.add("things-dock-surface");
-        if (this.isMobileFrontend) {
-          dock.element.classList.add("things-dock-surface--mobile");
-          dock.element.replaceChildren();
-          this.mobileApp?.$destroy?.();
-          this.mobileApp = new MobileApp({
-            target: dock.element,
-            props: { store: this.store, version: __PLUGIN_VERSION__, plugin: this },
+        pluginInstance.thingsDockType = model.type || pluginInstance.thingsDockType;
+        pluginInstance.dockElement = element;
+        element.classList.add("things-dock-surface");
+        if (pluginInstance.isMobileFrontend) {
+          element.classList.add("things-dock-surface--mobile");
+          element.replaceChildren();
+          pluginInstance.mobileApp?.$destroy?.();
+          pluginInstance.mobileApp = new MobileApp({
+            target: element,
+            props: { store: pluginInstance.store, version: __PLUGIN_VERSION__, plugin: pluginInstance },
           });
         } else {
-          this.renderDock(dock.element as HTMLElement);
+          pluginInstance.renderDock(element);
           // 插件因同步结果重载时，等布局稳定后走同一套有限重试，不在 init 内抢占布局。
-          this.scheduleDockRestoreAfterSync();
+          pluginInstance.scheduleDockRestoreAfterSync();
         }
       },
       destroy: () => {
@@ -1185,14 +1245,22 @@ export default class ThingsPlugin extends Plugin {
   }
 
   async onLayoutReady() {
-    await this.store.loadAll();
-    await this.settingUtils.load();
-    if (this.isMobileFrontend) {
-      this.mobileApp?.refresh?.();
-    } else {
-      this.thingsApp?.$set?.({ aiEnabled: this.settingUtils.get("aiEnabled") !== false });
-      window.dispatchEvent(new Event("things-ai-config-change"));
+    // Register recovery before the first read, including failed cold starts.
+    if (!this.storageRefreshListening) {
+      window.addEventListener('focus', this.handleStorageFocus);
+      document.addEventListener('visibilitychange', this.handleStorageFocus);
+      this.storageRefreshListening = true;
     }
+    if (this.storageRefreshTimer === null) {
+      this.storageRefreshTimer = window.setInterval(() => void this.handleStorageFocus(), 15000);
+    }
+    try { await this.refreshStorage(); }
+    catch (error) {
+      showMessage(`Things 数据加载失败：${(error as Error).message}。可在设置中重新加载数据。`, 10000, 'error');
+      this.storageRefreshWarningShown = true;
+      return;
+    }
+    if (this.unloaded) return;
     console.log("[Things] Data loaded, tasks:", this.store.tasks.count);
 
     if (!this.isMobileFrontend && this.dockElement) {
@@ -1240,6 +1308,11 @@ export default class ThingsPlugin extends Plugin {
   async onunload() {
     console.log("[Things] Plugin unloaded");
     this.unloaded = true;
+    window.removeEventListener('focus', this.handleStorageFocus);
+    document.removeEventListener('visibilitychange', this.handleStorageFocus);
+    this.storageRefreshListening = false;
+    if (this.storageRefreshTimer !== null) window.clearInterval(this.storageRefreshTimer);
+    this.storageRefreshTimer = null;
     const preserveUpdateHandoff = this.githubUpdateHandoffActive && this.githubUpdateDialogs.size > 0;
     if (preserveUpdateHandoff) {
       // The initiating instance owns the visible update flow until the new
@@ -2568,6 +2641,16 @@ export default class ThingsPlugin extends Plugin {
   /**
    * 打开设置
    */
+  private openDataCenter(dialog: Dialog): void {
+    const id = this.store.storage.docId;
+    if (!id) return;
+    if (this.isMobileFrontend) {
+      dialog.destroy();
+      this.closeMobileTaskPage();
+      openMobileFileById(this.app, id);
+    } else openTab({ app: this.app, doc: { id } });
+  }
+
   openSetting(): void {
     const dialog = new Dialog({
       title: "Things 设置",
@@ -2862,6 +2945,132 @@ export default class ThingsPlugin extends Plugin {
       const maintenanceActions = document.createElement("div");
       maintenanceActions.className = "things-settings__footer-actions";
 
+      const storageStatus = document.createElement('div');
+      storageStatus.textContent = this.store.storage.mode === 'database'
+        ? (this.store.storage.notesInDatabase ? '数据存储：思源原生数据库（含备注和图片）' : '数据存储：思源原生数据库；备注仍使用独立文档。')
+        : this.store.storage.mode === 'legacy' ? '数据存储：旧版文件。迁移前请先检查数据。'
+        : '数据暂未加载，请点击“重新加载数据”重试。';
+      maintenanceSection.appendChild(storageStatus);
+      const storageDetails = document.createElement('div');
+      storageDetails.style.cssText = 'white-space:pre-wrap;max-height:180px;overflow:auto;font-size:12px;';
+      maintenanceSection.appendChild(storageDetails);
+      const dataButton = document.createElement('button');
+      const migrateButton = document.createElement('button');
+      migrateButton.className = 'things-settings__action-button';
+      migrateButton.textContent = '备份并迁移';
+      migrateButton.disabled = true;
+      migrateButton.hidden = this.store.storage.mode !== 'legacy';
+      dataButton.className = 'things-settings__action-button';
+      dataButton.textContent = this.store.storage.mode === 'database' ? '打开数据中心' : '检查迁移数据';
+      dataButton.hidden = this.store.storage.mode === 'starting';
+      dataButton.addEventListener('click', async () => {
+        if (this.store.storage.docId) {
+          this.openDataCenter(dialog);
+          return;
+        }
+        dataButton.disabled = true;
+        try {
+          const report = await this.store.storage.inspectMigration();
+          storageStatus.textContent = `运行版本和旧缓存检查通过。${migrationCounts(report)}。${report.errors.length} 个错误，${report.warnings.length} 个待核对项。此次检查未写入数据。`;
+          storageDetails.textContent = migrationIssues(report);
+          migrateButton.disabled = report.errors.length > 0;
+        } catch (error) { showMessage(`数据检查失败：${(error as Error).message}`, 7000, 'error'); }
+        finally { dataButton.disabled = false; }
+      });
+      maintenanceActions.appendChild(dataButton);
+      const reloadDataButton = document.createElement('button');
+      reloadDataButton.className = 'things-settings__action-button';
+      reloadDataButton.textContent = '重新加载数据';
+      reloadDataButton.addEventListener('click', async () => {
+        reloadDataButton.disabled = true;
+        reloadDataButton.textContent = '正在加载…';
+        try {
+          await this.refreshStorage();
+          storageStatus.textContent = this.store.storage.mode === 'database'
+            ? (this.store.storage.notesInDatabase ? '数据存储：思源原生数据库（含备注和图片）' : '数据存储：思源原生数据库；备注仍使用独立文档。')
+            : '数据存储：旧版文件。迁移前请先检查数据。';
+          storageDetails.textContent = '数据已重新加载。';
+          dataButton.hidden = false;
+          dataButton.textContent = this.store.storage.mode === 'database' ? '打开数据中心' : '检查迁移数据';
+          migrateButton.hidden = this.store.storage.mode !== 'legacy';
+          migrateButton.disabled = true;
+        } catch (error) {
+          storageDetails.textContent = `加载失败：${(error as Error).message}`;
+          showMessage(storageDetails.textContent, 7000, 'error');
+        } finally {
+          reloadDataButton.disabled = false;
+          reloadDataButton.textContent = '重新加载数据';
+        }
+      });
+      maintenanceActions.appendChild(reloadDataButton);
+      migrateButton.addEventListener('click', async () => {
+        migrateButton.disabled = true;
+        let canRetry = true;
+        try {
+          const report = await this.store.storage.inspectMigration();
+          storageDetails.textContent = migrationIssues(report);
+          if (report.errors.length) {
+            canRetry = false;
+            showMessage('数据检查发现错误，请先处理后再迁移。', 6000, 'error');
+            return;
+          }
+          siyuanConfirm('迁移到思源数据库',
+            `${migrationCounts(report)}。<br><br>将先保存原始备份，再创建 Things 数据中心和 7 张数据库表，备注和图片保存在对应记录中。${report.warnings.length ? `<br>${report.warnings.length} 个待核对项会按原样保留。` : ''}<br>逐项核对成功后才切换；原始文件和备份继续保留。迁移期间请暂停其他设备上的 Things 编辑。`,
+            async (confirmation) => {
+              confirmation.destroy();
+              migrateButton.disabled = true;
+              dataButton.disabled = true;
+              try {
+                await this.store.storage.migrateLegacy((stage) => { storageStatus.textContent = MIGRATION_STAGES[stage] || stage; });
+                await this.store.loadAll();
+                storageStatus.textContent = `迁移完成：${migrationCounts(report)}。原始备份：storage/petal/siyuan-things/things-storage-original-v1.json`;
+                dataButton.textContent = '打开数据中心';
+                migrateButton.hidden = true;
+                if (this.dockElement) this.updateCounts(this.dockElement);
+                showMessage('Things 已使用思源数据库，原始备份已保留。', 6000);
+              } catch (error) {
+                storageStatus.textContent = this.store.storage.mode === 'database'
+                  ? '已切换数据源，后续加载未完成。请重新加载 Things，核对恢复结果。'
+                  : '迁移未完成，原始数据已保留。请重新加载 Things，核对当前数据源后再重试。';
+                showMessage(`迁移未完成：${(error as Error).message}`, 10000, 'error');
+              } finally { dataButton.disabled = false; migrateButton.disabled = false; }
+            });
+        } catch (error) { showMessage(`迁移检查失败：${(error as Error).message}`, 7000, 'error'); }
+        finally { migrateButton.disabled = !canRetry; }
+      });
+      maintenanceActions.appendChild(migrateButton);
+
+      const upgradeNotesButton = document.createElement('button');
+      upgradeNotesButton.className = 'things-settings__action-button';
+      upgradeNotesButton.textContent = '将备注迁入数据库';
+      upgradeNotesButton.hidden = this.store.storage.mode !== 'database' || this.store.storage.notesInDatabase;
+      upgradeNotesButton.addEventListener('click', () => {
+        siyuanConfirm('将备注迁入数据库',
+          '将先备份当前数据，再将备注文字和图片写入对应记录，并添加今天、计划、随时、某天、日志等视图。<br><br>逐项核对通过后才切换；原备注文档保留为迁移备份，切换后请在 Things 或数据库中编辑备注。迁移期间请暂停其他设备上的 Things 编辑。',
+          async confirmation => {
+            confirmation.destroy();
+            upgradeNotesButton.disabled = true;
+            dataButton.disabled = true;
+            const stages: Record<string, string> = { backup: '正在备份当前备注…', columns: '正在准备备注和图片字段…',
+              copying: '正在迁入备注和图片…', verifying: '正在逐项核对备注…', activating: '正在切换备注数据源…',
+              views: '正在创建任务视图…', done: '备注迁移完成' };
+            try {
+              await this.store.storage.upgradeNotes(stage => { storageStatus.textContent = stages[stage] || stage; });
+              await this.store.loadAll();
+              storageStatus.textContent = '数据存储：思源原生数据库（含备注和图片）。原备注文档和迁移备份已保留。';
+              upgradeNotesButton.hidden = true;
+              if (this.dockElement) this.updateCounts(this.dockElement);
+              showMessage('备注和图片已存入数据库，任务视图已创建。', 6000);
+            } catch (error) {
+              storageStatus.textContent = this.store.storage.notesInDatabase
+                ? '备注已切换到数据库，后续步骤未完成；请重新加载 Things 完成核对。'
+                : '备注升级尚未完成，原文档已保留；请重新加载 Things 后核对并重试。';
+              showMessage(`备注升级未完成：${(error as Error).message}`, 10000, 'error');
+            } finally { upgradeNotesButton.disabled = false; dataButton.disabled = false; }
+          });
+      });
+      maintenanceActions.appendChild(upgradeNotesButton);
+
       const resetButton = document.createElement("button");
       resetButton.className = "things-settings__action-button things-settings__action-button--danger";
       resetButton.textContent = "重置 Things";
@@ -2871,7 +3080,9 @@ export default class ThingsPlugin extends Plugin {
         const entityCount = this.store.projects.count + this.store.areas.count + this.store.tags.count;
         siyuanConfirm(
           "清空 Things 数据",
-          `即将永久清空 ${taskStats.active + taskStats.archived} 条任务记录和 ${entityCount} 个项目、区域或标签，并恢复默认设置。<br><br>此操作不会删除思源笔记，但无法撤销。`,
+          `即将清空 ${taskStats.active + taskStats.archived} 条任务记录和 ${entityCount} 个项目、区域或标签，并恢复默认设置。<br><br>${this.store.storage.mode === 'database'
+            ? '原生备注文档和回收历史仍会保留，已清空的当前数据无法直接撤销。'
+            : '此操作不会删除思源笔记，但无法撤销。'}`,
           async (confirmDialog) => {
             confirmDialog.destroy();
             resetButton.disabled = true;
@@ -2883,7 +3094,9 @@ export default class ThingsPlugin extends Plugin {
               await this.settingUtils.resetToDefaults();
               this.thingsApp?.$set?.({ aiEnabled: true });
               window.dispatchEvent(new Event("things-ai-config-change"));
-              if (this.dockElement) {
+              if (this.isMobileFrontend) {
+                this.mobileApp?.refresh?.();
+              } else if (this.dockElement) {
                 this.renderDock(this.dockElement);
                 this.setActive(this.dockElement, "today");
               }

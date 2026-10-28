@@ -1,5 +1,13 @@
 <script lang="ts">
   import { createEventDispatcher, onDestroy } from "svelte";
+  import { mobileSort, type MobileSortDrop } from '@/utils/mobileSort';
+  export let mobile = false;
+  export let sortable = true;
+
+  function mobileDrop(drop: MobileSortDrop) {
+    if (drop.from === drop.to) dispatch('reorder', { fromIndex: drop.fromIndex, toIndex: drop.toIndex, id: drop.id });
+    else dispatch('mobilecross', { id: drop.id, group: drop.to.dataset.mobileSortGroup, index: drop.toIndex });
+  }
 
   export let items: Array<{ id: string; [key: string]: any }> = [];
   export let itemKey: string = "id";
@@ -410,7 +418,8 @@
   }
 </script>
 
-<div class="drag-sort" bind:this={containerEl}>
+<div class="drag-sort" bind:this={containerEl} data-mobile-sort-group={groupKey}
+  use:mobileSort={{ enabled: mobile && sortable, group: 'things-mobile-tasks', onDrop: mobileDrop, onStart: () => dispatch('mobilestart'), onEnd: () => dispatch('mobileend') }}>
   <slot
     items={items}
     isDragging={draggedId !== null}

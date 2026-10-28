@@ -14,6 +14,9 @@ importers:
       marked:
         specifier: ^18.0.9
         version: 18.0.10
+      sortablejs:
+        specifier: ^1.15.7
+        version: 1.15.7
     devDependencies:
       '@sveltejs/vite-plugin-svelte':
         specifier: ^3.1.0
@@ -24,6 +27,9 @@ importers:
       '@types/node':
         specifier: ^20.3.0
         version: 20.19.43
+      '@types/sortablejs':
+        specifier: ^1.15.9
+        version: 1.15.9
       cross-env:
         specifier: ^7.0.3
         version: 7.0.3
@@ -49,8 +55,8 @@ importers:
         specifier: ^1.63.3
         version: 1.102.0
       siyuan:
-        specifier: 1.2.2
-        version: 1.2.2
+        specifier: 1.2.4
+        version: 1.2.4
       svelte:
         specifier: ^4.2.20
         version: 4.2.20
@@ -525,6 +531,9 @@ packages:
 
   '@types/node@20.19.43':
     resolution: {integrity: sha512-6oYBAi5ikg4Pl+kGsoYtawUMBT2zZMCvPNF7pVLnHZfd1zf38DRiWn/gT01RYCdUqkv7Fhr+C9ot4/tb+2sVvA==}
+
+  '@types/sortablejs@1.15.9':
+    resolution: {integrity: sha512-7HP+rZGE2p886PKV9c9OJzLBI6BBJu1O7lJGYnPyG3fS4/duUCcngkNCjsLwIMV+WMqANe3tt4irrXHSIe68OQ==}
 
   '@types/trusted-types@2.0.7':
     resolution: {integrity: sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==}
@@ -1338,8 +1347,11 @@ packages:
     resolution: {integrity: sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw==}
     engines: {node: '>=14'}
 
-  siyuan@1.2.2:
-    resolution: {integrity: sha512-2Y/0rfmaXj5PKD8z2Mm/55wlAYbSdNlQrmYZWV22+2frHJEPujbqrEJWZSbl2DCGZEprjP4ByvcTt8QqEsSYjQ==}
+  siyuan@1.2.4:
+    resolution: {integrity: sha512-L1QZcFp2zZxX7Qsjvmj/pqim1vBw9iEDeilEht51zxLf21csdYsuUV5U5NjUYfI/+1PUGeS/uJZGYwOwkfBHXw==}
+
+  sortablejs@1.15.7:
+    resolution: {integrity: sha512-Kk8wLQPlS+yi1ZEf48a4+fzHa4yxjC30M/Sr2AnQu+f/MPwvvX9XjZ6OWejiz8crBsLwSq8GHqaxaET7u6ux0A==}
 
   source-map-js@1.2.1:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
@@ -1885,6 +1897,8 @@ snapshots:
   '@types/node@20.19.43':
     dependencies:
       undici-types: 6.21.0
+
+  '@types/sortablejs@1.15.9': {}
 
   '@types/trusted-types@2.0.7':
     optional: true
@@ -2880,12 +2894,14 @@ snapshots:
 
   signal-exit@4.1.0: {}
 
-  siyuan@1.2.2:
+  siyuan@1.2.4:
     dependencies:
       '@dop251/types-goja_nodejs-buffer': 0.0.0-20260212111938-1f56ff5bcf14
       '@dop251/types-goja_nodejs-global': 0.0.0-20260212111938-1f56ff5bcf14
       '@dop251/types-goja_nodejs-url': 0.0.0-20260212111938-1f56ff5bcf14
       zod: 4.4.3
+
+  sortablejs@1.15.7: {}
 
   source-map-js@1.2.1: {}
 

@@ -41,7 +41,7 @@ export default defineConfig(buildTarget === "kernel" ? {
                 watchExternalFiles(["src/kernel.ts"])
             ] : [
                 cleanupDistFiles({
-                    patterns: ["i18n/*.yaml", "i18n/*.md", "README.zh-CN.md"],
+                    patterns: ["i18n/*.yaml", "i18n/*.md", "README.zh-CN.md", "docs/agent-learning-plan.zh-CN.md"],
                     distDir: outputDir
                 }),
                 zipPack({
@@ -76,7 +76,7 @@ export default defineConfig(buildTarget === "kernel" ? {
         viteStaticCopy({
             targets: [
                 { src: "./README*.md", dest: "./" },
-                { src: "./docs/*.md", dest: "./docs" },
+                { src: ["./docs/kernel-plugin*.md", "./docs/marketplace-release.zh-CN.md", "./docs/versioning*.md"], dest: "./docs" },
                 { src: "./plugin.json", dest: "./" },
                 { src: "./preview.png", dest: "./" },
                 { src: "./icon.png", dest: "./" },

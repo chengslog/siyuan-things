@@ -17,12 +17,33 @@
   let historyEntryAdded = false;
   let pageElement: HTMLElement;
   let viewportHeight: number | undefined;
+  let focusFrame = 0;
+
+  function revealFocusedInput() {
+    cancelAnimationFrame(focusFrame);
+    focusFrame = requestAnimationFrame(() => {
+      const field = document.activeElement;
+      if (!(field instanceof HTMLElement) || !pageElement?.contains(field) || !field.matches('input,textarea,[contenteditable="true"]')) return;
+      const scroller = field.closest<HTMLElement>('.task-list__items');
+      if (!scroller) return;
+      const viewport = window.visualViewport;
+      const dock = pageElement.querySelector<HTMLElement>('.task-card__mobile-more-shell');
+      const bottom = Math.min(scroller.getBoundingClientRect().bottom, dock?.getBoundingClientRect().top ?? (viewport ? viewport.offsetTop + viewport.height : innerHeight)) - 16;
+      const top = Math.max(scroller.getBoundingClientRect().top, viewport?.offsetTop ?? 0) + 12;
+      const rect = field.getBoundingClientRect();
+      if (rect.bottom > bottom) scroller.scrollTop += rect.bottom - bottom;
+      else if (rect.top < top) scroller.scrollTop -= top - rect.top;
+    });
+  }
 
   // WebView 弹出软键盘时，布局视口可能不变；按实际可视区域收缩列表。
   function updateViewport() {
     const viewport = window.visualViewport;
     if (!pageElement || !viewport) return;
     viewportHeight = Math.max(0, viewport.offsetTop + viewport.height - pageElement.getBoundingClientRect().top);
+    pageElement.style.setProperty('--things-visible-height', `${viewport.height}px`);
+    pageElement.classList.toggle('is-keyboard-open', innerHeight - viewport.height > 120);
+    revealFocusedInput();
   }
 
   function close() {
@@ -42,6 +63,8 @@
     window.visualViewport?.addEventListener("scroll", updateViewport);
     window.addEventListener("resize", updateViewport);
     document.body.classList.add("things-mobile-page-open");
+    pageElement.addEventListener('focusin', revealFocusedInput);
+    pageElement.addEventListener('input', revealFocusedInput);
     try {
       history.pushState({ ...(history.state || {}), thingsMobileTaskPage: true }, "");
       historyEntryAdded = true;
@@ -52,6 +75,9 @@
   });
 
   onDestroy(() => {
+    cancelAnimationFrame(focusFrame);
+    pageElement?.removeEventListener('focusin', revealFocusedInput);
+    pageElement?.removeEventListener('input', revealFocusedInput);
     plugin?.eventBus?.off('switch-protyle', close);
     plugin?.eventBus?.off('loaded-protyle-static', close);
     window.visualViewport?.removeEventListener("resize", updateViewport);
