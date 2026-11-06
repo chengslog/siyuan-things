@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { SiYuanAVClient, newSiyuanId } from '../src/storage/avClient.ts';
 import { TABLE_NAMES, TABLES } from '../src/storage/avSchema.ts';
-import { ensureDatabases, STORAGE_BINDING_FILE, STORAGE_BOOTSTRAP_FILE } from '../src/storage/bootstrap.ts';
+import { ensureDatabases, verifyDatabaseBinding, STORAGE_BINDING_FILE, STORAGE_BOOTSTRAP_FILE } from '../src/storage/bootstrap.ts';
 
 const clone = <T>(value: T): T => value === undefined ? value : JSON.parse(JSON.stringify(value));
 
@@ -43,6 +43,8 @@ class Kernel {
       }
       case '/api/notebook/renameNotebook': this.notebooks.find((entry) => entry.id === body.notebook).name = body.name; return null;
       case '/api/query/sql': {
+        const batch = body.stmt.match(/WHERE id IN \(([^)]+)\)/)?.[1];
+        if (batch) return [...batch.matchAll(/'([^']+)'/g)].flatMap(match => this.blocks.has(match[1]) ? [this.blocks.get(match[1])] : []);
         const id = body.stmt.match(/WHERE id = '([^']+)'/)?.[1];
         assert.ok(id, 'test SQL must identify one validated block');
         return this.blocks.has(id) ? [this.blocks.get(id)] : [];
@@ -142,6 +144,41 @@ test('existing binding is reused by ID after user renames without writes', async
   kernel.notebooks[0].name = 'My Tasks'; kernel.calls = [];
   assert.deepEqual(await ensureDatabases(storage, kernel.client), binding);
   assert.equal(kernel.writes().length, 0);
+});
+
+test('binding verification batches indexed blocks and overlaps independent table reads', async () => {
+  const storage = new MemorySettings(); const kernel = new Kernel();
+  const binding = await ensureDatabases(storage, kernel.client);
+  // Simulate the index still catching up; the one barrier must expose every block.
+  kernel.pendingBlocks = new Map(kernel.blocks);
+  kernel.blocks.clear();
+  kernel.calls = [];
+  const releases: Array<() => void> = [];
+  const client = new SiYuanAVClient(async (path, body) => {
+    if (path === '/api/av/getAttributeView') await new Promise<void>(resolve => releases.push(resolve));
+    return kernel.client.request(path, body);
+  });
+  const verifying = verifyDatabaseBinding(client, binding);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(releases.length, TABLE_NAMES.length, 'all independent table reads start before any finishes');
+  assert.equal(kernel.count('/api/sqlite/flushTransaction'), 1);
+  assert.equal(kernel.count('/api/query/sql'), 1);
+  for (const release of releases) release();
+  await verifying;
+  assert.equal(kernel.calls.length, 10, 'one notebook read, one barrier, one block query, seven tables');
+  assert.equal(kernel.writes().length, 0);
+});
+
+test('parallel verification still rejects a damaged final table and retries with fresh data', async () => {
+  const storage = new MemorySettings(); const kernel = new Kernel();
+  const binding = await ensureDatabases(storage, kernel.client);
+  const last = binding.tables[TABLE_NAMES.at(-1)!];
+  const av = kernel.avs.get(last.avId);
+  const key = av.keyValues[0].key;
+  key.type = 'text';
+  await assert.rejects(verifyDatabaseBinding(kernel.client, binding), /字段缺失或类型被改变/);
+  key.type = 'block';
+  await verifyDatabaseBinding(kernel.client, binding);
 });
 
 test('a V1 binding without rich note columns remains readable until an explicit upgrade', async () => {

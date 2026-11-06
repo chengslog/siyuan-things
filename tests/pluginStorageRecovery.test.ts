@@ -54,8 +54,10 @@ function fixture() {
 test('failed mobile cold start retains one recovery listener and timer and recovers on focus', async () => {
   const f = fixture();
   f.fail(new Error('kernel not ready'));
-  await f.plugin.onLayoutReady();
-  await f.plugin.onLayoutReady();
+  f.plugin.onLayoutReady();
+  await f.plugin.startupTask;
+  f.plugin.onLayoutReady();
+  await f.plugin.startupTask;
   assert.equal(f.windowListeners.get('focus')?.size, 1);
   assert.equal(f.documentListeners.get('visibilitychange')?.size, 1);
   assert.equal(f.intervals.length, 1);
@@ -69,6 +71,36 @@ test('failed mobile cold start retains one recovery listener and timer and recov
   assert.ok(f.calls.refreshes > 0);
   await [...f.documentListeners.get('visibilitychange')!][0]();
   assert.equal(f.calls.reminders, 1, 'refreshing must not start duplicate reminder services');
+});
+
+test('layout returns before slow storage so the host can mount the dock', async () => {
+  const f = fixture();
+  let release!: () => void;
+  f.plugin.store.loadAll = () => new Promise<void>(resolve => { release = resolve; });
+  assert.equal(f.plugin.onLayoutReady(), undefined, 'host must not await network reads');
+  const pending = f.plugin.startupTask;
+  assert.equal(f.plugin.dataServicesReady, false);
+  f.plugin.onLayoutReady();
+  assert.equal(f.plugin.startupTask, pending, 'duplicate layout callbacks share startup');
+  release();
+  await pending;
+  assert.equal(f.plugin.dataServicesReady, true);
+  assert.equal(f.calls.settings, 1);
+  assert.equal(f.calls.reminders, 1);
+});
+
+test('unloading during background startup does not start services or report a stale error', async () => {
+  const f = fixture();
+  let reject!: (error: Error) => void;
+  f.plugin.store.loadAll = () => new Promise<void>((_resolve, fail) => { reject = fail; });
+  f.plugin.onLayoutReady();
+  const pending = f.plugin.startupTask;
+  f.plugin.unloaded = true;
+  reject(new Error('connection lost'));
+  await pending;
+  assert.equal(f.calls.settings, 0);
+  assert.equal(f.calls.reminders, 0);
+  assert.equal(f.messages.length, 0);
 });
 
 test('concurrent manual and foreground recovery share startup initialization', async () => {
@@ -123,4 +155,47 @@ test('opening the mobile data center dismisses overlays before native navigation
   f.plugin.isMobileFrontend = false;
   f.plugin.openDataCenter(dialog);
   assert.deepEqual(f.navigation.at(-1), { type: 'desktop', id: 'data-center' });
+});
+
+test('narrow Things panes keep pinned navigation, but respect manual hiding and tiny windows', () => {
+  const f = fixture();
+  f.plugin.isMobileFrontend = false;
+  let override = false;
+  let floating = true;
+  let active = true;
+  const dock = {
+    pin: true,
+    getResponsivePreferredSize: () => 232,
+    hasResponsiveManualOverride: () => override,
+    prepareForManualResize: () => { override = true; },
+    clearResponsiveManualOverride: () => { override = false; },
+    isResponsiveFloating: () => floating,
+    setResponsiveFloating: (value: boolean) => { floating = value; },
+  };
+  const outer = { element: { clientWidth: 650 } };
+  const layout = { leftDock: dock, centerLayout: { children: [{}], parent: outer } };
+  const root = { isConnected: true, getClientRects: () => [{}], closest: () => null };
+  f.plugin.getRuntimeLayout = () => layout;
+  f.plugin.findDockModel = () => ({ dock, type: 'things_nav' });
+  f.plugin.getThingsDockButton = () => ({ classList: { contains: () => active } });
+  f.plugin.preserveThingsNavigation(root, 320);
+  assert.equal(floating, false, 'AI can collapse without making the navigation float');
+  assert.equal(override, true);
+  active = false;
+  f.plugin.preserveThingsNavigation(root, 320);
+  assert.equal(override, false, 'manual close releases the temporary priority');
+  active = true;
+  outer.element.clientWidth = 500;
+  floating = true;
+  f.plugin.preserveThingsNavigation(root, 320);
+  assert.equal(floating, true, 'extremely narrow windows retain native fallback');
+  outer.element.clientWidth = 650;
+  dock.pin = false;
+  f.plugin.preserveThingsNavigation(root, 320);
+  assert.equal(floating, true, 'unpinned navigation stays floating');
+  dock.pin = true;
+  override = true;
+  f.plugin.preserveThingsNavigation(root, 320);
+  f.plugin.releaseThingsNavigation(root);
+  assert.equal(override, true, 'never clear a manual override owned by the user');
 });

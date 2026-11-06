@@ -31,9 +31,9 @@
   let viewportWidth = typeof window !== "undefined" ? window.innerWidth : 1200;
 
   // 任务列表最小宽度：整个页面（思源窗口）的 2/5
-  $: taskListMinWidth = Math.round(viewportWidth * TASK_RATIO);
+  $: taskListMinWidth = Math.max(320, Math.round(viewportWidth * TASK_RATIO));
   // AI 面板最小宽度：整个页面（思源窗口）的 1/5
-  $: aiPanelMinWidth = Math.round(viewportWidth * AI_RATIO);
+  $: aiPanelMinWidth = Math.max(320, Math.round(viewportWidth * AI_RATIO));
 
   // 状态机（三态）：
   // full      —— 任务列表 ≥2/5 且 AI 面板 ≥1/5：两列并排
@@ -149,6 +149,7 @@
 
   function measureWidth() {
     if (!rootEl) return;
+    plugin?.preserveThingsNavigation?.(rootEl, taskListMinWidth);
     let w = rootEl.clientWidth;
     if (!w) {
       let p = rootEl.parentElement;
@@ -168,6 +169,7 @@
 
   function handleWindowResize() {
     viewportWidth = window.innerWidth;
+    requestAnimationFrame(measureWidth);
   }
 
   function handleAIConfigChange() {
@@ -191,6 +193,7 @@
   });
 
   onDestroy(() => {
+    plugin?.releaseThingsNavigation?.(rootEl);
     resizeObserver?.disconnect();
     if (layoutFollowTimer !== null) window.clearTimeout(layoutFollowTimer);
     window.removeEventListener("resize", handleWindowResize);

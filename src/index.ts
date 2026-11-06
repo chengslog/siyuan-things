@@ -115,6 +115,48 @@ export default class ThingsPlugin extends Plugin {
   private storageRefreshWarningShown = false;
   private dataServicesReady = false;
   private dataServicesPromise: Promise<void> | null = null;
+  private startupTask: Promise<void> | null = null;
+  private navigationPriority: { root: HTMLElement; dock: any } | null = null;
+
+  public releaseThingsNavigation(root?: HTMLElement) {
+    const priority = this.navigationPriority;
+    if (!priority || (root && priority.root !== root)) return;
+    this.navigationPriority = null;
+    priority.dock.clearResponsiveManualOverride?.();
+    priority.dock.adjustResponsiveCenterLayout?.();
+  }
+
+  /** Keep pinned navigation before AI while a single Things pane still fits. */
+  public preserveThingsNavigation(root: HTMLElement, taskMinimum: number) {
+    if (this.isMobileFrontend || this.unloaded || this.syncInProgress) return;
+    const layout = this.getRuntimeLayout();
+    const found = this.findDockModel(type => type.endsWith('things_nav'));
+    const dock = found?.dock;
+    const active = root.isConnected && root.getClientRects().length > 0 &&
+      !root.closest('.fn__none') && this.getThingsDockButton()?.classList.contains('dock__item--active');
+    const outer = layout?.centerLayout?.parent;
+    const other = dock === layout?.leftDock ? layout?.rightDock : layout?.leftDock;
+    const otherWidth = other?.pin && other?.isPanelVisible?.() && !other?.isFloating?.()
+      ? other.layout.element.clientWidth : 0;
+    const width = dock?.getResponsivePreferredSize?.();
+    // Split editors must retain SiYuan's own minimum-width policy.
+    const singlePane = layout?.centerLayout?.children?.length === 1;
+    const fits = outer?.element?.clientWidth - width - otherWidth - 24 >= taskMinimum;
+    if (!active || !singlePane || !dock?.pin || !fits) {
+      this.releaseThingsNavigation(root);
+      return;
+    }
+    if (!dock.prepareForManualResize || !dock.setResponsiveFloating ||
+        !dock.hasResponsiveManualOverride || !dock.clearResponsiveManualOverride) return;
+    if (!dock.hasResponsiveManualOverride()) {
+      this.releaseThingsNavigation();
+      dock.prepareForManualResize();
+      this.navigationPriority = { root, dock };
+    }
+    if (dock.isResponsiveFloating?.()) {
+      dock.setResponsiveFloating(false, width);
+    }
+  }
 
   private initializeDataServices(): Promise<void> {
     if (this.dataServicesReady || this.unloaded) return Promise.resolve();
@@ -1244,7 +1286,7 @@ export default class ThingsPlugin extends Plugin {
     console.log("[Things] Plugin loaded");
   }
 
-  async onLayoutReady() {
+  onLayoutReady() {
     // Register recovery before the first read, including failed cold starts.
     if (!this.storageRefreshListening) {
       window.addEventListener('focus', this.handleStorageFocus);
@@ -1254,14 +1296,26 @@ export default class ThingsPlugin extends Plugin {
     if (this.storageRefreshTimer === null) {
       this.storageRefreshTimer = window.setInterval(() => void this.handleStorageFocus(), 15000);
     }
+    // SiYuan waits for layout callbacks before mounting plugin docks. Let it
+    // render the entry immediately while network-backed data loads separately.
+    if (!this.startupTask && !this.unloaded) {
+      this.startupTask = this.loadStartupData().catch((error) => {
+        if (!this.unloaded) showMessage(`Things 启动失败：${(error as Error).message}`, 10000, 'error');
+      }).finally(() => { this.startupTask = null; });
+    }
+  }
+
+  private async loadStartupData(): Promise<void> {
+    const startedAt = Date.now();
     try { await this.refreshStorage(); }
     catch (error) {
+      if (this.unloaded) return;
       showMessage(`Things 数据加载失败：${(error as Error).message}。可在设置中重新加载数据。`, 10000, 'error');
       this.storageRefreshWarningShown = true;
       return;
     }
     if (this.unloaded) return;
-    console.log("[Things] Data loaded, tasks:", this.store.tasks.count);
+    console.log("[Things] Data loaded, tasks:", this.store.tasks.count, "elapsedMs:", Date.now() - startedAt);
 
     if (!this.isMobileFrontend && this.dockElement) {
       this.updateCounts(this.dockElement);
@@ -1298,7 +1352,9 @@ export default class ThingsPlugin extends Plugin {
       // A concrete startup view requires SiYuan not to restore arbitrary old
       // tabs. Keep the global setting in sync and use one creation path only.
       await this.ensureCloseTabsOnStart();
+      if (this.unloaded) return;
       setTimeout(() => {
+        if (this.unloaded) return;
         this.openThingsTab(defaultView as ViewType);
         if (this.dockElement) this.setActive(this.dockElement, defaultView as ViewType);
       }, 300);
@@ -1308,6 +1364,7 @@ export default class ThingsPlugin extends Plugin {
   async onunload() {
     console.log("[Things] Plugin unloaded");
     this.unloaded = true;
+    this.releaseThingsNavigation();
     window.removeEventListener('focus', this.handleStorageFocus);
     document.removeEventListener('visibilitychange', this.handleStorageFocus);
     this.storageRefreshListening = false;

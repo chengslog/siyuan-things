@@ -297,7 +297,11 @@ export class StorageCoordinator {
   }
 
   async refresh(): Promise<void> {
+    const initializesSource = !this.ready;
     await this.start();
+    // Initialization already validates and loads a complete snapshot. Repeating
+    // that work here doubles the cold-start network round trips on Web clients.
+    if (initializesSource) return;
     if (this.migrating) return;
     await this.enqueue(async () => {
       if (this.repository) {

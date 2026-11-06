@@ -108,15 +108,32 @@ export async function verifyDatabaseBinding(client: SiYuanAVClient, binding: Bin
   if (!Array.isArray(notebooks)) throw new Error('Things 无法读取笔记本列表');
   const notebook = notebooks.find((item: any) => item.id === binding.notebookId);
   if (!notebook || notebook.closed) throw new Error('Things 数据笔记本不存在或已关闭，请打开原笔记本');
-  const doc = await getBlock(client, binding.docId);
+  // One index barrier and one query cover the center document and all carriers.
+  // IDs have already passed validateBinding; keep creation's per-write barriers
+  // in getBlock, since freshly written blocks still need their own visibility check.
+  await client.request('/api/sqlite/flushTransaction', {});
+  const ids = [binding.docId, ...TABLE_NAMES.map(name => binding.tables[name].blockId)];
+  const rows = await client.request('/api/query/sql', {
+    stmt: `SELECT id, root_id, box, type, markdown FROM blocks WHERE id IN (${ids.map(id => `'${id}'`).join(',')}) LIMIT ${ids.length}`,
+    mode: 'readonly',
+  });
+  if (!Array.isArray(rows)) throw new Error('Things 无法确认数据中心文档是否存在');
+  const blocks = new Map(rows.map((row: any) => [row.id, row]));
+  const doc = blocks.get(binding.docId);
   if (!doc || doc.type !== 'd' || doc.box !== binding.notebookId) throw new Error('Things 数据中心文档不存在，已停止自动新建');
   for (const name of TABLE_NAMES) {
     const table = binding.tables[name];
-    const carrier = await getBlock(client, table.blockId);
+    const carrier = blocks.get(table.blockId);
     if (!carrier || carrier.box !== binding.notebookId || carrier.type !== 'av' || !String(carrier.markdown || '').includes(table.avId)) {
       throw new Error(`Things「${specs[name].name}」的数据库承载块缺失或已替换`);
     }
-    const av = await client.getAV(table.avId);
+  }
+  // These independent reads have no write ordering dependency. Validate every
+  // table before returning, even though network waits now overlap.
+  const avs = await Promise.all(TABLE_NAMES.map(name => client.getAV(binding.tables[name].avId)));
+  for (const [index, name] of TABLE_NAMES.entries()) {
+    const table = binding.tables[name];
+    const av = avs[index];
     const fields = [{ field: specs[name].titleField, type: 'block', relation: undefined }, ...specs[name].columns];
     for (const field of fields) {
       const key = av.keyValues.find((entry: any) => entry.key?.id === table.keys[field.field])?.key;

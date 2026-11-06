@@ -103,6 +103,23 @@ test('fresh installation initializes once for concurrent callers and activates a
   assert.deepEqual(f.calls.requests, ['/api/system/version']);
 });
 
+test('cold refresh loads the database once while later refreshes still read external edits', async () => {
+  const f = fixture();
+  f.files.set(SOURCE_FILE, { schemaVersion: 1, mode: 'database', binding });
+  f.setDatabase({ ...empty(), tasks: [task('existing')] });
+  const coordinator = f.create();
+  await coordinator.refresh();
+  assert.equal(f.calls.verify, 1);
+  assert.equal(f.calls.load, 1);
+  assert.equal(f.calls.ensure, 0);
+  assert.equal((await coordinator.read('tasks.json'))[0].id, 'existing');
+  f.setDatabase({ ...empty(), tasks: [task('external-edit')] });
+  await coordinator.refresh();
+  assert.equal(f.calls.verify, 2);
+  assert.equal(f.calls.load, 2);
+  assert.equal((await coordinator.read('tasks.json'))[0].id, 'external-edit');
+});
+
 test('restart uses the active source binding and never provisions replacement databases', async () => {
   const f = fixture();
   await f.create().start();
