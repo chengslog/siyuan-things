@@ -21,10 +21,12 @@ test('sidebar renderers never interpolate persisted entity fields into HTML', ()
 test('AI credentials are not written to configuration logs', () => {
   const settingsSource = readProjectFile('src/libs/setting-utils.ts');
   const pluginSource = readProjectFile('src/index.ts');
+  const aiViewSource = readProjectFile('src/components/aiSettingsView.ts');
 
   assert.doesNotMatch(settingsSource, /console\.(?:debug|log)\(['"](?:Load|Save) config:/);
   assert.doesNotMatch(pluginSource, /Setting \$\{key\} saved:/);
-  assert.match(pluginSource, /key === "aiApiKey"[\s\S]{0,160}el\.type = "password"/);
+  assert.match(aiViewSource, /inputField\('API Key', [^\n]*, 'password'\)/);
+  assert.doesNotMatch(aiViewSource, /console\.(?:log|debug|warn|error)\(/);
 });
 
 test('release workflow uses a committed lockfile and immutable official actions', () => {

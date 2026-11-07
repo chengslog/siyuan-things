@@ -1,12 +1,21 @@
-name: Create Release on Tag Push
+name: Release plugin
 
 permissions:
   contents: write
 
 on:
   push:
+    branches:
+      - main
+    paths:
+      - plugin.json
     tags:
       - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: things-release
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -34,13 +43,19 @@ jobs:
         shell: bash
         run: |
           VERSION=$(node -p "require('./plugin.json').version")
-          test "${GITHUB_REF_NAME}" = "v${VERSION}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            test "${GITHUB_REF_NAME}" = "v${VERSION}"
+          fi
+          echo "RELEASE_TAG=v${VERSION}" >> "$GITHUB_ENV"
 
       - name: Run core tests
         run: pnpm test
 
       - name: Build for production
         run: pnpm run build
+
+      - name: Generate update metadata without REST API dependency
+        run: node scripts/create_update_manifest.mjs
 
       - name: Release
         env:
@@ -56,13 +71,13 @@ jobs:
           if (!notes) throw new Error(`Missing changelog for v${version}`);
           fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'things-release-notes.md'), notes.trim() + '\n');
           NODE
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" package.zip --clobber
-            gh release edit "${GITHUB_REF_NAME}" --latest --notes-file "$RUNNER_TEMP/things-release-notes.md"
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" package.zip update.json --clobber
+            gh release edit "${RELEASE_TAG}" --latest --notes-file "$RUNNER_TEMP/things-release-notes.md"
           else
-            gh release create "${GITHUB_REF_NAME}" package.zip \
-              --verify-tag \
-              --title "${GITHUB_REF_NAME}" \
+            gh release create "${RELEASE_TAG}" package.zip update.json \
+              --target "${GITHUB_SHA}" \
+              --title "${RELEASE_TAG}" \
               --latest \
               --notes-file "$RUNNER_TEMP/things-release-notes.md"
           fi

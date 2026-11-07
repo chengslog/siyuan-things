@@ -5,12 +5,24 @@
 
 import type { ParsedTask } from '@/types';
 import { resolveSiYuanAIConfig, type ResolvedSiYuanAIConfig } from '@/utils/aiConfig';
+import { completeAccountChat } from './accountAI';
 
 export interface AIConfig {
-  mode: 'siyuan' | 'custom';
+  mode: 'siyuan' | 'custom' | 'chatgpt' | 'codex';
   endpoint: string;
   apiKey: string;
   model: string;
+  reasoningEffort?: string;
+}
+
+type RequestConfig = { endpoint: string; apiKey: string; model: string; mode?: AIConfig['mode']; reasoningEffort?: string };
+
+async function resolveRequestConfig(config: AIConfig): Promise<RequestConfig> {
+  if (config.mode === 'chatgpt' || config.mode === 'codex') return { ...config, endpoint: '', apiKey: '' };
+  const resolved = config.mode === 'siyuan' ? await getSiYuanAIConfig(config.model) : config;
+  if (!resolved?.apiKey) throw new Error('未配置 AI API Key');
+  if (!resolved.endpoint) throw new Error('未配置 AI API 端点');
+  return resolved;
 }
 
 // 思考强度档位：temperature + max_tokens + 提示词指令的组合
@@ -90,7 +102,7 @@ export interface AIRouteResult {
 /**
  * 从思源全局配置获取 AI 配置
  */
-async function getSiYuanAIConfig(preferredModel?: string): Promise<ResolvedSiYuanAIConfig | null> {
+export async function getSiYuanAIConfig(preferredModel?: string): Promise<ResolvedSiYuanAIConfig | null> {
   const inMemoryConfig = resolveSiYuanAIConfig(
     (window as any).siyuan?.config?.ai,
     preferredModel,
@@ -173,28 +185,7 @@ export async function parseTasksWithAIStream(
   callbacks: StreamCallbacks
 ): Promise<{ reasoning: string; content: string }> {
   // 根据模式选择配置源
-  let actualConfig: { endpoint: string; apiKey: string; model: string };
-
-  if (config.mode === 'siyuan') {
-    const siyuanConfig = await getSiYuanAIConfig(config.model);
-    if (!siyuanConfig) {
-      throw new Error('未找到思源 AI 配置，请在思源设置中配置 AI 服务');
-    }
-    actualConfig = siyuanConfig;
-  } else {
-    actualConfig = {
-      endpoint: config.endpoint,
-      apiKey: config.apiKey,
-      model: config.model
-    };
-  }
-
-  if (!actualConfig.apiKey) {
-    throw new Error('未配置 AI API Key');
-  }
-  if (!actualConfig.endpoint) {
-    throw new Error('未配置 AI API 端点');
-  }
+  const actualConfig = await resolveRequestConfig(config);
 
   const payload: any = {
     model: actualConfig.model || 'gpt-4o-mini',
@@ -227,13 +218,7 @@ export async function queryTasksWithAI(
   thinkingLevel: ThinkingLevel,
   callbacks: StreamCallbacks,
 ): Promise<AITaskQueryResult> {
-  const actualConfig = config.mode === 'siyuan' ? await getSiYuanAIConfig(config.model) : {
-    endpoint: config.endpoint,
-    apiKey: config.apiKey,
-    model: config.model,
-  };
-  if (!actualConfig?.apiKey) throw new Error('未配置 AI API Key');
-  if (!actualConfig.endpoint) throw new Error('未配置 AI API 端点');
+  const actualConfig = await resolveRequestConfig(config);
 
   const now = new Date();
   const nowText = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -271,13 +256,7 @@ export async function routeAiMessage(
   thinkingLevel: ThinkingLevel,
   callbacks: StreamCallbacks,
 ): Promise<AIRouteResult> {
-  const actualConfig = config.mode === 'siyuan' ? await getSiYuanAIConfig(config.model) : {
-    endpoint: config.endpoint,
-    apiKey: config.apiKey,
-    model: config.model,
-  };
-  if (!actualConfig?.apiKey) throw new Error('未配置 AI API Key');
-  if (!actualConfig.endpoint) throw new Error('未配置 AI API 端点');
+  const actualConfig = await resolveRequestConfig(config);
   const now = new Date();
   const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const system = `你是 Things 任务助手的意图路由器。今天是 ${date}。
@@ -328,10 +307,17 @@ intent 只能是 create/search/update/confirm/cancel/clarify/answer。
  * SSE 流式调用。原生 fetch 是异步网络 API，不经过思源 forwardProxy。
  */
 async function streamChat(
-  config: { endpoint: string; apiKey: string; model: string },
+  config: RequestConfig,
   payload: any,
   callbacks: StreamCallbacks
 ): Promise<{ reasoning: string; content: string }> {
+  if (config.mode === 'chatgpt' || config.mode === 'codex') {
+    const content = await completeAccountChat({
+      mode: config.mode, messages: payload.messages, model: config.model,
+      reasoningEffort: config.reasoningEffort, onContent: callbacks.onContent,
+    });
+    return { reasoning: '', content };
+  }
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), 60000);
   let response: Response;

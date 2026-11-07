@@ -18,7 +18,9 @@ git tag "v${VERSION}"
 git push origin main "v${VERSION}"
 ```
 
-推送 `v*` 标签后，GitHub Actions 会验证标签与插件版本、运行测试、构建，并将 `package.zip` 上传到对应 GitHub Release。确认该 Release 标记为 Latest。
+向 `main` 推送包含 `plugin.json` 的版本更新，或推送 `v*` 标签后，GitHub Actions 会验证版本、运行测试、构建，并将 `package.zip` 和 `update.json` 上传到对应 GitHub Release。由 `main` 触发时，发布工作流会将版本标签绑定到本次提交；也可在 Actions 页面手动运行发布工作流。确认该 Release 标记为 Latest。
+
+`update.json` 记录该安装包的版本、字节数和 SHA-256。GitHub API 额度耗尽时，插件通过官方 Release 直链读取这份清单，再下载指定版本的安装包；旧版 Release 没有清单时仍会报告失败。手工发布时，先完成构建，再运行 `node scripts/create_update_manifest.mjs`，同时上传这两个文件。
 
 ## 首次提交集市
 

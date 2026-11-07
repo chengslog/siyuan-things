@@ -31,13 +31,21 @@ import {
   isDockRestoreIntentValid,
 } from "@/utils/dockRestore";
 import {
-  GITHUB_RELEASE_API,
+  loadGitHubRelease,
+  diagnoseGitHubResponse,
+  formatGitHubDiagnostics,
   expectedSha256,
   readGitHubPackage,
   resolveGitHubUpdate,
   type GitHubRelease,
   type GitHubUpdate,
+  type GitHubRequestDiagnostic,
 } from "@/utils/githubUpdater";
+import { hasThingsSyncIgnore, readSyncIgnore, setThingsSyncIgnored } from "@/utils/pluginSync";
+import { configureAccountAI, closeAccountAI } from '@/services/accountAI';
+import { createSettingsDraft } from '@/utils/settingsDraft';
+import { createAISettingsView } from '@/components/aiSettingsView';
+import { setRefreshButton } from '@/utils/settingsRefreshButton';
 import { resetAiChat, type AIComposerContext } from "@/stores/aiChat";
 
 const STORAGE_NAME = "things-config";
@@ -101,6 +109,10 @@ export default class ThingsPlugin extends Plugin {
   private currentThingsViewId: string | undefined = undefined;
   private sidebarFollowRevision = 0;
   private githubUpdatePromise: Promise<void> | null = null;
+  private githubUpdateDiagnostics: GitHubRequestDiagnostic[] = [];
+  private githubDiagnosticSiYuanVersion = '未读取';
+  private settingsCategory = 'general';
+  private accountSettingsDisposers = new Set<() => void>();
   private githubUpdateAbortController: AbortController | null = null;
   private githubUpdateCancelable = false;
   private githubUpdateMonitorStop: (() => void) | null = null;
@@ -616,13 +628,11 @@ export default class ThingsPlugin extends Plugin {
     parentSignal?: AbortSignal,
   ): Promise<PreparedGitHubUpdate | null> {
     report?.({ phase: "checking", message: "正在检查 GitHub 最新版本…", percent: 8 });
-    const releaseResponse = await this.withUpdateTimeout("版本检查", 20_000, (signal) => fetch(GITHUB_RELEASE_API, {
-      headers: { Accept: "application/vnd.github+json" },
-      cache: "no-store",
+    const release = await this.withUpdateTimeout("版本检查", 35_000, (signal) => loadGitHubRelease({
       signal,
+      inspect: (response, stage, url) => this.inspectGitHubResponse(response, stage, url),
+      onFallback: () => report?.({ phase: 'checking', message: '正在通过 GitHub 官方备用通道检查更新…', percent: 10 }),
     }), parentSignal);
-    if (!releaseResponse.ok) throw new Error(`GitHub 版本检查失败（HTTP ${releaseResponse.status}）`);
-    const release = await releaseResponse.json() as GitHubRelease;
     const update = resolveGitHubUpdate(release, __PLUGIN_VERSION__);
     return update ? { release, update } : null;
   }
@@ -666,7 +676,7 @@ export default class ThingsPlugin extends Plugin {
             headers: source.headers,
             signal,
           });
-          if (!packageResponse.ok) throw new Error(`HTTP ${packageResponse.status}`);
+          await this.inspectGitHubResponse(packageResponse, source.name, source.url);
           return await readGitHubPackage(packageResponse, update.asset.size, ({ received, total, percent }) => {
             const receivedMB = (received / 1024 / 1024).toFixed(1);
             const totalMB = (total / 1024 / 1024).toFixed(1);
@@ -747,6 +757,10 @@ export default class ThingsPlugin extends Plugin {
 
   private runGitHubUpdate(report: GitHubUpdateReporter, prepared?: PreparedGitHubUpdate): Promise<void> {
     if (this.githubUpdatePromise) return this.githubUpdatePromise;
+    this.githubUpdateDiagnostics = [];
+    void fetchSyncPost('/api/system/version', {}).then(result => {
+      if (result?.code === 0 && typeof result.data === 'string') this.githubDiagnosticSiYuanVersion = result.data;
+    }).catch(() => { /* Diagnostic metadata must not block updates. */ });
     this.githubUpdateAbortController = new AbortController();
     this.githubUpdateCancelable = true;
     this.githubUpdatePromise = this.performGitHubUpdate(
@@ -760,6 +774,40 @@ export default class ThingsPlugin extends Plugin {
         this.githubUpdateCancelable = false;
       });
     return this.githubUpdatePromise;
+  }
+
+  private async inspectGitHubResponse(response: Response, stage: string, url: string): Promise<void> {
+    const diagnostic = await diagnoseGitHubResponse(response, stage, url);
+    this.githubUpdateDiagnostics.push(diagnostic);
+    if (!response.ok) {
+      const reset = diagnostic.reset ? Number(diagnostic.reset) * 1000 : NaN;
+      const retryAt = Number.isFinite(reset) && reset > Date.now() && reset < Date.now() + 7 * 86400000
+        ? ` 可在 ${new Date(reset).toLocaleString()} 后重试。` : '';
+      throw new Error(`${stage}失败（HTTP ${response.status}）：${diagnostic.reason}${retryAt}`);
+    }
+  }
+
+  private formatUpdateDiagnostics(): string {
+    return formatGitHubDiagnostics(__PLUGIN_VERSION__, this.githubDiagnosticSiYuanVersion,
+      getFrontend(), this.githubUpdateDiagnostics);
+  }
+
+  private async copyUpdateDiagnostics(): Promise<void> {
+    const text = this.formatUpdateDiagnostics();
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const field = document.createElement('textarea');
+      field.value = text;
+      field.style.cssText = 'position:fixed;opacity:0;';
+      field.readOnly = true;
+      document.body.appendChild(field);
+      field.select();
+      try {
+        if (!document.execCommand('copy')) throw new Error('复制失败，请展开排查信息后手动复制。');
+      } finally { field.remove(); }
+    }
+    showMessage('排查信息已复制，可直接发给我。', 3500);
   }
 
   private cancelGitHubUpdate(): void {
@@ -929,8 +977,25 @@ export default class ThingsPlugin extends Plugin {
       if (nativeClose) nativeClose.style.visibility = "";
       setActions([
         { label: "关闭", action: () => dialog.destroy() },
+        ...(!cancelled ? [{ label: '复制排查信息', action: () => {
+          void this.copyUpdateDiagnostics().catch(error => showMessage((error as Error).message, 5000, 'error'));
+        } }] : []),
         { label: "重试", primary: true, action: () => void startUpdate() },
       ]);
+      let diagnostics = card.querySelector('.things-update-card__diagnostics') as HTMLDetailsElement | null;
+      if (!diagnostics) {
+        diagnostics = document.createElement('details');
+        diagnostics.className = 'things-update-card__diagnostics';
+        const summary = document.createElement('summary');
+        summary.textContent = '排查信息';
+        const field = document.createElement('textarea');
+        field.readOnly = true;
+        field.setAttribute('aria-label', 'GitHub 更新排查信息');
+        diagnostics.append(summary, field);
+        actions.before(diagnostics);
+      }
+      diagnostics.hidden = cancelled;
+      diagnostics.querySelector('textarea')!.value = this.formatUpdateDiagnostics();
     };
 
     const renderStatus = (status: GitHubUpdateStatus) => {
@@ -998,6 +1063,8 @@ export default class ThingsPlugin extends Plugin {
 
     const startUpdate = async () => {
       if (running) return;
+      const diagnostics = card.querySelector('.things-update-card__diagnostics') as HTMLElement | null;
+      if (diagnostics) diagnostics.hidden = true;
       running = true;
       finished = false;
       progress.className = "things-update-card__progress";
@@ -1045,6 +1112,7 @@ export default class ThingsPlugin extends Plugin {
   async onload() {
     this.unloaded = false;
     const frontend = getFrontend();
+    configureAccountAI(frontend);
     this.isMobileFrontend = frontend === "mobile" || frontend === "browser-mobile";
     console.log("[Things] Loading plugin...");
     this.announceCompletedGitHubUpdate();
@@ -1255,6 +1323,8 @@ export default class ThingsPlugin extends Plugin {
       title: "AI 服务来源",
       description: "选择复用思源内置 AI 设置，或自定义 API 配置",
       options: {
+        chatgpt: "ChatGPT 账号授权",
+        codex: "Codex 本机登录",
         siyuan: "复用思源设置",
         custom: "自定义 AI 设置",
       },
@@ -1285,6 +1355,10 @@ export default class ThingsPlugin extends Plugin {
     });
 
     // 监听任务变化，自动更新侧边栏计数
+    for (const [key, value] of Object.entries({ aiProvider: 'custom', aiAccountProvider: 'chatgpt', aiAccountModel: '', aiReasoningEffort: '' })) {
+      this.settingUtils.addItem({ key, value, type: 'textinput', title: key, description: '' });
+    }
+
     this.unsubTaskChange = this.store.tasks.on(() => {
       if (this.isMobileFrontend) {
         this.mobileApp?.refresh?.();
@@ -1374,6 +1448,9 @@ export default class ThingsPlugin extends Plugin {
   async onunload() {
     console.log("[Things] Plugin unloaded");
     this.unloaded = true;
+    for (const dispose of this.accountSettingsDisposers) dispose();
+    this.accountSettingsDisposers.clear();
+    closeAccountAI();
     this.releaseThingsNavigation();
     window.removeEventListener('focus', this.handleStorageFocus);
     document.removeEventListener('visibilitychange', this.handleStorageFocus);
@@ -2711,22 +2788,39 @@ export default class ThingsPlugin extends Plugin {
   private openDataCenter(dialog: Dialog): void {
     const id = this.store.storage.docId;
     if (!id) return;
+    dialog.destroy();
     if (this.isMobileFrontend) {
-      dialog.destroy();
       this.closeMobileTaskPage();
       openMobileFileById(this.app, id);
     } else openTab({ app: this.app, doc: { id } });
   }
 
   openSetting(): void {
+    let disposeAI = () => {};
     const dialog = new Dialog({
       title: "Things 设置",
-      content: '<div id="things-settings" style="padding: 16px 16px 20px;"></div>',
-      width: "600px",
+      content: '<div id="things-settings"></div>',
+      width: "760px",
+      height: "640px",
+      destroyCallback: () => { disposeAI(); this.accountSettingsDisposers.delete(disposeAI); },
     });
+    dialog.element.classList.add('things-settings-dialog');
 
     const settingsEl = dialog.element.querySelector("#things-settings");
     if (settingsEl) {
+      const generalDraft = createSettingsDraft(this.settingUtils, ['defaultView', 'tabFollowsSidebar', 'aiEnabled']);
+      const updatesDraft = createSettingsDraft(this.settingUtils, ['githubAutoUpdate']);
+      const draftControls = new Map<string, HTMLElement>();
+      const getDraftControl = (key: string): HTMLElement | undefined => {
+        if (draftControls.has(key)) return draftControls.get(key);
+        const original = this.settingUtils.getElement(key);
+        if (!original) return undefined;
+        const control = original.cloneNode(true) as HTMLElement;
+        const item = this.settingUtils.settings.get(key);
+        item?.setEleVal?.(control, item.value);
+        draftControls.set(key, control);
+        return control;
+      };
       const generalSection = document.createElement("section");
       generalSection.className = "things-settings__section things-settings__section--first things-settings__category";
       const generalTitle = document.createElement("div");
@@ -2737,7 +2831,7 @@ export default class ThingsPlugin extends Plugin {
 
       // 添加默认视图设置
       const defaultViewKey = "defaultView";
-      const defaultViewEl = this.settingUtils.getElement(defaultViewKey);
+      const defaultViewEl = getDraftControl(defaultViewKey);
       if (defaultViewEl) {
         const item = this.settingUtils.settings.get(defaultViewKey);
         if (item && item.setEleVal) {
@@ -2757,40 +2851,19 @@ export default class ThingsPlugin extends Plugin {
         desc.textContent = "选择具体页面后，Things 会将思源的“启动行为”自动设为“关闭所有页签”，以确保启动时只打开这里设置的页面。选择“不打开”不会修改思源设置。";
         wrapper.appendChild(desc);
 
-        const startupStatus = document.createElement("div");
-        startupStatus.style.display = "none";
-        startupStatus.style.fontSize = "12px";
-        startupStatus.style.marginTop = "8px";
-
-        defaultViewEl.addEventListener('change', async () => {
-          const value = (defaultViewEl as HTMLSelectElement).value;
-          await this.settingUtils.setAndSave(defaultViewKey, value);
-          if (value !== "none") {
-            const updated = await this.ensureCloseTabsOnStart();
-            startupStatus.style.display = "block";
-            startupStatus.style.color = updated
-              ? "var(--b3-theme-primary)"
-              : "var(--b3-theme-error)";
-            startupStatus.textContent = updated
-              ? "已自动将思源启动行为设为“关闭所有页签”"
-              : "未能修改思源启动行为，请在思源设置中手动选择“关闭所有页签”";
-          } else {
-            startupStatus.style.display = "block";
-            startupStatus.style.color = "var(--b3-theme-on-surface-light)";
-            startupStatus.textContent = "已设为启动时不打开 Things；思源的启动行为保持不变";
-          }
-          console.log(`[Things] Setting ${defaultViewKey} saved:`, value);
+        defaultViewEl.addEventListener('change', () => {
+          generalDraft.set(defaultViewKey, (defaultViewEl as HTMLSelectElement).value);
+          generalNotice.textContent = '修改尚未保存，点击底部“保存”后生效。';
         });
 
         defaultViewEl.classList.add("things-settings__section-control");
         wrapper.appendChild(defaultViewEl);
-        wrapper.appendChild(startupStatus);
         generalSection.appendChild(wrapper);
       }
 
       // 标签页与侧边栏联动开关
       const tabFollowKey = "tabFollowsSidebar";
-      const tabFollowEl = this.settingUtils.getElement(tabFollowKey) as HTMLInputElement | undefined;
+      const tabFollowEl = getDraftControl(tabFollowKey) as HTMLInputElement | undefined;
       if (tabFollowEl) {
         const item = this.settingUtils.settings.get(tabFollowKey);
         item?.setEleVal?.(tabFollowEl, item.value);
@@ -2813,15 +2886,16 @@ export default class ThingsPlugin extends Plugin {
         section.appendChild(wrapper);
         generalSection.appendChild(section);
 
-        tabFollowEl.addEventListener("change", async () => {
-          await this.settingUtils.setAndSave(tabFollowKey, tabFollowEl.checked);
+        tabFollowEl.addEventListener('change', () => {
+          generalDraft.set(tabFollowKey, tabFollowEl.checked);
+          generalNotice.textContent = '修改尚未保存，点击底部“保存”后生效。';
         });
       }
 
       // GitHub 直连更新放在“维护与支持”，手动检查使用开关旁的图标按钮。
       let githubUpdateSection: HTMLElement | null = null;
       const githubUpdateKey = "githubAutoUpdate";
-      const githubUpdateEl = this.settingUtils.getElement(githubUpdateKey) as HTMLInputElement | undefined;
+      const githubUpdateEl = getDraftControl(githubUpdateKey) as HTMLInputElement | undefined;
       if (githubUpdateEl) {
         const item = this.settingUtils.settings.get(githubUpdateKey);
         item?.setEleVal?.(githubUpdateEl, item.value);
@@ -2842,175 +2916,113 @@ export default class ThingsPlugin extends Plugin {
 
         const checkButton = document.createElement("button");
         checkButton.type = "button";
-        checkButton.className = "things-settings__update-button";
-        checkButton.title = "检查更新";
-        checkButton.setAttribute("aria-label", "检查更新");
-        checkButton.innerHTML = '<svg aria-hidden="true"><use xlink:href="#iconRefresh"></use></svg>';
-        const controls = document.createElement("div");
-        controls.className = "things-settings__toggle-controls";
-        controls.append(checkButton, githubUpdateEl);
-        wrapper.append(copy, controls);
+        checkButton.className = 'things-settings__action-button';
+        setRefreshButton(checkButton, '检查更新');
+        const updateControls = document.createElement('div');
+        updateControls.className = 'things-settings__toggle-controls';
+        updateControls.append(checkButton, githubUpdateEl);
+        wrapper.append(copy, updateControls);
         section.appendChild(wrapper);
-        checkButton.addEventListener("click", () => {
-          dialog.destroy();
-          window.setTimeout(() => this.openGitHubUpdateDialog(), 120);
-        });
-        githubUpdateEl.addEventListener("change", async () => {
-          await this.settingUtils.setAndSave(githubUpdateKey, githubUpdateEl.checked);
-        });
+        checkButton.addEventListener('click', () => this.openGitHubUpdateDialog());
+        githubUpdateEl.addEventListener('change', () => updatesDraft.set(githubUpdateKey, githubUpdateEl.checked));
         githubUpdateSection = section;
       }
 
-      // AI 功能总开关
-      const aiEnabledKey = "aiEnabled";
-      const aiEnabledEl = this.settingUtils.getElement(aiEnabledKey) as HTMLInputElement | undefined;
-      const aiSection = document.createElement("section");
-      aiSection.className = "things-settings__section things-settings__ai-section things-settings__category";
-      const aiSectionTitle = document.createElement("div");
-      aiSectionTitle.className = "things-settings__category-title";
-      aiSectionTitle.textContent = "AI 设置";
-      aiSection.appendChild(aiSectionTitle);
-      const aiConfigSection = document.createElement("div");
-      aiConfigSection.id = "things-ai-config-section";
-      aiConfigSection.className = "things-settings__ai-config";
-      settingsEl.appendChild(aiSection);
+      const aiEnabledKey = 'aiEnabled';
+      const aiEnabledEl = getDraftControl(aiEnabledKey) as HTMLInputElement | undefined;
       if (aiEnabledEl) {
         const item = this.settingUtils.settings.get(aiEnabledKey);
         item?.setEleVal?.(aiEnabledEl, item.value);
-
-        const wrapper = document.createElement("div");
-        wrapper.className = "things-settings__ai-toggle";
-
-        const copy = document.createElement("div");
-        copy.className = "things-settings__ai-toggle-copy";
-        const label = document.createElement("div");
-        label.className = "things-settings__ai-toggle-title";
-        label.textContent = "启用 AI 功能";
-        const desc = document.createElement("div");
-        desc.className = "things-settings__ai-toggle-desc";
-        desc.textContent = "关闭后隐藏 AI 面板和所有 AI 入口，已有配置会保留";
-        copy.append(label, desc);
-        wrapper.append(copy, aiEnabledEl);
-        aiSection.appendChild(wrapper);
-
-        aiEnabledEl.setAttribute("aria-controls", aiConfigSection.id);
-        aiEnabledEl.setAttribute("aria-expanded", String(aiEnabledEl.checked));
-        aiConfigSection.hidden = !aiEnabledEl.checked;
-        aiEnabledEl.addEventListener("change", async () => {
-          const enabled = aiEnabledEl.checked;
-          await this.settingUtils.setAndSave(aiEnabledKey, enabled);
-          aiConfigSection.hidden = !enabled;
-          aiEnabledEl.setAttribute("aria-expanded", String(enabled));
-          this.thingsApp?.$set?.({ aiEnabled: enabled });
+        const enabledRow = document.createElement('div');
+        enabledRow.className = 'things-settings__category-item';
+        const enabledToggle = document.createElement('label');
+        enabledToggle.className = 'things-settings__ai-toggle';
+        const copy = document.createElement('div');
+        copy.className = 'things-settings__ai-toggle-copy';
+        const title = document.createElement('div');
+        title.className = 'things-settings__ai-toggle-title';
+        title.textContent = '启用 AI 功能';
+        const description = document.createElement('div');
+        description.className = 'things-settings__ai-toggle-desc';
+        description.textContent = '关闭后隐藏 AI 入口，已保存的账号与 API 设置会保留。';
+        copy.append(title, description);
+        enabledToggle.append(copy, aiEnabledEl);
+        enabledRow.appendChild(enabledToggle);
+        generalSection.appendChild(enabledRow);
+        aiEnabledEl.addEventListener('change', () => {
+          generalDraft.set(aiEnabledKey, aiEnabledEl.checked);
+          generalNotice.textContent = '修改尚未保存，点击底部“保存”后生效。';
         });
       }
-
-      // 添加 AI 模式选择
-      const aiModeKey = "aiMode";
-      const aiModeEl = this.settingUtils.getElement(aiModeKey);
-      if (aiModeEl) {
-        const item = this.settingUtils.settings.get(aiModeKey);
-        if (item && item.setEleVal) {
-          item.setEleVal(aiModeEl, item.value);
-        }
-
-        const wrapper = document.createElement("div");
-        wrapper.className = "things-settings__ai-field";
-
-        const label = document.createElement("label");
-        label.style.display = "block";
-        label.style.marginBottom = "4px";
-        label.style.fontWeight = "500";
-        label.textContent = "AI 服务来源";
-        wrapper.appendChild(label);
-
-        const desc = document.createElement("div");
-        desc.className = "things-settings__ai-field-desc";
-        desc.textContent = "选择复用思源内置 AI 设置，或自定义 API 配置";
-        wrapper.appendChild(desc);
-
-        wrapper.appendChild(aiModeEl);
-        aiConfigSection.appendChild(wrapper);
-
-        // 自定义配置容器
-        const customConfigContainer = document.createElement("div");
-        customConfigContainer.id = "custom-ai-config";
-        customConfigContainer.className = "things-settings__ai-custom";
-        customConfigContainer.hidden = (aiModeEl as HTMLSelectElement).value !== "custom";
-
-        // 添加自定义配置项
-        const customKeys = ["aiApiEndpoint", "aiApiKey", "aiModel"];
-        for (const key of customKeys) {
-          const el = this.settingUtils.getElement(key);
-          if (el) {
-            const item = this.settingUtils.settings.get(key);
-            if (item && item.setEleVal) {
-              item.setEleVal(el, item.value);
-            }
-            if (key === "aiApiKey" && el instanceof HTMLInputElement) {
-              el.type = "password";
-              el.autocomplete = "off";
-              el.spellcheck = false;
-            }
-
-            const itemWrapper = document.createElement("div");
-            itemWrapper.className = "things-settings__ai-custom-field";
-
-            const itemLabel = document.createElement("label");
-            itemLabel.style.display = "block";
-            itemLabel.style.marginBottom = "4px";
-            itemLabel.style.fontWeight = "500";
-            itemLabel.style.fontSize = "13px";
-            itemLabel.textContent = item?.title || key;
-            itemWrapper.appendChild(itemLabel);
-
-            if (item?.description) {
-              const itemDesc = document.createElement("div");
-              itemDesc.style.fontSize = "12px";
-              itemDesc.style.color = "var(--b3-theme-on-surface-light)";
-              itemDesc.style.marginBottom = "6px";
-              itemDesc.textContent = item.description;
-              itemWrapper.appendChild(itemDesc);
-            }
-
-            const eventType = (el instanceof HTMLSelectElement) ? 'change' : 'input';
-            el.addEventListener(eventType, async () => {
-              const value = (el as HTMLInputElement | HTMLSelectElement).value;
-              await this.settingUtils.setAndSave(key, value);
-              window.dispatchEvent(new Event("things-ai-config-change"));
-              console.log(`[Things] Setting ${key} saved`);
-            });
-
-            itemWrapper.appendChild(el);
-            customConfigContainer.appendChild(itemWrapper);
-          }
-        }
-
-        aiConfigSection.appendChild(customConfigContainer);
-
-        // 监听 AI 模式变化
-        aiModeEl.addEventListener('change', async () => {
-          const value = (aiModeEl as HTMLSelectElement).value;
-          await this.settingUtils.setAndSave(aiModeKey, value);
-          window.dispatchEvent(new Event("things-ai-config-change"));
-          console.log(`[Things] Setting ${aiModeKey} saved:`, value);
-          
-          // 显示/隐藏自定义配置
-          customConfigContainer.hidden = value !== "custom";
-        });
-      }
-      aiSection.appendChild(aiConfigSection);
+      const generalNotice = document.createElement('p');
+      generalNotice.className = 'things-settings__connection-notice';
+      generalNotice.setAttribute('role', 'status');
+      generalSection.appendChild(generalNotice);
+      const aiView = createAISettingsView({
+        settings: this.settingUtils,
+        changed: () => window.dispatchEvent(new Event('things-ai-config-change')),
+        close: () => dialog.destroy(),
+        openURL: url => {
+          if (url !== 'https://auth.openai.com/codex/device') return;
+          try {
+            const shell = (window as any).require?.('electron')?.shell;
+            if (shell?.openExternal) { void shell.openExternal(url); return; }
+          } catch { /* Browser frontends use an ordinary external tab. */ }
+          window.open(url, '_blank', 'noopener,noreferrer');
+        },
+      });
+      disposeAI = aiView.dispose;
+      this.accountSettingsDisposers.add(disposeAI);
 
       const maintenanceSection = document.createElement("section");
       maintenanceSection.className = "things-settings__section things-settings__maintenance";
       const maintenanceTitle = document.createElement("div");
       maintenanceTitle.className = "things-settings__maintenance-title";
-      maintenanceTitle.textContent = "维护与支持";
+      maintenanceTitle.textContent = "数据管理";
       maintenanceSection.appendChild(maintenanceTitle);
       if (githubUpdateSection) maintenanceSection.appendChild(githubUpdateSection);
 
+      const syncSection = document.createElement('div');
+      syncSection.className = 'things-settings__maintenance-toggle';
+      const syncRow = document.createElement('label');
+      syncRow.className = 'things-settings__ai-toggle';
+      const syncCopy = document.createElement('div');
+      syncCopy.className = 'things-settings__ai-toggle-copy';
+      const syncTitle = document.createElement('div');
+      syncTitle.className = 'things-settings__ai-toggle-title';
+      syncTitle.textContent = '忽略 Things 插件程序同步';
+      const syncDescription = document.createElement('div');
+      syncDescription.className = 'things-settings__ai-toggle-desc';
+      syncDescription.textContent = '关闭后移除 Things 专用忽略规则。任务和设置数据仍按思源原有规则同步。';
+      syncCopy.append(syncTitle, syncDescription);
+      const syncToggle = document.createElement('input');
+      syncToggle.type = 'checkbox';
+      syncToggle.className = 'b3-switch';
+      syncToggle.setAttribute('aria-label', syncTitle.textContent);
+      syncToggle.disabled = true;
+      syncRow.append(syncCopy, syncToggle);
+      const syncStatus = document.createElement('div');
+      syncStatus.className = 'things-settings__ai-toggle-desc';
+      syncStatus.setAttribute('role', 'status');
+      syncStatus.textContent = '正在读取同步规则…';
+      syncSection.append(syncRow, syncStatus);
+      maintenanceSection.appendChild(syncSection);
+      let savedSyncIgnored: boolean | undefined;
+      void readSyncIgnore().then(content => {
+        savedSyncIgnored = hasThingsSyncIgnore(content);
+        syncToggle.checked = savedSyncIgnored;
+        syncToggle.disabled = false;
+        syncStatus.textContent = syncToggle.checked
+          ? '当前忽略插件程序同步。' : '未设置 Things 专用忽略规则；其他同步规则仍然生效。';
+      }).catch(() => {
+        syncStatus.textContent = '无法读取同步规则，请重新打开设置重试。';
+      });
+      syncToggle.addEventListener('change', () => {
+        syncStatus.textContent = '修改尚未保存，点击底部“保存”后生效。';
+      });
+
       const maintenanceActions = document.createElement("div");
-      maintenanceActions.className = "things-settings__footer-actions";
+      maintenanceActions.className = "things-settings__data-actions";
 
       const storageStatus = document.createElement('div');
       storageStatus.textContent = this.store.storage.mode === 'database'
@@ -3047,10 +3059,10 @@ export default class ThingsPlugin extends Plugin {
       maintenanceActions.appendChild(dataButton);
       const reloadDataButton = document.createElement('button');
       reloadDataButton.className = 'things-settings__action-button';
-      reloadDataButton.textContent = '重新加载数据';
+      setRefreshButton(reloadDataButton, '重新加载数据');
       reloadDataButton.addEventListener('click', async () => {
         reloadDataButton.disabled = true;
-        reloadDataButton.textContent = '正在加载…';
+        setRefreshButton(reloadDataButton, '正在重新加载数据', true);
         try {
           await this.refreshStorage();
           storageStatus.textContent = this.store.storage.mode === 'database'
@@ -3066,10 +3078,10 @@ export default class ThingsPlugin extends Plugin {
           showMessage(storageDetails.textContent, 7000, 'error');
         } finally {
           reloadDataButton.disabled = false;
-          reloadDataButton.textContent = '重新加载数据';
+          setRefreshButton(reloadDataButton, '重新加载数据');
         }
       });
-      maintenanceActions.appendChild(reloadDataButton);
+      maintenanceActions.prepend(reloadDataButton);
       migrateButton.addEventListener('click', async () => {
         migrateButton.disabled = true;
         let canRetry = true;
@@ -3185,10 +3197,195 @@ export default class ThingsPlugin extends Plugin {
       bugLink.rel = "noopener noreferrer";
       bugLink.className = "things-settings__action-button";
       bugLink.textContent = "Bug 反馈";
-      maintenanceActions.appendChild(bugLink);
-      maintenanceActions.appendChild(resetButton);
-      settingsEl.appendChild(maintenanceSection);
-      settingsEl.appendChild(maintenanceActions);
+      const dataOperationsTitle = document.createElement('h4');
+      dataOperationsTitle.className = 'things-settings__data-heading';
+      dataOperationsTitle.textContent = '数据操作';
+      const dataOperationsRow = document.createElement('div');
+      dataOperationsRow.className = 'things-settings__feature-row things-settings__data-operation-row';
+      dataOperationsRow.append(dataOperationsTitle, maintenanceActions);
+      maintenanceSection.appendChild(dataOperationsRow);
+      const dangerZone = document.createElement('div');
+      dangerZone.className = 'things-settings__danger-zone';
+      const dangerTitle = document.createElement('h4');
+      dangerTitle.className = 'things-settings__data-heading';
+      dangerTitle.textContent = '重置数据';
+      const dangerDescription = document.createElement('p');
+      dangerDescription.className = 'things-settings__section-desc';
+      dangerDescription.textContent = '清空 Things 任务与分类并恢复默认设置。执行前仍需单独确认。';
+      const dangerCopy = document.createElement('div');
+      dangerCopy.append(dangerTitle, dangerDescription);
+      dangerZone.classList.add('things-settings__feature-row');
+      dangerZone.append(dangerCopy, resetButton);
+      maintenanceSection.appendChild(dangerZone);
+
+      const updatesSection = document.createElement('section');
+      updatesSection.className = 'things-settings__section';
+      const updatesTitle = document.createElement('div');
+      updatesTitle.className = 'things-settings__category-title';
+      updatesTitle.textContent = '同步与更新';
+      updatesSection.appendChild(updatesTitle);
+      if (githubUpdateSection) updatesSection.appendChild(githubUpdateSection);
+      updatesSection.appendChild(syncSection);
+
+      const supportSection = document.createElement('section');
+      supportSection.className = 'things-settings__section';
+      const supportTitle = document.createElement('div');
+      supportTitle.className = 'things-settings__category-title';
+      supportTitle.textContent = '支持与反馈';
+      const supportDescription = document.createElement('p');
+      supportDescription.className = 'things-settings__section-desc';
+      supportDescription.textContent = '遇到问题时，请附上 Things 和思源版本、复现步骤及截图。GitHub 更新失败时，可在报错窗口复制排查信息。';
+      supportSection.appendChild(supportTitle);
+      const supportActions = document.createElement('div');
+      supportActions.className = 'things-settings__inline-actions';
+      supportActions.appendChild(bugLink);
+      const supportRow = document.createElement('div');
+      supportRow.className = 'things-settings__feature-row';
+      supportRow.append(supportDescription, supportActions);
+      supportSection.appendChild(supportRow);
+
+      const layout = document.createElement('div');
+      layout.className = 'things-settings__layout';
+      const navigation = document.createElement('nav');
+      navigation.className = 'things-settings__tabs';
+      navigation.setAttribute('role', 'tablist');
+      navigation.setAttribute('aria-label', '设置分类');
+      navigation.setAttribute('aria-orientation', 'vertical');
+      const content = document.createElement('div');
+      content.className = 'things-settings__content';
+      layout.append(navigation, content);
+
+      const footer = document.createElement('footer');
+      footer.className = 'things-settings__footer';
+      const version = document.createElement('span');
+      version.className = 'things-settings__version';
+      version.textContent = `v${__PLUGIN_VERSION__}`;
+      const footerActions = document.createElement('div');
+      footerActions.className = 'things-settings__actions';
+      const closeButton = document.createElement('button');
+      closeButton.type = 'button';
+      closeButton.className = 'things-settings__action-button things-settings__action-button--primary';
+      closeButton.textContent = '关闭';
+      closeButton.addEventListener('click', () => dialog.destroy());
+      const pageActions = (
+        onSave: () => Promise<void>,
+        controls: Array<HTMLElement | undefined>,
+      ) => {
+        const group = document.createElement('div');
+        group.className = 'things-settings__footer-actions';
+        const cancel = document.createElement('button');
+        cancel.type = 'button'; cancel.className = 'things-settings__action-button'; cancel.textContent = '取消';
+        cancel.addEventListener('click', () => dialog.destroy());
+        const save = document.createElement('button');
+        save.type = 'button'; save.className = 'things-settings__action-button things-settings__action-button--primary'; save.textContent = '保存';
+        save.addEventListener('click', async () => {
+          if (save.disabled) return;
+          save.disabled = true; cancel.disabled = true;
+          const enabled = controls.filter(control => control && !(control as HTMLInputElement).disabled) as HTMLInputElement[];
+          enabled.forEach(control => { control.disabled = true; });
+          try { await onSave(); }
+          catch (error) { showMessage((error as Error).message, 6500, 'error'); }
+          finally { save.disabled = false; cancel.disabled = false; enabled.forEach(control => { control.disabled = false; }); }
+        });
+        group.append(cancel, save);
+        return group;
+      };
+      const generalActions = pageActions(async () => {
+        if (defaultViewEl) generalDraft.set(defaultViewKey, (defaultViewEl as HTMLSelectElement).value);
+        if (tabFollowEl) generalDraft.set(tabFollowKey, tabFollowEl.checked);
+        if (aiEnabledEl) generalDraft.set(aiEnabledKey, aiEnabledEl.checked);
+        try {
+          const changes = await generalDraft.save();
+          this.thingsApp?.$set?.({ aiEnabled: this.settingUtils.get('aiEnabled') !== false });
+          generalNotice.textContent = '本页设置已保存。';
+          if (changes.defaultView !== undefined && changes.defaultView !== 'none') {
+            const updated = await this.ensureCloseTabsOnStart();
+            generalNotice.textContent = updated ? '本页设置已保存，思源启动行为已同步更新。'
+              : 'Things 设置已保存；思源启动行为未能更新，请在思源设置中核对。';
+          }
+        } catch (error) {
+          generalNotice.textContent = '保存失败，未保存的修改仍保留在本页。';
+          throw error;
+        }
+      }, [defaultViewEl, tabFollowEl, aiEnabledEl]);
+      const updatesActions = pageActions(async () => {
+        if (githubUpdateEl) updatesDraft.set(githubUpdateKey, githubUpdateEl.checked);
+        const wantedIgnore = syncToggle.checked;
+        const previousIgnore = savedSyncIgnored;
+        let preferencesSaved = false;
+        try {
+          await updatesDraft.save();
+          preferencesSaved = true;
+          if (previousIgnore !== undefined && wantedIgnore !== previousIgnore) {
+            await setThingsSyncIgnored(wantedIgnore, fetch, previousIgnore);
+            savedSyncIgnored = wantedIgnore;
+          }
+          syncStatus.textContent = previousIgnore === undefined
+            ? '自动更新设置已保存。同步规则尚未读取，未作修改。'
+            : wantedIgnore ? '本页设置已保存，Things 插件程序已排除同步。'
+            : '本页设置已保存，Things 专用忽略规则已移除；请在思源中执行一次同步。';
+        } catch (error) {
+          syncStatus.textContent = preferencesSaved
+            ? '自动更新设置已保存；同步忽略规则保存失败，请重试。'
+            : '本页设置保存失败，未保存的修改仍保留在本页。';
+          throw error;
+        }
+      }, [githubUpdateEl, syncToggle]);
+      footerActions.append(generalActions, aiView.authActions, aiView.apiActions, updatesActions, closeButton);
+      footer.append(version, footerActions);
+
+      const categories = [
+        { key: 'general', title: '通用设置', panel: generalSection, actions: generalActions },
+        { key: 'auth', title: '账号授权', panel: aiView.authPanel, actions: aiView.authActions },
+        { key: 'api', title: 'API 设置', panel: aiView.apiPanel, actions: aiView.apiActions },
+        { key: 'updates', title: '同步与更新', panel: updatesSection, actions: updatesActions },
+        { key: 'data', title: '数据管理', panel: maintenanceSection },
+        { key: 'support', title: '支持与反馈', panel: supportSection },
+      ];
+      const buttons: HTMLButtonElement[] = [];
+      const selectCategory = (key: string) => {
+        this.settingsCategory = key;
+        closeButton.hidden = key !== 'data' && key !== 'support';
+        categories.forEach((category, index) => {
+          const selected = category.key === key;
+          category.panel.hidden = !selected;
+          category.actions?.toggleAttribute('hidden', !selected);
+          buttons[index].setAttribute('aria-selected', String(selected));
+          buttons[index].tabIndex = selected ? 0 : -1;
+        });
+      };
+      const instanceId = `things-settings-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      categories.forEach((category, index) => {
+        const tab = document.createElement('button');
+        tab.type = 'button';
+        tab.className = 'things-settings__tab';
+        tab.textContent = category.title;
+        tab.id = `${instanceId}-tab-${category.key}`;
+        tab.setAttribute('role', 'tab');
+        category.panel.id = `${instanceId}-panel-${category.key}`;
+        category.panel.classList.add('things-settings__panel');
+        category.panel.setAttribute('role', 'tabpanel');
+        category.panel.setAttribute('aria-labelledby', tab.id);
+        category.panel.tabIndex = 0;
+        tab.setAttribute('aria-controls', category.panel.id);
+        tab.addEventListener('click', () => selectCategory(category.key));
+        tab.addEventListener('keydown', event => {
+          let next: number;
+          if (event.key === 'ArrowDown') next = (index + 1) % categories.length;
+          else if (event.key === 'ArrowUp') next = (index - 1 + categories.length) % categories.length;
+          else if (event.key === 'Home') next = 0;
+          else if (event.key === 'End') next = categories.length - 1;
+          else return;
+          event.preventDefault();
+          selectCategory(categories[next].key);
+          buttons[next].focus();
+        });
+        buttons.push(tab);
+        navigation.appendChild(tab);
+        content.appendChild(category.panel);
+      });
+      selectCategory(categories.some(category => category.key === this.settingsCategory) ? this.settingsCategory : 'general');
+      settingsEl.replaceChildren(layout, footer);
 
     }
   }

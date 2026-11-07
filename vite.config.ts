@@ -80,6 +80,7 @@ export default defineConfig(buildTarget === "kernel" ? {
                 { src: "./plugin.json", dest: "./" },
                 { src: "./preview.png", dest: "./" },
                 { src: "./icon.png", dest: "./" },
+                { src: "./third-party/*.txt", dest: "./third-party" },
                 { src: "./asset/overview.jpg", dest: "./asset" }
             ],
         }),

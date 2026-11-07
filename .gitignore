@@ -3,6 +3,7 @@
 .DS_Store
 package-lock.json
 package.zip
+update.json
 node_modules
 dev
 dist

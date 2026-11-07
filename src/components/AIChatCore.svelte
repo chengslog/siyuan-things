@@ -62,16 +62,11 @@
   }
 
   function getAvailableModels(config: AIConfig): AIModelOption[] {
-    if (config.mode === 'custom') {
-      // 自定义模式：只用用户配置的模型
-      if (config.model) {
-        return [{
-          value: config.model,
-          modelName: config.model,
-          label: config.model,
-          providerId: 'custom',
-          providerName: '自定义服务',
-        }];
+    if (config.mode !== 'siyuan') {
+      if (config.model || config.mode === 'chatgpt' || config.mode === 'codex') {
+        return [{ value: config.model, modelName: config.model,
+          label: config.model || '沿用账号默认模型', providerId: config.mode,
+          providerName: config.mode === 'chatgpt' ? 'ChatGPT' : config.mode === 'codex' ? 'Codex 本机登录' : '自定义服务' }];
       }
       return [];
     }

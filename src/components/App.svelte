@@ -6,6 +6,7 @@
   import type { ViewType } from "@/types";
   import type { StoreManager } from "@/stores";
   import type { AIConfig } from "@/services/aiParser";
+  import { readAISettings } from "@/utils/aiSettings";
   import { initAiChat } from "@/stores/aiChat";
 
   export let store: StoreManager;
@@ -233,17 +234,7 @@
   }
 
   // ========== AI 配置 ==========
-  function getAIConfig(): AIConfig {
-    if (!plugin?.settingUtils) {
-      return { mode: "siyuan", endpoint: "", apiKey: "", model: "gpt-4o-mini" };
-    }
-    return {
-      mode: plugin.settingUtils.get("aiMode") || "siyuan",
-      endpoint: plugin.settingUtils.get("aiApiEndpoint") || "https://api.openai.com/v1/chat/completions",
-      apiKey: plugin.settingUtils.get("aiApiKey") || "",
-      model: plugin.settingUtils.get("aiModel") || "gpt-4o-mini"
-    };
-  }
+  function getAIConfig(): AIConfig { return readAISettings(plugin?.settingUtils); }
   let aiConfig = getAIConfig();
 
   // 首次进入 FULL 时初始化 AI 面板宽度：有保存值则用保存值，
