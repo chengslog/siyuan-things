@@ -2,6 +2,7 @@ import type { Plugin } from "siyuan";
 import { fetchSyncPost } from "siyuan";
 import { StorageCoordinator } from '../storage/coordinator.ts';
 import { SiYuanAVClient } from '../storage/avClient.ts';
+import { createKernelRequest } from '../storage/kernelRequest.ts';
 import { inspectLegacyIDB } from './idb';
 import { saveFiles } from '../storage/bridge.ts';
 import { TaskStore } from "./taskStore";
@@ -20,11 +21,7 @@ export class StoreManager {
   private loading?: Promise<void>;
 
   constructor(plugin: Plugin) {
-    const client = new SiYuanAVClient(async (path, body) => {
-      const response = await fetchSyncPost(path, body);
-      if (!response || response.code !== 0) throw new Error(`思源数据库请求失败：${response?.msg || path}`);
-      return response.data;
-    });
+    const client = new SiYuanAVClient(createKernelRequest(fetchSyncPost));
     this.storage = new StorageCoordinator(plugin, client, { inspectLegacyCache: inspectLegacyIDB });
     this.dataPlugin = this.storage.facade as Plugin;
     this.projects = new ProjectStore(this.dataPlugin);

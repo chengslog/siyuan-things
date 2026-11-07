@@ -123,6 +123,23 @@ test('a mobile sync failure reports the error, releases sync state and remains r
   assert.equal(f.plugin.dataServicesReady, true);
 });
 
+test('a closed kernel during shutdown does not show background error dialogs or retry reads', async () => {
+  const f = fixture();
+  f.fail(new Error('思源数据库请求失败：sql: database is closed'));
+  f.plugin.handleSyncStart();
+  await f.plugin.handleSyncEnd();
+  assert.equal(f.plugin.syncInProgress, false);
+  assert.equal(f.calls.loads, 1);
+  assert.equal(f.messages.length, 0);
+  await f.plugin.handleStorageFocus();
+  assert.equal(f.calls.loads, 2);
+  assert.equal(f.plugin.storageRefreshBusy, false);
+  assert.equal(f.messages.length, 0);
+  f.fail();
+  await f.plugin.handleStorageFocus();
+  assert.equal(f.plugin.dataServicesReady, true, 'a live window can recover on the next normal refresh');
+});
+
 test('a hidden or actively edited mobile view is not refreshed in the background', async () => {
   const f = fixture();
   f.document.visibilityState = 'hidden';

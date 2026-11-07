@@ -201,12 +201,19 @@ export default class ThingsPlugin extends Plugin {
     try {
       await this.refreshStorage();
     } catch (error) {
+      // The kernel closes SQLite during shutdown (and may briefly reopen it
+      // during sync). Keep the last snapshot; focus/the existing timer can
+      // refresh later if this window remains open. Do not retry on shutdown.
+      if (this.unloaded || this.isDatabaseClosed(error)) return;
       if (!this.storageRefreshWarningShown) {
         showMessage(`Things 数据库刷新失败：${(error as Error).message}`, 7000, 'error');
         this.storageRefreshWarningShown = true;
       }
     } finally { this.storageRefreshBusy = false; }
   };
+  private isDatabaseClosed(error: unknown): boolean {
+    return /\bsql:\s*database is closed\b/i.test(error instanceof Error ? error.message : String(error));
+  }
   private handleSyncStart = () => {
     if (this.isMobileFrontend) {
       this.syncInProgress = true;
@@ -230,9 +237,12 @@ export default class ThingsPlugin extends Plugin {
         this.renderDock(this.dockElement);
       }
     } catch (error) {
-      showMessage(`Things 同步后加载失败：${(error as Error).message}。可在设置中重新加载数据。`, 7000, 'error');
+      if (!this.unloaded && !this.isDatabaseClosed(error)) {
+        showMessage(`Things 同步后加载失败：${(error as Error).message}。可在设置中重新加载数据。`, 7000, 'error');
+      }
     } finally {
       this.syncInProgress = false;
+      if (this.unloaded) return;
       if (!this.isMobileFrontend && this.hasDockRestoreIntent()) {
         this.setDockRestoreIntent(POST_SYNC_DOCK_RESTORE_TTL);
       }
