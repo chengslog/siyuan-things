@@ -24,21 +24,27 @@ export class SiYuanAVClient {
   }
 
   async addRow(avId: string, itemId: string, title: string): Promise<void> {
+    return this.addRows(avId, [{ id: itemId, title }]);
+  }
+
+  async addRows(avId: string, rows: Array<{ id: string; title: string }>): Promise<void> {
+    if (!rows.length) return;
+    if (new Set(rows.map(row => row.id)).size !== rows.length) throw new Error('Duplicate Things row IDs');
     // The caller persists itemId before insertion. A lost response can be retried without duplicating the item.
     const av = await this.getAV(avId);
     const primary = av.keyValues.find((entry: any) => entry.key?.type === 'block');
-    const existing = primary?.values?.find((value: any) => value.blockID === itemId);
-    if (existing) {
-      if (existing.isDetached !== true) throw new Error('Things 条目 ID 已被绑定记录占用');
-      return;
+    const present = new Map<string, any>((primary?.values || []).map((value: any) => [value.blockID, value]));
+    for (const row of rows) {
+      if (present.has(row.id) && present.get(row.id).isDetached !== true) throw new Error('Things 条目 ID 已被绑定记录占用');
     }
-    await this.request('/api/av/addAttributeViewBlocks', {
-      avID: avId,
-      srcs: [{ id: itemId, itemID: itemId, isDetached: true, content: title }],
-      ignoreDefaultFill: true,
+    const missing = rows.filter(row => !present.has(row.id));
+    for (let offset = 0; offset < missing.length; offset += 100) await this.request('/api/av/addAttributeViewBlocks', {
+      avID: avId, srcs: missing.slice(offset, offset + 100).map(row => ({ id: row.id, itemID: row.id, isDetached: true, content: row.title })), ignoreDefaultFill: true,
     });
+    if (!missing.length) return;
     const added = await this.getAV(avId);
-    if (!added.keyValues.find((entry: any) => entry.key?.type === 'block')?.values?.some((value: any) => value.blockID === itemId)) {
+    const inserted = new Map<string, any>((added.keyValues.find((entry: any) => entry.key?.type === 'block')?.values || []).map((value: any) => [value.blockID, value]));
+    if (rows.some(row => !inserted.has(row.id) || inserted.get(row.id).isDetached !== true)) {
       throw new Error('Things 数据库新增条目后校验失败');
     }
   }

@@ -20,7 +20,8 @@ function section(title: string) {
   return panel;
 }
 function selectField(title: string, options: Array<[string, string]>, value: string) {
-  const label = element('label', 'things-settings__connection-field', title);
+  const label = element('label', 'things-settings__connection-field');
+  label.appendChild(element('span', 'things-settings__field-label', title));
   const input = element('select', 'b3-select');
   for (const [key, text] of options) input.add(new Option(text, key));
   input.value = value;
@@ -58,7 +59,7 @@ export function createAISettingsView(options: {
   const method = selectField('授权方式', [['chatgpt', 'ChatGPT 账号授权'], ['codex', 'Codex 本机登录']],
     settings.get('aiMode') === 'codex' ? 'codex' : settings.get('aiAccountProvider') || 'chatgpt');
   const card = element('div', 'things-settings__account-card');
-  const accountCopy = element('div');
+  const accountCopy = element('div', 'things-settings__account-copy');
   const accountName = element('strong');
   const accountDescription = element('p');
   const accountBadge = element('span', 'things-settings__account-badge', '尚未检查');
@@ -250,9 +251,9 @@ export function createAISettingsView(options: {
   const apiNotice = element('p', 'things-settings__connection-notice');
   apiNotice.setAttribute('role', 'status');
   apiFields.addEventListener('input', () => { apiNotice.textContent = '修改尚未保存，点击底部“保存”后生效。'; });
-  const providerRow = element('div', 'things-settings__field-action-row');
-  providerRow.append(provider.label, apiOperations);
-  apiPanel.append(providerRow, apiFields, apiHint, apiNotice);
+  const apiHeading = element('div', 'things-settings__panel-heading');
+  apiHeading.append(apiPanel.querySelector('.things-settings__category-title')!, apiOperations);
+  apiPanel.append(apiHeading, apiNotice, provider.label, apiFields, apiHint);
   const drafts = new Map<string, { endpoint: string; model: string; key: string }>();
   let currentProvider = provider.input.value;
   function changeAPIProvider() {
@@ -260,8 +261,8 @@ export function createAISettingsView(options: {
     const preset = API_PRESETS[current];
     if (!preset) return;
     apiFields.hidden = current === 'siyuan';
-    apiHint.textContent = current === 'siyuan' ? '使用思源已配置并启用的 AI 服务和模型，无需在这里重复填写。'
-      : '兼容 OpenAI 的 API。地址可填写 /v1，也可填写完整的 /chat/completions 地址。';
+    apiHint.textContent = current === 'siyuan' ? '使用思源已配置的 AI 服务与模型。'
+      : '兼容 OpenAI API，支持 /v1 或完整对话地址。';
     apiNotice.textContent = '';
   }
   provider.input.addEventListener('change', () => {

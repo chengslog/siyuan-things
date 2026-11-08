@@ -9,6 +9,7 @@ import { TaskStore } from "./taskStore";
 import { ProjectStore } from "./projectStore";
 import { AreaStore } from "./areaStore";
 import { TagStore } from "./tagStore";
+import { chooseStorageLocation } from '../storage/selectionView';
 
 export class StoreManager {
   readonly tasks: TaskStore;
@@ -22,7 +23,7 @@ export class StoreManager {
 
   constructor(plugin: Plugin) {
     const client = new SiYuanAVClient(createKernelRequest(fetchSyncPost));
-    this.storage = new StorageCoordinator(plugin, client, { inspectLegacyCache: inspectLegacyIDB });
+    this.storage = new StorageCoordinator(plugin, client, { inspectLegacyCache: inspectLegacyIDB, choose: chooseStorageLocation });
     this.dataPlugin = this.storage.facade as Plugin;
     this.projects = new ProjectStore(this.dataPlugin);
     this.tasks = new TaskStore(this.dataPlugin, (projectId) => this.projects.get(projectId)?.status);

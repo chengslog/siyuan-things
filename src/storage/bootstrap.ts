@@ -1,5 +1,6 @@
 import { TABLE_NAMES, TABLES, getTableSpecs, type TableName } from './avSchema.ts';
 import { newSiyuanId, SiYuanAVClient } from './avClient.ts';
+import { discoverDatabase, markDatabase, chooseNotebook, withDatabaseInitLock, CENTER_INITIALIZING, type DiscoveryOptions } from './discovery.ts';
 
 export const STORAGE_BINDING_FILE = 'things-database-binding.json';
 export const STORAGE_BOOTSTRAP_FILE = 'things-database-bootstrap.json';
@@ -56,7 +57,7 @@ export function validateBinding(value: any): asserts value is Binding {
 function validateIntent(value: any): asserts value is BootstrapIntent {
   const fail = () => { throw new Error('Things 数据库初始化记录损坏，请先恢复记录'); };
   if (![1, 2].includes(value?.schemaVersion) || !isId(value.docId) || !isId(value.token)
-    || value.notebookName !== `Things 初始化 ${value.token}`
+    || (value.notebookName !== '数据库' && value.notebookName !== `Things 初始化 ${value.token}`)
     || !['planned', 'building', 'complete'].includes(value.phase)
     || (value.notebookId !== '' && !isId(value.notebookId))
     || !Array.isArray(value.readyTables) || value.readyTables.some((name: any) => !TABLE_NAMES.includes(name))
@@ -101,17 +102,16 @@ async function getBlock(client: SiYuanAVClient, id: string): Promise<any | undef
 }
 
 /** Validates an existing binding only. Never creates documents, tables, or replacement fields. */
-export async function verifyDatabaseBinding(client: SiYuanAVClient, binding: Binding): Promise<void> {
+export async function verifyDatabaseBinding(client: SiYuanAVClient, binding: Binding, checkSchema = true): Promise<void> {
   validateBinding(binding);
   const specs = getTableSpecs(binding.schemaVersion);
-  const notebooks = (await client.request('/api/notebook/lsNotebooks', {}))?.notebooks;
+  const notebooks = (checkSchema ? await client.request('/api/notebook/lsNotebooks', {})
+    : (await Promise.all([client.request('/api/notebook/lsNotebooks', {}), client.request('/api/sqlite/flushTransaction', {})]))[0])?.notebooks;
   if (!Array.isArray(notebooks)) throw new Error('Things 无法读取笔记本列表');
-  const notebook = notebooks.find((item: any) => item.id === binding.notebookId);
-  if (!notebook || notebook.closed) throw new Error('Things 数据笔记本不存在或已关闭，请打开原笔记本');
   // One index barrier and one query cover the center document and all carriers.
   // IDs have already passed validateBinding; keep creation's per-write barriers
   // in getBlock, since freshly written blocks still need their own visibility check.
-  await client.request('/api/sqlite/flushTransaction', {});
+  if (checkSchema) await client.request('/api/sqlite/flushTransaction', {});
   const ids = [binding.docId, ...TABLE_NAMES.map(name => binding.tables[name].blockId)];
   const rows = await client.request('/api/query/sql', {
     stmt: `SELECT id, root_id, box, type, markdown FROM blocks WHERE id IN (${ids.map(id => `'${id}'`).join(',')}) LIMIT ${ids.length}`,
@@ -120,16 +120,23 @@ export async function verifyDatabaseBinding(client: SiYuanAVClient, binding: Bin
   if (!Array.isArray(rows)) throw new Error('Things 无法确认数据中心文档是否存在');
   const blocks = new Map(rows.map((row: any) => [row.id, row]));
   const doc = blocks.get(binding.docId);
-  if (!doc || doc.type !== 'd' || doc.box !== binding.notebookId) throw new Error('Things 数据中心文档不存在，已停止自动新建');
+  if (!doc || doc.type !== 'd') {
+    if (notebooks.some((item: any) => item.closed)) throw new Error('Things 数据中心不可访问，存在已关闭的笔记本；请打开后重试，不会新建空库');
+    throw new Error('Things 数据中心文档不存在或尚未同步，已停止自动新建');
+  }
+  const notebook = notebooks.find((item: any) => item.id === doc.box);
+  if (!notebook || notebook.closed) throw new Error('Things 数据笔记本不存在或已关闭，请打开实际所在的笔记本');
   for (const name of TABLE_NAMES) {
     const table = binding.tables[name];
     const carrier = blocks.get(table.blockId);
-    if (!carrier || carrier.box !== binding.notebookId || carrier.type !== 'av' || !String(carrier.markdown || '').includes(table.avId)) {
+    if (!carrier || carrier.box !== doc.box || carrier.type !== 'av' || !String(carrier.markdown || '').includes(table.avId)
+      || (table.docId && table.docId !== carrier.root_id)) {
       throw new Error(`Things「${specs[name].name}」的数据库承载块缺失或已替换`);
     }
   }
   // These independent reads have no write ordering dependency. Validate every
   // table before returning, even though network waits now overlap.
+  if (!checkSchema) { binding.notebookId = doc.box; return; }
   const avs = await Promise.all(TABLE_NAMES.map(name => client.getAV(binding.tables[name].avId)));
   for (const [index, name] of TABLE_NAMES.entries()) {
     const table = binding.tables[name];
@@ -143,6 +150,7 @@ export async function verifyDatabaseBinding(client: SiYuanAVClient, binding: Bin
       }
     }
   }
+  binding.notebookId = doc.box;
 }
 
 function plan(): BootstrapIntent {
@@ -152,7 +160,7 @@ function plan(): BootstrapIntent {
     tables[name] = { avId: newSiyuanId(), blockId: newSiyuanId(), docId: newSiyuanId(), keys: {} };
     for (const column of TABLES[name].columns) tables[name].keys[column.field] = newSiyuanId();
   }
-  return { schemaVersion: 2, token, notebookName: `Things 初始化 ${token}`, notebookId: '', docId: newSiyuanId(), tables, phase: 'planned', readyTables: [], createdDocs: [] };
+  return { schemaVersion: 2, token, notebookName: '数据库', notebookId: '', docId: newSiyuanId(), tables, phase: 'planned', readyTables: [], createdDocs: [] };
 }
 
 async function createDoc(storage: SettingsStore, client: SiYuanAVClient, intent: BootstrapIntent, id: string, path: string, markdown: string): Promise<void> {
@@ -161,7 +169,8 @@ async function createDoc(storage: SettingsStore, client: SiYuanAVClient, intent:
     if (exists.type !== 'd' || exists.box !== intent.notebookId) throw new Error('Things 文档 ID 已被其他内容占用');
   } else {
     if (intent.createdDocs.includes(id)) throw new Error('Things 已创建的数据文档丢失，已停止自动新建');
-    await client.request('/api/filetree/createDocWithMd', { notebook: intent.notebookId, id, path, markdown });
+    await client.request('/api/filetree/createDocWithMd', { notebook: intent.notebookId, id, path, markdown,
+      ...(id !== intent.docId ? { parentID: intent.docId } : {}) });
     const created = await waitForBlock(client, id);
     if (created.type !== 'd' || created.box !== intent.notebookId) throw new Error('Things 数据文档创建后校验失败');
   }
@@ -190,30 +199,44 @@ async function waitForAV(client: SiYuanAVClient, avId: string, predicate: (av: a
   throw new Error('Things 数据库配置写入后尚未验证完成，下次启动可继续');
 }
 
-async function initialize(storage: SettingsStore, client: SiYuanAVClient): Promise<Binding> {
+async function initialize(storage: SettingsStore, client: SiYuanAVClient, options: DiscoveryOptions): Promise<Binding> {
   const existing = await storage.loadData(STORAGE_BINDING_FILE);
   if (existing !== undefined && existing !== null && existing !== '') {
     await verifyDatabaseBinding(client, existing);
+    await markDatabase(client, existing);
+    await persist(storage, STORAGE_BINDING_FILE, existing);
     return existing;
   }
   let intent: BootstrapIntent = await storage.loadData(STORAGE_BOOTSTRAP_FILE);
   if (intent) {
     validateIntent(intent);
   } else {
+    const recovered = await discoverDatabase(storage, client, options);
+    if (recovered) {
+      await markDatabase(client, recovered);
+      await persist(storage, STORAGE_BINDING_FILE, recovered);
+      return recovered;
+    }
     intent = plan();
     await persist(storage, STORAGE_BOOTSTRAP_FILE, intent);
   }
 
   const notebooks = (await client.request('/api/notebook/lsNotebooks', {}))?.notebooks;
   if (!Array.isArray(notebooks)) throw new Error('Things 无法读取笔记本列表');
+  const center = await getBlock(client, intent.docId);
+  if (center?.type === 'd' && center.box !== intent.notebookId) {
+    intent.notebookId = center.box;
+    intent.phase = intent.phase === 'planned' ? 'building' : intent.phase;
+    await persist(storage, STORAGE_BOOTSTRAP_FILE, intent);
+  }
   if (intent.notebookId) {
     const found = notebooks.find((item: any) => item.id === intent.notebookId);
     if (!found || found.closed) throw new Error('Things 正在初始化的笔记本缺失或已关闭');
   } else {
     // Only the unique name saved before create is eligible for ambiguous-response recovery.
-    const matches = notebooks.filter((item: any) => item.name === intent.notebookName);
-    if (matches.length > 1) throw new Error('Things 初始化笔记本存在重复候选，无法安全继续');
-    const created = matches[0] || (await client.request('/api/notebook/createNotebook', { name: intent.notebookName }))?.notebook;
+    const created = intent.notebookName === '数据库'
+      ? await chooseNotebook(storage, client, options)
+      : notebooks.find((item: any) => item.name === intent.notebookName);
     if (!isId(created?.id) || created.closed) throw new Error('Things 创建数据笔记本失败');
     intent.notebookId = created.id;
     intent.phase = 'building';
@@ -224,11 +247,12 @@ async function initialize(storage: SettingsStore, client: SiYuanAVClient): Promi
   const hiddenFields = new Set([...HIDDEN_FIELDS, ...(intent.schemaVersion === 2 ? ['notesLink'] : [])]);
   const links = TABLE_NAMES.map((name) => `- [${specs[name].name}](siyuan://blocks/${intent.tables[name].docId})`).join('\n');
   await createDoc(storage, client, intent, intent.docId, '/Things 数据中心', `# Things 数据中心\n\n本页由 Things 创建，数据库承载任务数据。请保留系统字段。\n\n${links}\n`);
+  if (intent.phase !== 'complete') await client.request('/api/attr/setBlockAttrs', { id: intent.docId, attrs: { [CENTER_INITIALIZING]: intent.token } });
 
   for (const name of TABLE_NAMES) {
     const table = intent.tables[name];
     const spec = specs[name];
-    await createDoc(storage, client, intent, table.docId!, `/Things 数据中心/${spec.name}`, `# ${spec.name}\n`);
+    await createDoc(storage, client, intent, table.docId!, `/${spec.name}`, `# ${spec.name}\n`);
     const carrier = await getBlock(client, table.blockId);
     if (!carrier) {
       if (intent.readyTables.includes(name)) throw new Error(`Things「${spec.name}」已完成初始化但承载块丢失`);
@@ -311,23 +335,25 @@ async function initialize(storage: SettingsStore, client: SiYuanAVClient): Promi
   }
   const binding: Binding = { schemaVersion: intent.schemaVersion, notebookId: intent.notebookId, docId: intent.docId, tables: clone(intent.tables) };
   await verifyDatabaseBinding(client, binding);
-  const finalName = notebooks.some((item: any) => item.name === 'Things' && item.id !== binding.notebookId) ? `Things ${intent.token.slice(-7)}` : 'Things';
-  await client.request('/api/notebook/renameNotebook', { notebook: binding.notebookId, name: finalName });
+  await markDatabase(client, binding);
+  const discovered = await discoverDatabase(storage, client, options);
+  if (!discovered || discovered.docId !== binding.docId) {
+    if (!discovered) throw new Error('新数据中心尚未完整可见，请同步完成后重试');
+    await persist(storage, STORAGE_BINDING_FILE, discovered);
+    return discovered;
+  }
   await persist(storage, STORAGE_BINDING_FILE, binding);
   intent.phase = 'complete';
   await persist(storage, STORAGE_BOOTSTRAP_FILE, intent);
   return binding;
 }
 
-export function ensureDatabases(storage: SettingsStore, client: SiYuanAVClient): Promise<Binding> {
+export function ensureDatabases(storage: SettingsStore, client: SiYuanAVClient, options: DiscoveryOptions = {}): Promise<Binding> {
   const pending = inflight.get(storage);
   if (pending) return pending;
-  const operation = () => initialize(storage, client);
+  const operation = () => initialize(storage, client, options);
   // Serializes tabs/windows on one origin; multi-device bootstrap is still a single-writer operation.
-  const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
-  const promise: Promise<Binding> = (async () => locks
-    ? await locks.request('siyuan-things-database-bootstrap-v1', operation)
-    : await operation())().finally(() => inflight.delete(storage));
+  const promise = withDatabaseInitLock(operation).finally(() => inflight.delete(storage));
   inflight.set(storage, promise);
   return promise;
 }

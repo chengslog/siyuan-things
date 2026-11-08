@@ -18,24 +18,26 @@ function setup(version: 1 | 2 = 1) {
   const tables: any = {}, documents = new Map<string, string>();
   const native = memoryNativeDocuments(documents);
   const binding: Binding = { schemaVersion: version, notebookId: '20261028000000-notebok', docId: '20261028000000-center0', tables: {} as any };
-  let writes = 0;
+  let writes = 0, reads = 0;
+  const readLog: string[] = [], cellWrites: Array<{ table: string; cells: any[] }> = [];
   for (const name of TABLE_NAMES) {
     const schema = getTableSpecs(version)[name];
     const keys = Object.fromEntries([schema.titleField, ...schema.columns.map(column => column.field)].map(field => [field, `${name}-${field}`]));
     binding.tables[name] = { avId: name, blockId: `${name}-block`, keys };
     tables[name] = { id: name, keyValues: [
       { key: { id: keys[schema.titleField], type: 'block' }, values: [] },
-      ...schema.columns.map(column => ({ key: { id: keys[column.field], type: column.type }, values: [] })),
+      ...schema.columns.map(column => ({ key: { id: keys[column.field], type: column.type, ...(column.relation ? { relation: { avID: column.relation } } : {}) }, values: [] })),
     ] };
   }
   const client: any = {
-    async getAV(id: string) { return clone(tables[id]); },
+    async getAV(id: string) { reads++; readLog.push(id); return clone(tables[id]); },
     async addRow(avId: string, id: string, title: string) {
       const primary = tables[avId].keyValues[0];
       if (!primary.values.some((value: any) => value.blockID === id)) primary.values.push({ blockID: id, type: 'block', isDetached: true, block: { content: title } });
       writes++;
     },
     async setCells(avId: string, cells: any[]) {
+      cellWrites.push({ table: avId, cells: clone(cells) });
       for (const patch of cells) {
         const entry = tables[avId].keyValues.find((entry: any) => entry.key.id === patch.keyID);
         assert.ok(entry, `missing column ${patch.keyID}`);
@@ -70,10 +72,171 @@ function setup(version: 1 | 2 = 1) {
   async function change(table: string, id: string, field: string, type: string, value: any) {
     await client.setCells(table, [{ itemID: item(table, id), keyID: `${table}-${field}`, value: encodeCell(type, value) }]);
   }
-  return { binding, client, tables, documents, native, item, change, writes: () => writes, repo: new AVRepository(client, binding) };
+  return { binding, client, tables, documents, native, item, change, readLog, cellWrites, writes: () => writes, reads: () => reads, repo: new AVRepository(client, binding) };
 }
 
 const richNotes = new RichNotes(() => memoryCodec);
+
+test('incremental task edits read only the task table and never rewrite unrelated rows', async () => {
+  const env = setup(2), source = empty();
+  source.tasks = Array.from({ length: 100 }, (_, index) => task(`task-${index}`, { order: index }));
+  await env.repo.import(source);
+  const base = await env.repo.load(), desired = clone(base);
+  desired.tasks[0].priority = 'high';
+  assert.equal(env.repo.canWriteIncrementally(base, desired), true);
+  env.readLog.length = 0;
+  const write = await env.repo.prepareIncrementalWrite(base, desired);
+  await env.change('tasks', 'task-99', 'title', 'block', 'Concurrent native edit');
+  env.cellWrites.length = 0;
+  await write.save(desired, base);
+  const saved = await write.readback();
+  assert.deepEqual(env.readLog, ['tasks', 'tasks', 'tasks']);
+  assert.equal(saved.tasks[0].priority, 'high');
+  assert.equal(saved.tasks[99].title, 'Concurrent native edit');
+  assert.ok(env.cellWrites.every(call => call.table === 'tasks' && call.cells.every(cell => cell.itemID === env.item('tasks', 'task-0'))));
+});
+
+test('incremental deletes preserve array order without renumbering the remaining task rows', async () => {
+  const env = setup(2), source = empty();
+  source.tasks = [task('first'), task('second'), task('third')];
+  await env.repo.import(source);
+  let base = await env.repo.load();
+  for (const removed of ['first', 'second']) {
+    const desired = clone(base); desired.tasks = desired.tasks.filter(row => row.id !== removed);
+    const write = await env.repo.prepareIncrementalWrite(base, desired);
+    env.cellWrites.length = 0;
+    await write.save(desired, base);
+    assert.equal(env.cellWrites.length, 0, 'deleting a row does not patch other task indices');
+    base = await write.readback();
+  }
+  const desired = clone(base); desired.tasks.push(task('last'));
+  const write = await env.repo.prepareIncrementalWrite(base, desired);
+  await write.save(desired, base);
+  assert.deepEqual((await write.readback()).tasks.map(row => row.id), ['third', 'last']);
+  assert.deepEqual((await env.repo.load()).tasks.map(row => row.id), ['third', 'last']);
+});
+
+test('incremental writes retain same-field conflict checks after preparation', async () => {
+  const env = setup(2), source = empty(); source.tasks = [task('one')];
+  await env.repo.import(source);
+  const base = await env.repo.load(), desired = clone(base); desired.tasks[0].title = 'Plugin';
+  const write = await env.repo.prepareIncrementalWrite(base, desired);
+  await env.change('tasks', 'one', 'title', 'block', 'Native');
+  const before = env.writes();
+  await assert.rejects(write.save(desired, base), AVConflictError);
+  assert.equal(env.writes(), before);
+  assert.equal((await env.repo.load()).tasks[0].title, 'Native');
+});
+
+test('incremental preparation validates fresh relation targets and rejects a rewired schema', async () => {
+  const env = setup(2), source = empty(); source.tasks = [task('one')];
+  await env.repo.import(source);
+  const base = await env.repo.load(), desired = clone(base); desired.tasks[0].priority = 'high';
+  env.tables.tasks.keyValues.find(entry => entry.key.id === 'tasks-tags').key.relation.avID = 'foreign-database';
+  const before = env.writes();
+  await assert.rejects(env.repo.prepareIncrementalWrite(base, desired), /关联|数据库列/);
+  assert.equal(env.writes(), before);
+});
+
+test('incremental writes keep a native row added between prepare and save', async () => {
+  const env = setup(2), source = empty(); source.tasks = [task('one')];
+  await env.repo.import(source);
+  const base = await env.repo.load(), desired = clone(base); desired.tasks[0].priority = 'high';
+  const write = await env.repo.prepareIncrementalWrite(base, desired);
+  await env.client.addRow('tasks', '20261028000000-native1', 'Native new task');
+  await write.save(desired, base);
+  const saved = await write.readback();
+  assert.equal(saved.tasks.length, 2);
+  assert.equal(saved.tasks.find(row => row.id === 'one')?.priority, 'high');
+  assert.equal(saved.tasks.find(row => row.id !== 'one')?.title, 'Native new task');
+});
+
+test('creating an empty note leaves native text added during insertion untouched', async () => {
+  const env = setup(2), source = empty(); source.tasks = [task('one')];
+  const add = env.client.addRow;
+  env.client.addRow = async (table: string, id: string, title: string) => {
+    await add(table, id, title);
+    if (table === 'tasks') await env.client.setCells(table, [{ itemID: id, keyID: 'tasks-notes', value: encodeCell('text', 'Native during insertion') }]);
+  };
+  // A fresh save accepts the concurrent native note rather than blanking it during initialization.
+  const base = await env.repo.load(), write = await env.repo.prepareIncrementalWrite(base, source);
+  await write.save(source, base);
+  assert.equal((await write.readback()).tasks[0].notes, 'Native during insertion');
+});
+
+test('incremental scalar edits preserve an image removed natively while the save is pending', async () => {
+  const env = setup(2), source = empty(); source.tasks = [task('one', { notes: '**Note**\n\n![image](assets/one.png)' })];
+  await env.repo.import(source);
+  const base = await env.repo.load(), desired = clone(base); desired.tasks[0].priority = 'high';
+  const write = await env.repo.prepareIncrementalWrite(base, desired);
+  await env.change('tasks', 'one', 'notesAssets', 'mAsset', []);
+  await write.save(desired, base);
+  const saved = await write.readback();
+  assert.equal(saved.tasks[0].priority, 'high');
+  assert.ok(!saved.tasks[0].notes.includes('one.png'));
+  assert.deepEqual(richCell(env, 'tasks', 'one', 'notesAssets').mAsset, []);
+});
+
+test('incremental scalar edits leave asset-only native notes in their original columns', async () => {
+  const env = setup(2), source = empty(); source.tasks = [task('one')];
+  await env.repo.import(source);
+  const base = await env.repo.load(), desired = clone(base); desired.tasks[0].priority = 'high';
+  const write = await env.repo.prepareIncrementalWrite(base, desired);
+  await env.change('tasks', 'one', 'notesAssets', 'mAsset', [{ type: 'image', content: 'assets/native.png', name: 'Native image' }]);
+  await write.save(desired, base);
+  const saved = await write.readback();
+  assert.equal(saved.tasks[0].priority, 'high');
+  assert.equal((saved.tasks[0].notes.match(/native\.png/g) || []).length, 1);
+  assert.equal(richCell(env, 'tasks', 'one', 'notes'), undefined);
+});
+
+test('incremental note edits reject an asset conflict rather than resurrecting a removed image', async () => {
+  const env = setup(2), source = empty(); source.tasks = [task('one', { notes: '**Note**\n\n![image](assets/one.png)' })];
+  await env.repo.import(source);
+  const base = await env.repo.load(), desired = clone(base); desired.tasks[0].notes = '**Changed**\n\n![image](assets/one.png)';
+  const write = await env.repo.prepareIncrementalWrite(base, desired);
+  await env.change('tasks', 'one', 'notesAssets', 'mAsset', []);
+  await assert.rejects(write.save(desired, base), AVConflictError);
+  assert.deepEqual(richCell(env, 'tasks', 'one', 'notesAssets').mAsset, []);
+});
+
+test('ordinary loads read each table once and subsequent loads still observe native edits', async () => {
+  const env = setup(2), source = empty();
+  source.tasks = [task('one')];
+  await env.repo.import(source);
+  const before = env.reads();
+  assert.equal((await env.repo.load()).tasks[0].title, 'Task');
+  assert.equal(env.reads() - before, TABLE_NAMES.length);
+  await env.change('tasks', 'one', 'title', 'block', 'Native changed');
+  const next = env.reads();
+  assert.equal((await env.repo.load()).tasks[0].title, 'Native changed');
+  assert.equal(env.reads() - next, TABLE_NAMES.length);
+});
+
+test('ordinary saves share one fresh table read across identity recovery, adoption and merge', async () => {
+  const env = setup(2), source = empty();
+  source.tasks = [task('one')];
+  await env.repo.import(source);
+  const base = await env.repo.load(), desired = clone(base);
+  desired.tasks[0].priority = 'high';
+  await env.change('tasks', 'one', 'title', 'block', 'Native changed');
+  const before = env.reads();
+  await env.repo.saveSnapshot(desired, base);
+  assert.equal(env.reads() - before, TABLE_NAMES.length);
+  const saved = await env.repo.load();
+  assert.equal(saved.tasks[0].priority, 'high');
+  assert.equal(saved.tasks[0].title, 'Native changed', 'fresh merge preserves unrelated native edits');
+});
+
+test('adopting a native row rereads the modified database before publishing its identity', async () => {
+  const env = setup(2);
+  await env.client.addRow('tasks', '20261028000000-native1', 'Native task');
+  const before = env.reads(), saved = await env.repo.load();
+  assert.equal(env.reads() - before, TABLE_NAMES.length * 2);
+  assert.equal(saved.tasks[0].title, 'Native task');
+  assert.ok(saved.tasks[0].id);
+  assert.equal((await env.repo.load()).tasks[0].id, saved.tasks[0].id);
+});
 function richCell(env: ReturnType<typeof setup>, table: string, id: string, field: string): any {
   return env.tables[table].keyValues.find((entry: any) => entry.key.id === `${table}-${field}`).values.find((cell: any) => cell.blockID === env.item(table, id));
 }
@@ -194,13 +357,16 @@ test('V2 checks again immediately before and after reserving each rich write', a
     const env = setup(2), source = empty(); source.tasks = [task('one', { notes: 'Original' })];
     await env.repo.import(source); const base = await env.repo.load(), desired = clone(base);
     desired.tasks[0].notes = 'Plugin';
-    const original = env.client.setCells, getAV = env.client.getAV;
-    let reads = 0, edited = false;
+    const original = env.client.setCells;
+    let edited = false;
     const edit = async () => { edited = true; await original('tasks', [{ itemID: env.item('tasks', 'one'), keyID: 'tasks-notes', value: richNotes.prepare('Native raced').cell }]); };
-    if (moment === 'before') env.client.getAV = async (av: string) => {
-      if (av === 'tasks' && ++reads === 4) await edit();
-      return getAV(av);
-    };
+    if (moment === 'before') {
+      const repo = env.repo as any, write = repo.writeRichNotes.bind(repo);
+      repo.writeRichNotes = async (...args: any[]) => {
+        if (!edited && args[0] === 'tasks') await edit();
+        return write(...args);
+      };
+    }
     else env.client.setCells = async (av: string, cells: any[]) => {
       await original(av, cells);
       if (!edited && cells.some(cell => cell.keyID === 'tasks-extra' && JSON.parse(cell.value.text.content).richNotes?.pending)) await edit();
@@ -321,11 +487,14 @@ test('a named native row is adopted once with valid defaults, while an empty dra
 });
 
 test('import resumes if row creation succeeded but identity or other cell writes failed', async () => {
-  for (const failureAt of [1, 3]) {
+  for (const failureAt of ['identity', 'content']) {
     const env = setup(), snapshot = empty(); snapshot.tasks = [task('one'), task('two')];
     const write = env.client.setCells.bind(env.client);
-    let calls = 0;
-    env.client.setCells = async (...args: any[]) => { if (++calls === failureAt) throw new Error('Injected interruption'); return write(...args); };
+    env.client.setCells = async (...args: any[]) => {
+      const identity = args[1].every((cell: any) => cell.keyID === 'tasks-id');
+      if ((failureAt === 'identity') === identity) throw new Error('Injected interruption');
+      return write(...args);
+    };
     await assert.rejects(env.repo.import(snapshot), /Injected/);
     env.client.setCells = write;
     await env.repo.import(snapshot);

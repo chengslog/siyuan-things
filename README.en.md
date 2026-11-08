@@ -63,7 +63,13 @@ Download `package.zip` from GitHub Releases, extract it to `<SiYuan workspace>/d
 - Click `Things Task Manager` in SiYuan's plugin menu to open settings directly. The optional **Follow tabs in sidebar** setting can restore SiYuan's native independent tab/sidebar behavior; open the task manager itself from the Things Dock on the left.
 - If the Marketplace download channel is temporarily unavailable, enable and save **Update automatically from GitHub**, or click the refresh icon beside that setting. Startup checks ask before installing; manual checks keep Settings open and use a dedicated card for download, verification, installation, reload progress, cancellation, and retry. After a successful update, **Reopen Things** closes the stale tab, loads the new instance, and restores the sidebar instead of silently replacing the plugin.
 
+The compact settings icon before the version at the bottom of the sidebar opens Things settings directly. Actions sit beside the heading for the feature they affect: Test Connection belongs to the API Settings heading, while provider selection remains a form field. Descriptions use the full row below the heading.
+
 ## Local development
+
+Task creation uses a compact saving status and retains failed submissions for retry. Deletion updates the list immediately while persistence is confirmed; rejected writes restore the last confirmed view and report the error.
+
+Databases with native rich-text note columns automatically use incremental task saves: only necessary tables are refreshed and changed records written, task/checklist insertion is batched, and empty notes avoid multi-step writes. Startup, sync, structural changes and recovery retain full validation; legacy note documents keep their compatibility path.
 
 Settings uses a fixed-size dialog with category navigation on the left and independently scrolling content on the right. General, Account Authorization, API Settings, Sync and Updates, Data Management, and Support have their own panels. The version stays at the bottom left. Configuration panels show Cancel/Save; Data Management and Support show Close. Save commits only the current category, switching categories retains drafts, and closing/cancelling discards unsaved edits. Saving an account/API page activates that AI method. Login, refresh, connection tests, update checks, feedback and data actions stay beside their related content and execute immediately; cancelling settings does not undo them.
 
@@ -100,9 +106,9 @@ Task context required to answer a query is sent to the selected AI provider. The
 
 ## Data and sync
 
-Fresh installations automatically create a Things notebook, data center, and seven native database tables. Tasks, projects, areas, tags, headings, and recovery history live in these tables. Notes use each record's rich text field, with images in the same row's **Notes images** asset column. Internal columns are hidden initially. Restarting reuses the same databases, and interrupted initialization can resume.
+Fresh installations first discover existing Things databases and legacy JSON/IndexedDB data. Only when none exists, they reuse or create the shared notebook named 数据库 and create a separate Things data center with seven tables at its root. Tasks, projects, areas, tags, headings, and recovery history live in these tables. Notes use each record's rich text field, with images in the same row's **Notes images** asset column. Internal columns are hidden initially. Restarting reuses the same databases, and interrupted initialization can resume.
 
-Find the databases under **Things → Things 数据中心** in the document tree, or use **Open data center** in the maintenance section of Things Settings. Mobile and desktop use the same storage implementation. Installing `package.zip` updates the plugin only; existing database documents and their binding information must sync through the same SiYuan workspace.
+Find the databases under **数据库 → Things 数据中心** in the document tree, or use **Open data center** in the maintenance section of Things Settings. Mobile and desktop use the same storage implementation. Installing `package.zip` updates the plugin only; existing database documents and their binding information must sync through the same SiYuan workspace.
 
 Tasks share one table with native Inbox, Today, Upcoming, Anytime, Someday, and Logbook views. Relative date filters change with the current day. Editing through Things or the native database updates the same business records.
 
@@ -110,7 +116,9 @@ Existing data stays on its current source until you migrate it. In Things Settin
 
 Settings, AI configuration, reminder history, and recovery journals remain in the plugin data directory. Sync follows the workspace configuration. Edit Things on one device at a time and finish synchronization before switching devices. Native edits are read on startup, window focus, and periodic refresh; refresh is delayed during card editing, and conflicting drafts are retained.
 
-**Cross-device limitation in v0.7.0:** If the mobile plugin starts in legacy storage before receiving the database binding, completing sync does not automatically change its data source. Fully restart SiYuan or reload Things after synchronization, then check the storage status in settings. **Reload data** alone does not detect this source change in this release. That button can retry a temporary failure when initially loading an existing database.
+Reinstallation and new devices recover a unique existing center using persistent document/database/column IDs and a validated plugin identity marker. Legacy centers require all seven schemas and relation targets to match before a marker is added. Renaming or moving a center repairs both connection files. Multiple centers or same-name notebooks require one explicit choice; nothing is merged or deleted. Refresh also recognizes a database connection delivered after legacy-mode startup.
+
+Use **Move into database notebook** in Data Management for an explicit relocation. It exports a native backup, journals progress, moves the existing subtree, verifies every table and block, then repairs the connection. IDs, attachments, original notebooks and backups remain intact. Interrupted operations resume without reimporting old data. Unavailable/closed notebooks, incomplete schemas and failed boot synchronization block empty-database creation. Web Locks coordinate browser windows; cross-client duplicates are detected and require a choice rather than automatic deletion.
 
 Existing native databases whose notes still use separate documents can use **Move notes into the database** in Things settings. The upgrade saves `things-notes-original-v1.json`, verifies text and images, and then switches the note source. Original note documents remain as migration backups. An interrupted upgrade can resume; business writes are paused until it completes.
 

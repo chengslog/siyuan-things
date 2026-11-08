@@ -403,15 +403,17 @@
     if (mode === 'edit' && task) {
       unregisterItem(task.id);
       // 组件销毁前保存待处理的变更（如切换视图时）
-      rememberDraft();
-      rememberChecklistDraft(store, task.id, checklistBaseline, localChecklist);
-      void savePendingChanges();
+      if (!isDeleting && store.tasks.get(task.id)) {
+        rememberDraft();
+        rememberChecklistDraft(store, task.id, checklistBaseline, localChecklist);
+        void savePendingChanges();
+      }
     }
     if (moveTimeout) clearTimeout(moveTimeout);
     if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer);
     if (touchDragTimer) clearTimeout(touchDragTimer);
     // 若组件在完成延迟结束前被销毁（如切换视图），立即完成任务，避免丢失用户的勾选操作
-    if (pendingDone && !completionApplied && !completionInFlight && task) {
+    if (!isDeleting && pendingDone && !completionApplied && !completionInFlight && task && store.tasks.get(task.id)) {
       void applyCompletion(task.id, 'done');
     }
   });
@@ -1031,11 +1033,14 @@
   }
 
   // 删除任务
+  let isDeleting = false;
   async function handleDelete(e: Event) {
     e.stopPropagation();
-    if (task) {
-      await store.tasks.delete(task.id);
-    }
+    if (!task || isDeleting) return;
+    isDeleting = true;
+    try { await store.tasks.delete(task.id); }
+    catch (error) { showMessage(`删除失败：${(error as Error).message}`, 7000, 'error'); }
+    finally { isDeleting = false; }
   }
 
   // 添加子任务
@@ -1698,12 +1703,16 @@
   {#if expanded}
     <div class="task-card__details" on:click|stopPropagation transition:fade={{ duration: mobile ? 0 : 150 }}>
       {#if pendingCreateGroup}
-        <div class="task-card__draft-conflict" role={createError ? 'alert' : 'status'}>
-          <span>{isCreating ? '正在保存任务和检查清单…' : '这次提交的内容已保留。重试会继续添加同一条任务，保存后可在列表中编辑。'}</span>
-          {#if createError}<span>{createError}</span>{/if}
-          <button type="button" disabled={isCreating} on:click={handleCreate}>{isCreating ? '添加中…' : '重试添加'}</button>
-          <button type="button" disabled={isCreating} on:click={cancelCreate}>关闭</button>
-        </div>
+        {#if createError}
+          <div class="task-card__draft-conflict" role="alert">
+            <span>这次提交的内容已保留，重试会继续添加同一条任务。</span>
+            <span>{createError}</span>
+            <button type="button" disabled={isCreating} on:click={handleCreate}>重试添加</button>
+            <button type="button" disabled={isCreating} on:click={cancelCreate}>关闭</button>
+          </div>
+        {:else}
+          <div class="task-card__saving" role="status" aria-live="polite">保存中…</div>
+        {/if}
         {#if pendingCreateGroup[0].notes}<p>{pendingCreateGroup[0].notes}</p>{/if}
         {#if pendingCreateGroup.length > 1}
           <ul>{#each pendingCreateGroup.slice(1) as item}<li>{item.title}</li>{/each}</ul>
@@ -2309,6 +2318,13 @@
 </dialog>
 
 <style lang="scss">
+  .task-card__saving {
+    color: var(--b3-theme-on-surface-light);
+    font-size: 12px;
+    line-height: 1.5;
+    margin-bottom: 8px;
+  }
+
   .task-card__draft-conflict {
     display: flex;
     flex-wrap: wrap;

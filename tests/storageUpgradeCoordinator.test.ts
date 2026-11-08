@@ -24,6 +24,7 @@ function fixture() {
   } };
   const client = new SiYuanAVClient(async endpoint => { assert.equal(endpoint, '/api/system/version'); return '3.8.8'; });
   const create = () => new StorageCoordinator(host, client, {
+    discover: async () => undefined, mark: async () => {}, repairLocation: async () => {},
     verify: async () => {}, now: () => 100,
     repository: () => ({ load: async () => copy(snapshot), import: async () => {}, preflightSnapshot: async () => {},
       saveSnapshot: async () => { writes++; }, recoverPending: async () => {} }),

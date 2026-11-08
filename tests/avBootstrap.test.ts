@@ -3,6 +3,10 @@ import test from 'node:test';
 import { SiYuanAVClient, newSiyuanId } from '../src/storage/avClient.ts';
 import { TABLE_NAMES, TABLES } from '../src/storage/avSchema.ts';
 import { ensureDatabases, verifyDatabaseBinding, STORAGE_BINDING_FILE, STORAGE_BOOTSTRAP_FILE } from '../src/storage/bootstrap.ts';
+import { CENTER_MARK, CENTER_BINDING, CENTER_INITIALIZING, discoverDatabase, SELECTION_FILE } from '../src/storage/discovery.ts';
+import { repairStoredLocation, LOCATION_REPAIR_FILE } from '../src/storage/location.ts';
+import { relocateDatabase, MOVE_FILE } from '../src/storage/relocation.ts';
+import { StorageCoordinator, SOURCE_FILE } from '../src/storage/coordinator.ts';
 
 const clone = <T>(value: T): T => value === undefined ? value : JSON.parse(JSON.stringify(value));
 
@@ -19,6 +23,7 @@ class Kernel {
   pendingBlocks = new Map<string, any>();
   deferIndex = false;
   avs = new Map<string, any>();
+  attrs = new Map<string, any>();
   calls: { path: string; body: any }[] = [];
   failAfter = '';
   failBefore = '';
@@ -30,9 +35,13 @@ class Kernel {
     return clone(result);
   });
   count(path: string) { return this.calls.filter((call) => call.path === path).length; }
-  writes() { return this.calls.filter((call) => !['/api/query/sql', '/api/sqlite/flushTransaction', '/api/notebook/lsNotebooks', '/api/av/getAttributeView'].includes(call.path)); }
+  writes() { return this.calls.filter((call) => !['/api/sync/getBootSync', '/api/attr/getBlockAttrs', '/api/query/sql', '/api/sqlite/flushTransaction', '/api/notebook/lsNotebooks', '/api/av/getAttributeView'].includes(call.path)); }
   handle(path: string, body: any): any {
     switch (path) {
+      case '/api/system/version': return '3.8.9';
+      case '/api/sync/getBootSync': return null;
+      case '/api/attr/getBlockAttrs': return this.attrs.get(body.id) || {};
+      case '/api/attr/setBlockAttrs': this.attrs.set(body.id, { ...this.attrs.get(body.id), ...body.attrs }); return null;
       case '/api/sqlite/flushTransaction':
         for (const [id, value] of this.pendingBlocks) this.blocks.set(id, value);
         this.pendingBlocks.clear(); return null;
@@ -43,6 +52,17 @@ class Kernel {
       }
       case '/api/notebook/renameNotebook': this.notebooks.find((entry) => entry.id === body.notebook).name = body.name; return null;
       case '/api/query/sql': {
+        if (body.stmt.includes('ORDER BY id LIMIT 500')) {
+          const id = body.stmt.match(/root_id = '([^']+)'/)![1];
+          const offset = Number(body.stmt.match(/OFFSET (\d+)/)?.[1]);
+          return [...this.blocks.values()].filter(b => b.root_id === id || b.path?.includes('/' + id + '/')).sort((a,b) => a.id.localeCompare(b.id)).slice(offset,offset+500);
+        }
+        if (body.stmt.includes('ORDER BY id LIMIT 200')) {
+          let selected = [...this.blocks.values()].filter(b => body.stmt.includes("type = 'av'") ? b.type === 'av' : b.type === 'd' && (this.attrs.get(b.id)?.[CENTER_MARK] || this.attrs.get(b.id)?.[CENTER_INITIALIZING]));
+          selected.sort((a, b) => a.id.localeCompare(b.id));
+          const offset = Number(body.stmt.match(/OFFSET (\d+)/)?.[1]);
+          return selected.slice(offset, offset + 200);
+        }
         const batch = body.stmt.match(/WHERE id IN \(([^)]+)\)/)?.[1];
         if (batch) return [...batch.matchAll(/'([^']+)'/g)].flatMap(match => this.blocks.has(match[1]) ? [this.blocks.get(match[1])] : []);
         const id = body.stmt.match(/WHERE id = '([^']+)'/)?.[1];
@@ -51,12 +71,17 @@ class Kernel {
       }
       case '/api/filetree/createDocWithMd':
         assert.ok(!this.blocks.has(body.id), 'must not create the same document twice');
-        (this.deferIndex ? this.pendingBlocks : this.blocks).set(body.id, { id: body.id, root_id: body.id, box: body.notebook, type: 'd', markdown: body.markdown }); return body.id;
+        (this.deferIndex ? this.pendingBlocks : this.blocks).set(body.id, { id: body.id, root_id: body.id, box: body.notebook, type: 'd', markdown: body.markdown,
+          path: body.parentID ? this.blocks.get(body.parentID).path.replace(/\.sy$/, '') + '/' + body.id + '.sy' : '/' + body.id + '.sy' }); return body.id;
+      case '/api/export/exportSY': return { zip: '/export/backup.sy.zip' };
+      case '/api/filetree/moveDocsByID':
+        for (const id of body.fromIDs) for (const b of this.blocks.values()) if (b.root_id === id || b.path?.includes('/' + id + '/')) b.box = body.toID;
+        return null;
       case '/api/block/appendBlock': {
         const id = body.data.match(/data-node-id="([^"]+)"/)?.[1];
         assert.ok(id); assert.ok(!this.blocks.has(id), 'must not append the same carrier twice');
         const parent = this.blocks.get(body.parentID);
-        (this.deferIndex ? this.pendingBlocks : this.blocks).set(id, { id, root_id: parent.id, box: parent.box, type: 'av', markdown: body.data }); return [];
+        (this.deferIndex ? this.pendingBlocks : this.blocks).set(id, { id, root_id: parent.id, box: parent.box, type: 'av', markdown: body.data, path: parent.path }); return [];
       }
       case '/api/av/renderAttributeView': {
         if (!this.avs.has(body.id)) {
@@ -108,7 +133,7 @@ test('fresh install creates all native tables, typed fields and second-pass self
   const binding = await ensureDatabases(storage, kernel.client);
   assert.equal(binding.schemaVersion, 2);
   assert.equal(kernel.notebooks.length, 1);
-  assert.equal(kernel.notebooks[0].name, 'Things');
+  assert.equal(kernel.notebooks[0].name, '数据库');
   assert.equal(kernel.count('/api/filetree/createDocWithMd'), 8);
   assert.equal(kernel.count('/api/block/appendBlock'), 7);
   assert.equal(kernel.avs.size, 7);
@@ -169,6 +194,17 @@ test('binding verification batches indexed blocks and overlaps independent table
   assert.equal(kernel.writes().length, 0);
 });
 
+test('task-write ownership checks avoid table reads but still reject removed carriers', async () => {
+  const storage = new MemorySettings(), kernel = new Kernel();
+  const binding = await ensureDatabases(storage, kernel.client);
+  kernel.calls = [];
+  await verifyDatabaseBinding(kernel.client, binding, false);
+  assert.equal(kernel.calls.length, 3);
+  assert.equal(kernel.count('/api/av/getAttributeView'), 0);
+  kernel.blocks.delete(binding.tables.tasks.blockId);
+  await assert.rejects(verifyDatabaseBinding(kernel.client, binding, false), /缺失|替换/);
+});
+
 test('parallel verification still rejects a damaged final table and retries with fresh data', async () => {
   const storage = new MemorySettings(); const kernel = new Kernel();
   const binding = await ensureDatabases(storage, kernel.client);
@@ -193,7 +229,8 @@ test('a V1 binding without rich note columns remains readable until an explicit 
       delete table.keys[field];
     }
   }
-  await storage.saveData(STORAGE_BINDING_FILE, binding); kernel.calls = [];
+  await storage.saveData(STORAGE_BINDING_FILE, binding);
+  kernel.attrs.get(binding.docId)[CENTER_BINDING] = JSON.stringify(binding); kernel.calls = [];
   assert.deepEqual(await ensureDatabases(storage, kernel.client), binding);
   assert.equal(kernel.writes().length, 0);
 });
@@ -228,7 +265,7 @@ test('a same-named unbound notebook is not claimed', async () => {
   const binding = await ensureDatabases(storage, kernel.client);
   assert.notEqual(binding.notebookId, unrelated.id);
   assert.equal(kernel.notebooks.length, 2);
-  assert.match(kernel.notebooks.find((entry) => entry.id === binding.notebookId).name, /^Things [a-z0-9]{7}$/);
+  assert.equal(kernel.notebooks.find((entry) => entry.id === binding.notebookId).name, '数据库');
 });
 
 test('failed intent save cannot create resources and an acknowledged binding survives a lost save response', async () => {
@@ -236,7 +273,7 @@ test('failed intent save cannot create resources and an acknowledged binding sur
   const originalSave = storage.saveData.bind(storage);
   storage.saveData = async () => { throw new Error('storage unavailable'); };
   await assert.rejects(ensureDatabases(storage, kernel.client), /storage unavailable/);
-  assert.equal(kernel.calls.length, 0);
+  assert.equal(kernel.writes().length, 0);
   storage.saveData = async (name, value) => {
     await originalSave(name, value);
     if (name === STORAGE_BINDING_FILE) throw new Error('binding response lost');
@@ -275,7 +312,7 @@ test('a database deleted during partial bootstrap is not recreated after its pri
 });
 
 test('corrupt saved intent is rejected before any kernel request', async () => {
-  const storage = new MemorySettings(); const kernel = new Kernel(); kernel.failBefore = '/api/notebook/lsNotebooks';
+  const storage = new MemorySettings(); const kernel = new Kernel(); kernel.failBefore = '/api/notebook/createNotebook';
   await assert.rejects(ensureDatabases(storage, kernel.client));
   storage.data.get(STORAGE_BOOTSTRAP_FILE).tables.tasks.blockId = "x' OR 1=1";
   kernel.calls = [];
@@ -307,4 +344,156 @@ test('detached row retries preserve the separate item ID and reject collisions w
   assert.deepEqual(kernel.calls.at(-1)?.body, { avID: avId, values: cells });
   await kernel.client.removeRows(avId, [itemId]);
   assert.deepEqual(kernel.calls.at(-1)?.body, { avID: avId, srcIDs: [itemId] });
+});
+
+test('fresh install reuses the shared notebook without modifying another plugin or renaming it', async () => {
+  const storage = new MemorySettings(), kernel = new Kernel();
+  const notebook = { id: newSiyuanId(), name: '数据库', closed: false }; kernel.notebooks.push(notebook);
+  const other = { id: newSiyuanId(), type: 'd', box: notebook.id, content: '投资手记' }; kernel.blocks.set(other.id, other);
+  const binding = await ensureDatabases(storage, kernel.client);
+  assert.equal(binding.notebookId, notebook.id); assert.equal(kernel.count('/api/notebook/createNotebook'), 0);
+  assert.equal(kernel.count('/api/notebook/renameNotebook'), 0); assert.deepEqual(kernel.blocks.get(other.id), other);
+  for (const call of kernel.calls.filter(c => c.path === '/api/filetree/createDocWithMd' && c.body.id !== binding.docId)) assert.equal(call.body.parentID, binding.docId);
+});
+
+test('closed notebooks and failed synchronization never count as an empty installation', async () => {
+  for (const mode of ['closed', 'sync']) {
+    const storage = new MemorySettings(), kernel = new Kernel();
+    if (mode === 'closed') kernel.notebooks.push({ id: newSiyuanId(), name: '数据库', closed: true });
+    else kernel.failBefore = '/api/sync/getBootSync';
+    await assert.rejects(ensureDatabases(storage, kernel.client));
+    assert.equal(kernel.writes().length, 0); assert.equal(storage.data.has(STORAGE_BINDING_FILE), false);
+  }
+});
+
+test('same-name notebooks require one explicit choice and persist the chosen ID', async () => {
+  const storage = new MemorySettings(), kernel = new Kernel();
+  kernel.notebooks.push(...[1, 2].map(() => ({ id: newSiyuanId(), name: '数据库', closed: false })));
+  let choices = 0;
+  const b = await ensureDatabases(storage, kernel.client, { choose: async (kind, candidates) => {
+    choices++; assert.equal(kind, 'notebook'); return candidates[1].id;
+  } });
+  assert.equal(b.notebookId, kernel.notebooks[1].id); assert.equal(choices, 1);
+  kernel.notebooks[1].name = '资料库';
+  await ensureDatabases(storage, kernel.client, { choose: async () => { throw new Error('must not ask again'); } });
+  assert.equal(storage.data.get(SELECTION_FILE).notebook.id, b.notebookId);
+});
+
+test('moved centers resolve by document and AV identity with unchanged hot-write request budget', async () => {
+  const storage = new MemorySettings(), kernel = new Kernel();
+  const b = await ensureDatabases(storage, kernel.client);
+  const next = { id: newSiyuanId(), name: 'New name', closed: false }; kernel.notebooks.push(next);
+  for (const block of kernel.blocks.values()) block.box = next.id;
+  kernel.notebooks[0].closed = true; kernel.calls = [];
+  await verifyDatabaseBinding(kernel.client, b, false);
+  assert.equal(b.notebookId, next.id); assert.equal(kernel.calls.length, 3);
+  assert.equal(kernel.count('/api/av/getAttributeView'), 0);
+});
+
+test('reinstall discovers a marked center despite renamed notebook, center, tables and columns', async () => {
+  const storage = new MemorySettings(), kernel = new Kernel(); const b = await ensureDatabases(storage, kernel.client);
+  for (const av of kernel.avs.values()) { av.name = 'renamed'; for (const k of av.keyValues) k.key.name = 'renamed'; }
+  kernel.notebooks[0].name = 'Not Things'; kernel.blocks.get(b.docId).content = 'renamed';
+  kernel.calls = [];
+  assert.deepEqual(await ensureDatabases(new MemorySettings(), kernel.client), b);
+  assert.equal(kernel.writes().length, 0); assert.equal(kernel.avs.size, 7);
+});
+
+test('legacy unmarked center recovers by seven typed schemas and adds identity only after validation', async () => {
+  const storage = new MemorySettings(), kernel = new Kernel(); const b = await ensureDatabases(storage, kernel.client);
+  kernel.attrs.clear(); kernel.blocks.get(b.docId).content = '改名的数据'; kernel.calls = [];
+  assert.deepEqual(await ensureDatabases(new MemorySettings(), kernel.client), b);
+  assert.equal(kernel.count('/api/filetree/createDocWithMd'), 0);
+  assert.equal(kernel.attrs.get(b.docId)[CENTER_MARK], '1');
+});
+
+test('partial or damaged legacy schemas stop recovery without provisioning a replacement', async () => {
+  const storage = new MemorySettings(), kernel = new Kernel(); const b = await ensureDatabases(storage, kernel.client);
+  kernel.attrs.clear(); kernel.avs.get(b.tables.tasks.avId).keyValues.pop(); kernel.calls = [];
+  await assert.rejects(ensureDatabases(new MemorySettings(), kernel.client), /未完成|改动|重复/);
+  assert.equal(kernel.writes().length, 0);
+});
+
+test('incomplete center identity prevents other devices from creating another center', async () => {
+  const storage = new MemorySettings(), kernel = new Kernel(); kernel.failBefore = '/api/block/appendBlock';
+  await assert.rejects(ensureDatabases(storage, kernel.client)); kernel.calls = [];
+  await assert.rejects(ensureDatabases(new MemorySettings(), kernel.client), /未完成初始化/);
+  assert.equal(kernel.count('/api/filetree/createDocWithMd'), 0);
+  await ensureDatabases(storage, kernel.client); assert.equal(kernel.avs.size, 7);
+});
+
+test('multiple valid centers select once without merging, deleting or moving either center', async () => {
+  const a = new Kernel(), b = new Kernel(); const ba = await ensureDatabases(new MemorySettings(), a.client);
+  const bb = await ensureDatabases(new MemorySettings(), b.client);
+  a.notebooks.push(...b.notebooks);
+  for (const [key, value] of b.blocks) a.blocks.set(key, value);
+  for (const [key, value] of b.avs) a.avs.set(key, value);
+  for (const [key, value] of b.attrs) a.attrs.set(key, value);
+  const storage = new MemorySettings(); let count = 0; a.calls = [];
+  const options = { choose: async (kind: string, choices: any[]) => { assert.equal(kind, 'database'); assert.equal(choices.length, 2); count++; return bb.docId; } };
+  assert.equal((await discoverDatabase(storage, a.client, options))!.docId, bb.docId);
+  assert.equal((await discoverDatabase(storage, a.client, options))!.docId, bb.docId);
+  assert.equal(count, 1); assert.ok(a.blocks.has(ba.docId)); assert.equal(a.writes().length, 0);
+});
+
+test('distinct settings wrappers still coordinate concurrent initialization in one runtime', async () => {
+  const storage = new MemorySettings(), kernel = new Kernel();
+  const wrapper = { loadData: storage.loadData.bind(storage), saveData: storage.saveData.bind(storage) };
+  const [a, b] = await Promise.all([ensureDatabases(storage, kernel.client), ensureDatabases(wrapper, kernel.client)]);
+  assert.deepEqual(a, b); assert.equal(kernel.notebooks.length, 1); assert.equal(kernel.avs.size, 7);
+});
+
+test('location configuration repair resumes a partial commit and preserves pending writes', async () => {
+  const storage = new MemorySettings(), kernel = new Kernel(); const b = await ensureDatabases(storage, kernel.client);
+  storage.data.set('things-storage-source.json', { schemaVersion: 1, mode: 'database', binding: clone(b) });
+  storage.data.set('things-storage-write-intent-v1.json', { binding: clone(b), desired: { tasks: ['untouched'] } });
+  const moved = { ...b, notebookId: newSiyuanId() };
+  const save = storage.saveData.bind(storage); let block = true;
+  storage.saveData = async (name, value) => { if (name === STORAGE_BINDING_FILE && block) throw new Error('write failed'); return save(name, value); };
+  await assert.rejects(repairStoredLocation(storage, moved), /尚未保存/);
+  assert.ok(storage.data.get(LOCATION_REPAIR_FILE)); assert.equal(storage.data.get('things-storage-source.json').binding.notebookId, moved.notebookId);
+  block = false; await repairStoredLocation(storage, moved);
+  assert.equal(storage.data.get(LOCATION_REPAIR_FILE), null);
+  assert.deepEqual(storage.data.get(STORAGE_BINDING_FILE), moved);
+  assert.deepEqual(storage.data.get('things-storage-write-intent-v1.json'), { binding: moved, desired: { tasks: ['untouched'] } });
+  assert.equal(storage.data.get(STORAGE_BOOTSTRAP_FILE).notebookId, moved.notebookId);
+});
+
+test('explicit relocation preserves all IDs and table contents across lost move responses and repeats', async () => {
+  const storage = new MemorySettings(), kernel = new Kernel(); const b = await ensureDatabases(storage, kernel.client);
+  storage.data.set('things-storage-source.json', { schemaVersion: 1, mode: 'database', binding: clone(b) });
+  const target = { id: newSiyuanId(), name: '数据库', closed: false }; kernel.notebooks.push(target);
+  const avs = clone([...kernel.avs]), ids = [...kernel.blocks.keys()]; kernel.calls = [];
+  kernel.failAfter = '/api/filetree/moveDocsByID';
+  await assert.rejects(relocateDatabase(storage, kernel.client, b, target.id), /response lost/);
+  assert.equal(storage.data.get(MOVE_FILE).phase, 'backed-up');
+  await relocateDatabase(storage, kernel.client, b, target.id);
+  await relocateDatabase(storage, kernel.client, b, target.id);
+  assert.equal(storage.data.get(MOVE_FILE).phase, 'complete');
+  assert.equal(kernel.count('/api/filetree/moveDocsByID'), 1); assert.equal(kernel.count('/api/export/exportSY'), 1);
+  assert.deepEqual([...kernel.avs], avs); assert.deepEqual([...kernel.blocks.keys()], ids);
+  assert.equal(storage.data.get('things-storage-source.json').binding.notebookId, target.id);
+  assert.equal(kernel.count('/api/notebook/removeNotebook'), 0);
+});
+
+test('an interrupted relocation refuses changed data without moving or overwriting it', async () => {
+  const storage = new MemorySettings(), kernel = new Kernel(); const b = await ensureDatabases(storage, kernel.client);
+  const target = { id: newSiyuanId(), name: '数据库', closed: false }; kernel.notebooks.push(target);
+  kernel.failBefore = '/api/filetree/moveDocsByID';
+  await assert.rejects(relocateDatabase(storage, kernel.client, b, target.id));
+  kernel.avs.get(b.tables.tasks.avId).keyValues[0].values.push({ blockID: newSiyuanId() }); kernel.calls = [];
+  await assert.rejects(relocateDatabase(storage, kernel.client, b, target.id), /备份不一致/);
+  assert.equal(kernel.writes().length, 0); assert.equal(storage.data.get(MOVE_FILE).phase, 'backed-up');
+});
+
+test('coordinator resumes its own partial bootstrap instead of treating it as a foreign incomplete center', async () => {
+  const storage = new MemorySettings(), kernel = new Kernel();
+  const empty = { tasks: [], archived: [], trash: [], projects: [], areas: [], tags: [] };
+  const create = () => new StorageCoordinator(storage, kernel.client, { ensureViews: async () => {},
+    repository: () => ({ load: async () => empty, import: async () => {}, preflightSnapshot: async () => {}, saveSnapshot: async () => {}, recoverPending: async () => {} }) });
+  kernel.failBefore = '/api/block/appendBlock';
+  await assert.rejects(create().start());
+  assert.ok(storage.data.get(STORAGE_BOOTSTRAP_FILE)); assert.equal(storage.data.has(SOURCE_FILE), false);
+  const restarted = create(); await restarted.start();
+  assert.equal(restarted.mode, 'database'); assert.equal(kernel.avs.size, 7); assert.equal(kernel.notebooks.length, 1);
 });

@@ -121,9 +121,23 @@ export class TaskStore extends BaseStore<Task> {
     } while (added);
     const tasks = Array.from(selected).map((id) => this.items.get(id)).filter((task): task is Task => !!task);
     if (!tasks.length) return 0;
-    this.trashBatches.push({ id: `trash-${Date.now()}`, deletedAt: Date.now(), tasks });
+    const batch = { id: `trash-${Date.now()}`, deletedAt: Date.now(), tasks };
+    this.trashBatches.push(batch);
     for (const task of tasks) this.items.delete(task.id);
-    await this.persistTaskCollections();
+    // Publish the reversible local change immediately. "delete" still means durable success;
+    // persistTaskCollections reloads the committed snapshot and emits change on failure.
+    this.emit({ type: 'change', ids: tasks.map((task) => task.id) });
+    try { await this.persistTaskCollections(); }
+    catch (error) {
+      // A successful reload replaces batch objects. If reads failed as well as the write,
+      // restore this optimistic change without overwriting any unrelated local edits.
+      if (this.trashBatches.includes(batch)) {
+        this.trashBatches = this.trashBatches.filter(item => item !== batch);
+        for (const task of tasks) if (!this.items.has(task.id) && !this.archivedItems.has(task.id)) this.items.set(task.id, task);
+        this.emit({ type: 'change', ids: tasks.map(task => task.id) });
+      }
+      throw error;
+    }
     this.emit({ type: 'delete', ids: tasks.map((task) => task.id) });
     return tasks.filter((task) => !task.parentId).length;
   }

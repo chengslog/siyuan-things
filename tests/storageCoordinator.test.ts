@@ -6,8 +6,10 @@ import { LEGACY_FILES, type LegacySnapshot } from '../src/storage/preflight.ts';
 import { saveFiles, usesNativeStorage } from '../src/storage/bridge.ts';
 import type { Binding } from '../src/storage/bootstrap.ts';
 import { AVRepository, encodeCell } from '../src/storage/avRepository.ts';
-import { TABLE_NAMES, TABLES } from '../src/storage/avSchema.ts';
+import { TABLE_NAMES, TABLES, getTableSpecs } from '../src/storage/avSchema.ts';
 import { NativeNotesUnsupportedError } from '../src/storage/nativeNotes.ts';
+import { memoryCodec } from './helpers/nativeNotesMemory.ts';
+import { TaskStore } from '../src/stores/taskStore.ts';
 
 const empty = (): LegacySnapshot => ({ tasks: [], archived: [], trash: [], projects: [], areas: [], tags: [] });
 const clone = <T>(value: T): T => value === undefined ? value : JSON.parse(JSON.stringify(value));
@@ -70,6 +72,7 @@ function fixture(source?: LegacySnapshot) {
     },
   };
   const create = () => new StorageCoordinator(host, client, {
+    discover: async () => undefined, mark: async () => {}, repairLocation: async () => {},
     now: () => clock,
     async inspectLegacyCache() { return clone(legacyCache); },
     async ensure() { calls.ensure++; await hooks.ensure?.(); return clone(binding); },
@@ -216,11 +219,13 @@ test('initialization errors and unsupported versions never write an active sourc
   assert.equal(f.calls.writes.length, 0);
 });
 
-test('an unactivated nonempty database is never mistaken for fresh empty storage', async () => {
+test('a verified recovered nonempty database activates without reimporting or clearing it', async () => {
   const f = fixture();
   f.setDatabase({ ...empty(), tasks: [task('already-written')] });
-  await assert.rejects(f.create().start(), /已有数据库记录/);
-  assert.equal(f.files.has(SOURCE_FILE), false);
+  const c = f.create(); await c.start();
+  assert.deepEqual(await c.read('tasks.json'), [task('already-written')]);
+  assert.equal(f.files.has(SOURCE_FILE), true);
+  assert.equal(f.calls.imported.length, 0);
 });
 
 test('business writes use the database and a logical multi-file move is one repository write', async () => {
@@ -382,16 +387,16 @@ test('durable intent is verified before business writes and retained when recove
   assert.deepEqual(f.files.get(WRITE_INTENT_FILE), intent);
 });
 
-test('missing or mismatched source bindings cannot claim a pending write', async () => {
+test('a verified journal restores its missing source but a mismatched journal never replays', async () => {
   const f = fixture();
   const intent = { schemaVersion: 1, binding, base: empty(), desired: empty(), createdAt: 1 };
   f.files.set(WRITE_INTENT_FILE, intent);
-  await assert.rejects(f.create().start(), /缺少原数据源绑定/);
+  await f.create().start();
   assert.equal(f.calls.ensure, 0);
   f.files.set(SOURCE_FILE, { schemaVersion: 1, mode: 'database', binding });
   f.files.set(WRITE_INTENT_FILE, { ...intent, binding: { ...binding, docId: 'different' } });
   await assert.rejects(f.create().start(), /不属于当前数据库/);
-  assert.equal(f.calls.recoveries.length, 0);
+  assert.equal(f.calls.recoveries.length, 1);
 });
 
 test('explicit refresh resumes a saved operation and releases the failure latch only after verification', async () => {
@@ -432,11 +437,12 @@ test('two coordinators sharing a host cannot overwrite an in-flight recovery int
 });
 
 /** Native AV boundary for coordinator/repository integration, using actual Value/itemID shapes. */
-function nativeFixture() {
+function nativeFixture(version: 1 | 2 = 1) {
   const avs = new Map<string, any>(), files = new Map<string, any>();
-  const nativeBinding: Binding = { schemaVersion: 1, notebookId: '20261028000000-notebok', docId: '20261028000000-center0', tables: {} as any };
+  const apiCalls: Array<{ path: string; body: any }> = [];
+  const nativeBinding: Binding = { schemaVersion: version, notebookId: '20261028000000-notebok', docId: '20261028000000-center0', tables: {} as any };
   for (const table of TABLE_NAMES) {
-    const spec = TABLES[table], keys = Object.fromEntries([spec.titleField, ...spec.columns.map(column => column.field)].map(field => [field, `${table}-${field}`]));
+    const spec = getTableSpecs(version)[table], keys = Object.fromEntries([spec.titleField, ...spec.columns.map(column => column.field)].map(field => [field, `${table}-${field}`]));
     nativeBinding.tables[table] = { avId: table, blockId: `${table}-block`, keys };
     avs.set(table, { id: table, keyValues: [{ key: { id: keys[spec.titleField], type: 'block' }, values: [] },
       ...spec.columns.map(column => ({ key: { id: keys[column.field], type: column.type, ...(column.relation ? { relation: { avID: column.relation } } : {}) }, values: [] }))] });
@@ -445,6 +451,7 @@ function nativeFixture() {
   const host = { async loadData(name: string) { return clone(files.get(name)); }, async saveData(name: string, value: any) { files.set(name, clone(value)); } };
   let failIdentity = false, requireIntent = false;
   const client = new SiYuanAVClient(async (path, input) => {
+    apiCalls.push({ path, body: clone(input) });
     const body: any = input;
     if (path === '/api/system/version') return '3.8.8';
     if (path === '/api/av/getAttributeView') return { av: clone(avs.get(body.id)) };
@@ -460,7 +467,7 @@ function nativeFixture() {
         const index = entry.values.findIndex((old: any) => old.blockID === patch.itemID);
         if (index < 0) entry.values.push(value); else entry.values[index] = value;
       }
-      if (failIdentity && body.values.length === 1 && body.values[0].keyID === `${body.avID}-id`) {
+      if (failIdentity && body.values.some((cell: any) => cell.keyID === `${body.avID}-id`)) {
         failIdentity = false; throw new Error('identity committed, response lost');
       }
       return null;
@@ -471,13 +478,160 @@ function nativeFixture() {
     }
     throw new Error(`Unexpected native fixture API ${path}`);
   });
-  const create = () => new StorageCoordinator(host, client, { now: () => 1793156400123, async verify() {}, repository: value => new AVRepository(client, value) });
+  const create = (incremental = true) => new StorageCoordinator(host, client, {
+    discover: async () => undefined, mark: async () => {}, repairLocation: async () => {}, now: () => 1793156400123, async verify() {}, async ensureViews() {}, repository: value => {
+    const repo = new AVRepository(client, value);
+    if (!incremental) repo.canWriteIncrementally = () => false;
+    return repo;
+  } });
   const item = (table: string, id: string) => avs.get(table).keyValues.find((entry: any) => entry.key.id === `${table}-id`).values.find((value: any) => value.text.content === id)?.blockID;
-  return { avs, files, client, create, item,
+  return { avs, files, client, create, item, apiCalls, host,
     async seed(snapshot: LegacySnapshot) { await new AVRepository(client, nativeBinding).import(snapshot); },
     failAfterIdentity() { failIdentity = true; requireIntent = true; },
+    expectIntent() { requireIntent = true; },
   };
 }
+
+test('V2 ordinary creation batches its checklist and avoids reads of unrelated tables', async t => {
+  const previous = (globalThis as any).Lute;
+  (globalThis as any).Lute = { New: () => memoryCodec };
+  t.after(() => { (globalThis as any).Lute = previous; });
+  const f = nativeFixture(2), coordinator = f.create();
+  await coordinator.start();
+  f.expectIntent();
+  const current = await coordinator.read('tasks.json');
+  const group = [task('parent'), ...Array.from({ length: 3 }, (_, i) => task(`child-${i}`, { parentId: 'parent', order: i + 1 }))];
+  f.apiCalls.length = 0;
+  await coordinator.write('tasks.json', [...current, ...group]);
+  const reads = f.apiCalls.filter(call => call.path === '/api/av/getAttributeView');
+  assert.equal(reads.length, 5, 'three fresh task reads plus two insertion checks, independent of checklist length');
+  assert.ok(reads.every(call => call.body.id === 'tasks'));
+  const adds = f.apiCalls.filter(call => call.path === '/api/av/addAttributeViewBlocks');
+  assert.equal(adds.length, 1);
+  assert.equal(adds[0].body.srcs.length, 4);
+  assert.deepEqual((await coordinator.read('tasks.json')).map(row => row.id), group.map(row => row.id));
+  assert.equal(f.files.get(WRITE_INTENT_FILE), null);
+});
+
+test('V2 single-task edit reduces repository AV reads from 21 to 3 with the same verified result', async t => {
+  const previous = (globalThis as any).Lute;
+  (globalThis as any).Lute = { New: () => memoryCodec };
+  t.after(() => { (globalThis as any).Lute = previous; });
+  const counts: number[] = [], saved: any[] = [];
+  for (const incremental of [false, true]) {
+    const f = nativeFixture(2); await f.seed({ ...empty(), tasks: [task('one')] });
+    const coordinator = f.create(incremental); await coordinator.start();
+    const rows = await coordinator.read('tasks.json'); rows[0].priority = 'high';
+    f.expectIntent(); f.apiCalls.length = 0;
+    await coordinator.write('tasks.json', rows);
+    counts.push(f.apiCalls.filter(call => call.path === '/api/av/getAttributeView').length);
+    saved.push(await coordinator.read('tasks.json'));
+    assert.equal(f.files.get(WRITE_INTENT_FILE), null);
+  }
+  assert.deepEqual(counts, [21, 3]);
+  assert.deepEqual(saved[0], saved[1]);
+});
+
+test('V2 batched creation recovers every checklist identity after a lost response', async t => {
+  const previous = (globalThis as any).Lute;
+  (globalThis as any).Lute = { New: () => memoryCodec };
+  t.after(() => { (globalThis as any).Lute = previous; });
+  const f = nativeFixture(2), coordinator = f.create(); await coordinator.start();
+  await coordinator.read('tasks.json');
+  const group = [task('parent'), task('child', { parentId: 'parent' })];
+  f.failAfterIdentity();
+  await assert.rejects(coordinator.write('tasks.json', group), /identity committed/);
+  assert.ok(f.files.get(WRITE_INTENT_FILE));
+  const restarted = f.create(); await restarted.start();
+  assert.deepEqual((await restarted.read('tasks.json')).map(row => [row.id, row.parentId]), group.map(row => [row.id, row.parentId]));
+  assert.equal(f.avs.get('tasks').keyValues[0].values.length, 2);
+  assert.equal(f.files.get(WRITE_INTENT_FILE), null);
+});
+
+test('V2 deletion touches task and trash tables and undo restores the complete group', async t => {
+  const previous = (globalThis as any).Lute;
+  (globalThis as any).Lute = { New: () => memoryCodec };
+  t.after(() => { (globalThis as any).Lute = previous; });
+  const f = nativeFixture(2);
+  const parent = task('parent'), child = task('child', { parentId: 'parent' });
+  await f.seed({ ...empty(), tasks: [parent, child, ...Array.from({ length: 20 }, (_, i) => task(`other-${i}`, { order: i + 1 }))] });
+  const coordinator = f.create(); await coordinator.start();
+  const store = new TaskStore(coordinator.facade as any); await store.load();
+  f.expectIntent(); f.apiCalls.length = 0;
+  await store.delete('parent');
+  assert.equal(store.get('parent'), undefined); assert.equal(store.get('child'), undefined);
+  const readIds = f.apiCalls.filter(call => call.path === '/api/av/getAttributeView').map(call => call.body.id);
+  assert.ok(readIds.every(id => ['tasks', 'trashBatches', 'trashItems'].includes(id)));
+  assert.ok(readIds.length <= 13);
+  assert.ok(!f.apiCalls.some(call => call.path === '/api/av/batchSetAttributeViewBlockAttrs' && call.body.avID === 'tasks'), 'deletion does not renumber untouched task records');
+  await store.restoreLastTrashedBatch();
+  assert.deepEqual(store.get('parent'), parent);
+  assert.deepEqual(store.get('child'), child);
+  await coordinator.refresh(); await store.load();
+  assert.equal(store.count, 22);
+});
+
+test('V2 incremental completion creates its recurring group once and survives a full refresh', async t => {
+  const previous = (globalThis as any).Lute;
+  (globalThis as any).Lute = { New: () => memoryCodec };
+  t.after(() => { (globalThis as any).Lute = previous; });
+  const f = nativeFixture(2);
+  await f.seed({ ...empty(), tasks: [task('root', { repeatRule: 'daily', startDate: 1793156400123 }), task('child', { parentId: 'root' })] });
+  const coordinator = f.create(); await coordinator.start();
+  const rows = await coordinator.read('tasks.json'); rows[0].status = 'done';
+  f.expectIntent();
+  await coordinator.write('tasks.json', rows);
+  const saved = await coordinator.read('tasks.json');
+  assert.equal(saved.length, 4);
+  assert.equal(saved.filter(row => row.recurrenceSourceId === 'root').length, 1);
+  await coordinator.refresh();
+  assert.deepEqual(await coordinator.read('tasks.json'), saved);
+});
+
+test('V2 conflicts after journaling retain the intent and never overwrite a newer native edit', async t => {
+  const previous = (globalThis as any).Lute;
+  (globalThis as any).Lute = { New: () => memoryCodec };
+  t.after(() => { (globalThis as any).Lute = previous; });
+  const f = nativeFixture(2); await f.seed({ ...empty(), tasks: [task('one')] });
+  const coordinator = f.create(); await coordinator.start();
+  const rows = await coordinator.read('tasks.json'); rows[0].title = 'Plugin';
+  const save = f.host.saveData;
+  let injected = false;
+  f.host.saveData = async (name, value) => {
+    await save(name, value);
+    if (name === WRITE_INTENT_FILE && value && !injected) {
+      injected = true;
+      await f.client.setCells('tasks', [{ itemID: f.item('tasks', 'one'), keyID: 'tasks-title', value: encodeCell('block', 'Native after journal') }]);
+    }
+  };
+  await assert.rejects(coordinator.write('tasks.json', rows), /保留|中断/);
+  assert.ok(f.files.get(WRITE_INTENT_FILE));
+  const title = f.avs.get('tasks').keyValues[0].values.find(row => row.blockID === f.item('tasks', 'one')).block.content;
+  assert.equal(title, 'Native after journal');
+  await assert.rejects(coordinator.write('tasks.json', rows));
+});
+
+test('V2 recovery accepts completed incremental appends after earlier task positions were deleted', async t => {
+  const previous = (globalThis as any).Lute;
+  (globalThis as any).Lute = { New: () => memoryCodec };
+  t.after(() => { (globalThis as any).Lute = previous; });
+  const f = nativeFixture(2); await f.seed({ ...empty(), tasks: [task('removed'), task('kept')] });
+  const coordinator = f.create(); await coordinator.start();
+  const initial = await coordinator.read('tasks.json');
+  await coordinator.write('tasks.json', initial.filter(row => row.id !== 'removed'));
+  const remaining = await coordinator.read('tasks.json');
+  const save = f.host.saveData;
+  f.host.saveData = async (name, value) => {
+    if (name === WRITE_INTENT_FILE && value === null) throw new Error('cleanup unavailable');
+    await save(name, value);
+  };
+  await assert.rejects(coordinator.write('tasks.json', [...remaining, task('appended')]), /cleanup unavailable/);
+  f.host.saveData = save;
+  const restarted = f.create(); await restarted.start();
+  assert.deepEqual((await restarted.read('tasks.json')).map(row => row.id), ['kept', 'appended']);
+  assert.equal(f.avs.get('tasks').keyValues[0].values.length, 2);
+  assert.equal(f.files.get(WRITE_INTENT_FILE), null);
+});
 
 test('a stale second Store cannot resurrect a native-deleted tag after another Store saved', async () => {
   const f = nativeFixture();

@@ -1,19 +1,27 @@
 import { SiYuanAVClient } from './avClient.ts';
-import { ensureDatabases, verifyDatabaseBinding, STORAGE_BINDING_FILE, type Binding } from './bootstrap.ts';
-import { AVRepository } from './avRepository.ts';
+import { ensureDatabases, verifyDatabaseBinding, STORAGE_BINDING_FILE, STORAGE_BOOTSTRAP_FILE, type Binding } from './bootstrap.ts';
+import { AVRepository, type IncrementalWrite } from './avRepository.ts';
 import { LEGACY_FILES, readLegacy, auditLegacy, type LegacySnapshot } from './preflight.ts';
 import { STORAGE_BRIDGE, type DataStore } from './bridge.ts';
 import { mergeTaskChanges, planTaskTransitions, seedTaskObservation, validateObservation, type TaskObservation } from './nativeTransitions.ts';
 import { upgradeNotesToRichText, NOTES_UPGRADE_FILE } from './notesUpgrade.ts';
 import { ensureTaskViews } from './nativeViews.ts';
+import { discoverDatabase, markDatabase, chooseNotebook, withDatabaseInitLock, type DiscoveryOptions } from './discovery.ts';
+import { repairStoredLocation, sameDatabase } from './location.ts';
+import { relocateDatabase } from './relocation.ts';
 
 export const SOURCE_FILE = 'things-storage-source.json';
 export const BACKUP_FILE = 'things-storage-original-v1.json';
 export const WRITE_INTENT_FILE = 'things-storage-write-intent-v1.json';
 export const OBSERVATION_FILE = 'things-storage-observed-v1.json';
 
-type Repository = Pick<AVRepository, 'load' | 'import' | 'preflightSnapshot' | 'saveSnapshot' | 'recoverPending'>;
+type Repository = Pick<AVRepository, 'load' | 'import' | 'preflightSnapshot' | 'saveSnapshot' | 'recoverPending'>
+  & Partial<Pick<AVRepository, 'canWriteIncrementally' | 'prepareIncrementalWrite'>>;
 type Options = {
+  discover?: typeof discoverDatabase;
+  mark?: typeof markDatabase;
+  repairLocation?: typeof repairStoredLocation;
+  choose?: DiscoveryOptions['choose'];
   inspectLegacyCache?: () => Promise<Record<string, unknown[]>>;
   ensure?: typeof ensureDatabases;
   verify?: typeof verifyDatabaseBinding;
@@ -105,9 +113,9 @@ export class StorageCoordinator {
       if (source.schemaVersion !== 1 || !source.binding?.docId) throw new Error('Things 数据库版本或绑定不受支持。');
       // An active binding must never be replaced by a freshly provisioned empty database.
       await this.checkVersion();
-      await (this.options.verify || verifyDatabaseBinding)(this.client, source.binding);
-      this.repository = this.makeRepository(source.binding);
       this.binding = source.binding;
+      await this.verifyLocation(true, true);
+      this.repository = this.makeRepository(this.binding!);
       this.snapshot = await this.withWriteLock(() => this.recoverOrLoad());
       this.docId = source.binding.docId;
       this.mode = 'database';
@@ -118,7 +126,26 @@ export class StorageCoordinator {
       return;
     }
     if (this.observedDatabaseSource) throw new Error('原数据库的数据源绑定暂不可读取，请恢复绑定后重试；不会创建替代数据库。');
-    if (present(pending)) throw new Error('存在未完成的数据库保存，但缺少原数据源绑定；请恢复绑定，不能自动创建空数据库。');
+    if (present(pending) && !pending.binding) throw new Error('存在未完成保存但缺少原绑定，不能创建空数据库');
+    const savedBinding = await this.host.loadData(STORAGE_BINDING_FILE);
+    const bootstrap = await this.host.loadData(STORAGE_BOOTSTRAP_FILE);
+    const recovered = savedBinding || pending?.binding || (!bootstrap
+      ? await (this.options.discover || discoverDatabase)(this.host, this.client, { choose: this.options.choose }) : undefined);
+    if (recovered) {
+      await this.checkVersion();
+      this.binding = recovered;
+      await this.verifyLocation(true, true);
+      const repo = this.makeRepository(recovered);
+      if (present(pending)) {
+        if (!sameDatabase(pending.binding, recovered)) throw new Error('未完成保存与恢复的数据中心不一致');
+        await this.host.saveData(SOURCE_FILE, { schemaVersion: 1, mode: 'database', binding: recovered });
+        this.repository = repo;
+        this.snapshot = await this.withWriteLock(() => this.recoverOrLoad());
+        this.docId = recovered.docId; this.mode = 'database';
+        if (this.notesInDatabase) await this.ensureViews();
+      } else await this.activate(recovered, repo, await repo.load());
+      return;
+    }
     this.snapshot = await readLegacy(this.host);
     const audit = auditLegacy(this.snapshot);
     if (audit.hasLegacyData) {
@@ -127,10 +154,9 @@ export class StorageCoordinator {
     }
     await this.assertNoLegacyCache();
     await this.checkVersion();
-    const binding = await (this.options.ensure || ensureDatabases)(this.host, this.client);
+    const binding = await (this.options.ensure || ensureDatabases)(this.host, this.client, { choose: this.options.choose });
     const repo = this.makeRepository(binding);
     const snapshot = await repo.load();
-    if (auditLegacy(snapshot).hasLegacyData) throw new Error('发现已有数据库记录，但缺少激活记录；请恢复数据源绑定，不能当作全新安装。');
     await this.activate(binding, repo, snapshot);
   }
 
@@ -138,10 +164,26 @@ export class StorageCoordinator {
     return this.options.repository?.(binding) || new AVRepository(this.client, binding);
   }
 
+  private async verifyLocation(checkSchema = true, mark = false): Promise<void> {
+    const before = this.binding!.notebookId;
+    await (this.options.verify || verifyDatabaseBinding)(this.client, this.binding!, checkSchema);
+    if (mark || before !== this.binding!.notebookId) {
+      await (this.options.mark || markDatabase)(this.client, this.binding!);
+      await (this.options.repairLocation || repairStoredLocation)(this.host, this.binding!);
+    }
+  }
+
   private async activate(binding: any, repository: Repository, snapshot: LegacySnapshot): Promise<void> {
+    const existingSource = await this.host.loadData(SOURCE_FILE);
+    if (existingSource && (existingSource.mode !== 'database' || !sameDatabase(existingSource.binding, binding))) {
+      throw new Error('其他窗口已激活另一数据中心，请重新加载后选择；不会覆盖');
+    }
     const source = { schemaVersion: 1, mode: 'database', binding };
     // Seed imported completion history before activation. It must never be replayed as new events.
-    await this.persistObservation(seedTaskObservation(snapshot, binding.docId));
+    const observed = await this.host.loadData(OBSERVATION_FILE);
+    if (observed?.docId === binding.docId) {
+      validateObservation(observed, binding.docId);
+    } else await this.persistObservation(seedTaskObservation(snapshot, binding.docId));
     // A failed response can still mean the source switch committed. Verify it before allowing any
     // more legacy writes; otherwise those writes would disappear on the next database-backed start.
     try { await this.host.saveData(SOURCE_FILE, source); } catch { /* Read back the durable decision below. */ }
@@ -176,7 +218,7 @@ export class StorageCoordinator {
 
   private async assertCurrentSource(): Promise<void> {
     const source = await this.host.loadData(SOURCE_FILE);
-    if (source?.mode !== 'database' || stableJSON(source.binding) !== stableJSON(this.binding)) {
+    if (source?.mode !== 'database' || !sameDatabase(source.binding, this.binding!)) {
       throw new Error('Things 数据源已在其他窗口升级或改变，请重新加载后再编辑。');
     }
   }
@@ -241,7 +283,7 @@ export class StorageCoordinator {
     return seeded;
   }
 
-  private async commitIntent(intent: WriteIntent, recovering = false): Promise<LegacySnapshot> {
+  private async commitIntent(intent: WriteIntent, recovering = false, incremental?: IncrementalWrite): Promise<LegacySnapshot> {
     if (intent.observation) validateObservation(intent.observation, this.binding!.docId);
     let recoveryMayBeNeeded = recovering;
     try {
@@ -252,9 +294,10 @@ export class StorageCoordinator {
         await this.repository!.preflightSnapshot(intent.desired, intent.base);
         recoveryMayBeNeeded = true;
         await this.persistIntent(intent);
-        await this.repository!.saveSnapshot(intent.desired, intent.base);
+        if (incremental) await incremental.save(intent.desired, intent.base);
+        else await this.repository!.saveSnapshot(intent.desired, intent.base);
       }
-      const saved = await this.repository!.load();
+      const saved = incremental ? await incremental.readback() : await this.repository!.load();
       // Acknowledge only the planned state. Concurrent native changes in readback still need processing.
       if (intent.observation) await this.persistObservation(intent.observation);
       await this.persistIntent(null);
@@ -283,7 +326,7 @@ export class StorageCoordinator {
     const intent = await this.host.loadData(WRITE_INTENT_FILE);
     let snapshot: LegacySnapshot;
     if (present(intent)) {
-      if (intent.schemaVersion !== 1 || stableJSON(intent.binding) !== stableJSON(this.binding)
+      if (intent.schemaVersion !== 1 || !sameDatabase(intent.binding, this.binding!)
         || auditLegacy(intent.base).errors.length || auditLegacy(intent.desired).errors.length) {
         throw new Error('未完成的保存记录损坏或不属于当前数据库，请保留记录并恢复原绑定。');
       }
@@ -297,6 +340,9 @@ export class StorageCoordinator {
   }
 
   async refresh(): Promise<void> {
+    // Sync may deliver a native source after an earlier legacy-mode startup.
+    // Rediscover only on refresh; ordinary task writes never scan the workspace.
+    if (this.mode === 'legacy') this.ready = undefined;
     const initializesSource = !this.ready;
     await this.start();
     // Initialization already validates and loads a complete snapshot. Repeating
@@ -305,7 +351,7 @@ export class StorageCoordinator {
     if (this.migrating) return;
     await this.enqueue(async () => {
       if (this.repository) {
-        await (this.options.verify || verifyDatabaseBinding)(this.client, this.binding!);
+        await this.verifyLocation(true, true);
         this.snapshot = await this.withWriteLock(() => this.recoverOrLoad());
         this.failed = undefined;
       } else this.snapshot = await readLegacy(this.host);
@@ -366,15 +412,19 @@ export class StorageCoordinator {
             if (this.binding?.schemaVersion === 1 && present(await this.host.loadData(NOTES_UPGRADE_FILE))) {
               throw new Error('备注升级尚未完成，请先在设置中继续升级；原数据和备注文档已保留。');
             }
-            await (this.options.verify || verifyDatabaseBinding)(this.client, this.binding!);
-            const latest = await this.repository!.load();
+            const canIncrement = !!this.repository!.prepareIncrementalWrite && this.repository!.canWriteIncrementally?.(base, next);
+            // Ownership is always checked. Startup, refresh, structural edits and recovery
+            // validate every schema; task writes validate fresh touched AV schemas themselves.
+            await this.verifyLocation(!canIncrement);
+            const incremental = canIncrement ? await this.repository!.prepareIncrementalWrite!(base, next) : undefined;
+            const latest = incremental ? incremental.latest : await this.repository!.load();
             const observation = await this.observationFor(latest);
             const merged = mergeTaskChanges(base, next, latest);
             const now = this.options.now?.() ?? Date.now();
             const planned = await planTaskTransitions(merged, observation, now);
             const intent: WriteIntent = { schemaVersion: 1, binding: this.binding!, base, desired: planned.snapshot,
               observation: planned.observation, createdAt: now };
-            this.snapshot = await this.commitIntent(intent);
+            this.snapshot = await this.commitIntent(intent, false, incremental);
           });
         } catch (error) {
           // commitIntent owns the failure latch once a journal may exist. Pure validation failures
@@ -382,6 +432,7 @@ export class StorageCoordinator {
           throw error;
         }
       } else {
+        if (present(await this.host.loadData(SOURCE_FILE))) throw new Error('同步已送达数据库连接，请重新加载后继续编辑；旧文件未修改');
         for (const [name, data] of Object.entries(requested)) await this.host.saveData(name, data);
         this.snapshot = next;
       }
@@ -393,11 +444,30 @@ export class StorageCoordinator {
     return this.enqueue(async () => {
       if (this.repository) {
         if (this.failed) throw this.failed;
-        await (this.options.verify || verifyDatabaseBinding)(this.client, this.binding!);
+        await this.verifyLocation();
         return auditLegacy(await this.repository.load());
       }
       return auditLegacy(await readLegacy(this.host));
     });
+  }
+
+  async moveToSharedNotebook(): Promise<void> {
+    await this.start();
+    if (this.mode !== 'database' || !this.binding) throw new Error('请先恢复已有数据库连接');
+    if (this.migrating) throw new Error('数据迁移已经在进行中');
+    this.migrating = true;
+    try {
+      await this.enqueue(() => this.withWriteLock(() => withDatabaseInitLock(async () => {
+        await this.assertCurrentSource();
+        if (present(await this.host.loadData(WRITE_INTENT_FILE)) || present(await this.host.loadData(NOTES_UPGRADE_FILE))) {
+          throw new Error('请先完成未结束的保存或备注升级，再移动数据中心');
+        }
+        const target = await chooseNotebook(this.host, this.client, { choose: this.options.choose });
+        await relocateDatabase(this.host, this.client, this.binding!, target.id);
+        this.repository = this.makeRepository(this.binding!);
+        this.snapshot = await this.repository.load(); this.delivered = {}; this.failed = undefined;
+      })));
+    } finally { this.migrating = false; }
   }
 
   /** Read-only migration preview: checks compatibility and residual caches without provisioning. */
@@ -473,7 +543,7 @@ export class StorageCoordinator {
         const saved = await this.host.loadData(BACKUP_FILE);
         if (stableJSON(saved?.snapshot) !== stableJSON(original)) throw new Error('原始备份核对失败，未开始迁移。');
         report('creating');
-        const binding = await (this.options.ensure || ensureDatabases)(this.host, this.client);
+        const binding = await (this.options.ensure || ensureDatabases)(this.host, this.client, { choose: this.options.choose });
         const repo = this.makeRepository(binding);
         report('importing');
         await repo.import(original);

@@ -6,9 +6,15 @@ import { NativeNotes } from './nativeNotes.ts';
 import { RichNotes, type RichNotesPlan } from './richNotes.ts';
 
 type Data = Record<string, any>;
-type Row = { id: string; data: Data; presence: string[]; extra: Data; notes?: string; itemId?: string; notesDocId?: string; cells?: Data; richPlan?: RichNotesPlan };
+type Row = { id: string; data: Data; presence: string[]; extra: Data; notes?: string; itemId?: string; notesDocId?: string; cells?: Data; richPlan?: RichNotesPlan; emptyNewNotes?: boolean };
 type Tables = Record<TableName, Map<string, Row>>;
 type ReadState = { tables: Tables; snapshot: LegacySnapshot };
+type WriteScope = Map<TableName, Set<string>>;
+export interface IncrementalWrite {
+  latest: LegacySnapshot;
+  save(desired: LegacySnapshot, base: LegacySnapshot): Promise<void>;
+  readback(): Promise<LegacySnapshot>;
+}
 const JSON_FIELDS = new Set(['presence', 'extra', 'tagOrder', 'groupOrder', 'collapsedGroups', 'payload']);
 const TECHNICAL = new Set(['extra', 'presence', 'sourceIndex', 'notesAssets', 'notesDocId', 'notesLink', 'storageState', 'tagOrder']);
 const NOTE_TABLES = new Set<TableName>(['tasks', 'projects', 'areas', 'trashItems']);
@@ -25,6 +31,16 @@ export function canonical(value: any): string {
   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
 }
 const equal = (left: any, right: any): boolean => canonical(left) === canonical(right);
+
+function cellIndexes(entries: Map<string, any>): Map<string, Map<string, any>> {
+  const indexed = new Map<string, Map<string, any>>();
+  for (const [key, entry] of entries) {
+    const cells = new Map<string, any>();
+    for (const cell of entry.values || []) if (!cells.has(cell.blockID)) cells.set(cell.blockID, cell);
+    indexed.set(key, cells);
+  }
+  return indexed;
+}
 
 export class AVConflictError extends Error {
   constructor(table: string, field: string) { super(`Things 数据已在其他位置改变：${table}.${field}。请刷新后重试。`); this.name = 'AVConflictError'; }
@@ -138,6 +154,7 @@ export class AVRepository {
   private readonly client: SiYuanAVClient;
   private readonly binding: Binding;
   private baseline: LegacySnapshot | undefined;
+  private viewCache?: any[];
   private queue: Promise<unknown> = Promise.resolve();
   private readonly nativeNotes: NativeNotes;
   private readonly richNotes = new RichNotes();
@@ -150,11 +167,86 @@ export class AVRepository {
   }
 
   async load(): Promise<LegacySnapshot> {
-    await this.adoptNativeRows();
-    const state = await this.readState();
+    const views = await this.adoptNativeRows();
+    const state = await this.readState(false, views);
     this.validate(state.snapshot);
     this.baseline = copy(state.snapshot);
+    this.viewCache = views;
     return copy(state.snapshot);
+  }
+
+  /** Structural edits, V1 notes and recovery retain complete reconciliation. */
+  canWriteIncrementally(base: LegacySnapshot, desired: LegacySnapshot): boolean {
+    if (!this.isRich || !this.viewCache || ['projects', 'areas', 'tags'].some(key => !equal(base[key], desired[key]))) return false;
+    for (const key of ['tasks', 'archived', 'trash'] as const) {
+      const old = new Set(base[key].map(row => row.id));
+      const remaining = new Set(desired[key].map(row => row.id));
+      if (!equal(base[key].filter(row => remaining.has(row.id)).map(row => row.id), desired[key].filter(row => old.has(row.id)).map(row => row.id))) return false;
+      let appended = false;
+      for (const row of desired[key]) {
+        if (!old.has(row.id)) appended = true;
+        else if (appended) return false;
+      }
+    }
+    return true;
+  }
+
+  private async taskWriteScope(base: LegacySnapshot, desired: LegacySnapshot): Promise<WriteScope> {
+    const before = await flatten(base, this.specs), after = await flatten(desired, this.specs);
+    const scope: WriteScope = new Map();
+    const content = (row?: Row) => row ? { data: { ...row.data, sourceIndex: undefined }, unknown: row.extra.unknown } : undefined;
+    for (const table of ['tasks', 'trashBatches', 'trashItems'] as const) {
+      const changed = new Set([...before[table].keys(), ...after[table].keys()].filter(id => !equal(content(before[table].get(id)), content(after[table].get(id)))));
+      if (changed.size) scope.set(table, changed);
+    }
+    return scope;
+  }
+
+  private async scopedViews(base: LegacySnapshot, desired: LegacySnapshot, scope?: WriteScope): Promise<any[]> {
+    scope ||= await this.taskWriteScope(base, desired);
+    const selected = new Set<TableName>(['tasks', ...scope.keys()]);
+    const before = new Map([...base.tasks, ...base.archived].map(row => [row.id, row]));
+    const after = new Map([...desired.tasks, ...desired.archived].map(row => [row.id, row]));
+    for (const id of scope.get('tasks') || []) for (const row of [before.get(id), after.get(id)]) {
+      if (!row) continue;
+      if (row.projectId) { selected.add('projects'); selected.add('areas'); }
+      if (row.areaId) selected.add('areas');
+      if (row.headingId) { selected.add('headings'); selected.add('projects'); selected.add('areas'); }
+      if (row.tags?.length) selected.add('tags');
+    }
+    return Promise.all(TABLE_NAMES.map((table, index) => selected.has(table)
+      ? this.client.getAV(this.binding.tables[table].avId) : this.viewCache![index]));
+  }
+
+  async prepareIncrementalWrite(base: LegacySnapshot, desired: LegacySnapshot): Promise<IncrementalWrite> {
+    let incremental = this.canWriteIncrementally(base, desired);
+    const read = async (before: LegacySnapshot, after: LegacySnapshot): Promise<LegacySnapshot> => {
+      if (!incremental) return this.load();
+      try {
+        const views = await this.scopedViews(before, after), state = await this.readState(false, views);
+        this.validate(state.snapshot);
+        this.viewCache = views;
+        this.baseline = copy(state.snapshot);
+        return copy(state.snapshot);
+      } catch {
+        // Unknown native rows/relationships or incomplete state require complete reconciliation.
+        incremental = false;
+        return this.load();
+      }
+    };
+    const latest = await read(base, desired);
+    let savedBase = base, savedDesired = desired;
+    return {
+      latest,
+      save: async (next, previous) => {
+        savedBase = previous; savedDesired = next;
+        incremental &&= this.canWriteIncrementally(previous, next);
+        if (!incremental) return this.saveSnapshot(next, previous);
+        const wanted = copy(next), baseline = copy(previous);
+        await this.enqueue(() => this.saveMerged(wanted, baseline, true));
+      },
+      readback: () => read(savedBase, savedDesired),
+    };
   }
 
   async import(snapshot: LegacySnapshot): Promise<void> {
@@ -193,7 +285,8 @@ export class AVRepository {
     if (this.isRich) {
       for (const table of TABLE_NAMES) {
         if (!NOTE_TABLES.has(table)) continue;
-        const changed = [...wanted[table].values()].filter(row => !before[table].has(row.id) || !equal(before[table].get(row.id)!.notes, row.notes));
+        const changed = [...wanted[table].values()].filter(row => before[table].has(row.id)
+          ? !equal(before[table].get(row.id)!.notes, row.notes) : !!(row.notes ?? ''));
         for (const row of changed) this.richNotes.validate(row.notes ?? '');
         if (!changed.length) continue;
         const binding = this.binding.tables[table], av = await this.client.getAV(binding.avId);
@@ -271,21 +364,29 @@ export class AVRepository {
     if (audit.errors.length) throw new Error(`Things 数据校验失败：${audit.errors.map((item) => `${item.path}: ${item.message}`).join('；')}`);
   }
 
-  private async adoptNativeRows(): Promise<void> {
-    const avs = await Promise.all(TABLE_NAMES.map((table) => this.client.getAV(this.binding.tables[table].avId)));
+  private async readViews(): Promise<any[]> {
+    return Promise.all(TABLE_NAMES.map((table) => this.client.getAV(this.binding.tables[table].avId)));
+  }
+
+  private async adoptNativeRows(views?: any[]): Promise<any[]> {
+    const avs = views || await this.readViews();
     const nativeIds = new Map<string, string>();
     const pending: Array<{ table: TableName; itemId: string; fields: Data; cells: Data }> = [];
     for (let index = 0; index < TABLE_NAMES.length; index++) {
       const table = TABLE_NAMES[index], binding = this.binding.tables[table], schema = this.specs[table];
       const entries = new Map<string, any>(avs[index].keyValues.map((entry: any) => [entry.key.id, entry]));
+      const cellsByKey = cellIndexes(entries);
       const primary = entries.get(binding.keys[schema.titleField]);
-      if (primary?.key?.type !== 'block' || schema.columns.some((column) => entries.get(binding.keys[column.field])?.key?.type !== column.type)) {
+      if (primary?.key?.type !== 'block' || schema.columns.some((column) => {
+        const key = entries.get(binding.keys[column.field])?.key;
+        return key?.type !== column.type || (column.relation && key.relation?.avID !== this.binding.tables[column.relation].avId);
+      })) {
         throw new Error(`Things 数据库列被删除或改变：${table}`);
       }
       for (const titleCell of primary?.values || []) {
         const itemId = titleCell.blockID, fields: Data = { [schema.titleField]: titleCell.block?.content || '' }, cells: Data = {};
         for (const column of schema.columns) {
-          const cell = entries.get(binding.keys[column.field])?.values?.find((value: any) => value.blockID === itemId);
+          const cell = cellsByKey.get(binding.keys[column.field])?.get(itemId);
           cells[column.field] = cell;
           fields[column.field] = decodeCell(column.type, cell);
         }
@@ -331,20 +432,25 @@ export class AVRepository {
         { itemID: itemId, keyID: binding.keys.presence, value: encodeCell('text', JSON.stringify([...new Set(presence)])) });
       await this.client.setCells(binding.avId, patches);
     }
+    // Reuse only this operation's read. Any adoption writes require a fresh complete read,
+    // including relationships in other tables; subsequent loads never use a persistent cache.
+    return pending.length ? this.readViews() : avs;
   }
 
-  private async saveMerged(desired: LegacySnapshot, explicitBase?: LegacySnapshot): Promise<void> {
+  private async saveMerged(desired: LegacySnapshot, explicitBase?: LegacySnapshot, incremental = false): Promise<void> {
     const baseline = explicitBase || this.baseline;
     if (!baseline) throw new Error('Things 保存前必须先加载数据库');
     this.validate(baseline);
     this.validate(desired);
     const baseTables = await flatten(baseline, this.specs);
     const wantedTables = await flatten(desired, this.specs);
-    await this.recoverIdentities(wantedTables);
+    const scope = incremental ? await this.taskWriteScope(baseline, desired) : undefined;
+    const inputViews = incremental ? await this.scopedViews(baseline, desired, scope) : undefined;
+    const recovered = await this.recoverIdentities(wantedTables, inputViews, scope);
     // A user may add a detached native row after the Store's last read. Reconcile it here too:
     // recovery runs before load(), so deferring adoption to load would deadlock a saved intent.
-    await this.adoptNativeRows();
-    const latest = await this.readState(true);
+    const views = await this.adoptNativeRows(recovered);
+    const latest = await this.readState(true, views);
     const latestTables = await flatten(latest.snapshot, this.specs);
     for (const table of TABLE_NAMES) for (const row of latest.tables[table].values()) {
       if (!row.presence.length && (!wantedTables[table].has(row.id) || row.itemId !== await stableId(this.binding.docId, `${table}:${row.id}`))) {
@@ -399,20 +505,23 @@ export class AVRepository {
     // Validate the actual three-way result, not only the caller's stale snapshot.
     const mergedSnapshot = this.snapshotFromTables(latestTables);
     this.validate(mergedSnapshot);
-    await this.writeTables(latestTables, latest.tables, true);
+    await this.writeTables(latestTables, latest.tables, true, scope);
     // The caller's Map may still contain values from its base. Keep that exact base for the next patch;
     // refresh/load is what adopts unrelated edits made in the native database.
     this.baseline = copy(desired);
   }
 
-  private async recoverIdentities(wanted: Tables): Promise<void> {
+  private async recoverIdentities(wanted: Tables, views?: any[], scope?: WriteScope): Promise<any[]> {
     // An addRow may have committed before its identity-cell response failed. Only recover the
     // deterministic item from this particular import, never a same-title or arbitrary native row.
-    for (const table of TABLE_NAMES) {
-      const av = await this.client.getAV(this.binding.tables[table].avId);
+    const avs = views || await this.readViews();
+    let changed = false;
+    for (const [index, table] of TABLE_NAMES.entries()) {
+      const av = avs[index];
       const primary = av.keyValues.find((entry: any) => entry.key.type === 'block');
       const ids = av.keyValues.find((entry: any) => entry.key.id === this.binding.tables[table].keys.id);
       for (const row of wanted[table].values()) {
+        if (scope && !scope.get(table)?.has(row.id)) continue;
         const itemId = await stableId(this.binding.docId, `${table}:${row.id}`);
         const existing = primary?.values?.find((value: any) => value.blockID === itemId);
         if (!existing) continue;
@@ -421,9 +530,11 @@ export class AVRepository {
         if (!identity) {
           if (existing.block?.content !== String(row.data[this.specs[table].titleField] ?? '')) throw new Error('Things 未完成条目的标题已变更，不能自动认领');
           await this.client.setCells(this.binding.tables[table].avId, [{ itemID: itemId, keyID: this.binding.tables[table].keys.id, value: encodeCell('text', row.id) }]);
+          changed = true;
         }
       }
     }
+    return changed ? this.readViews() : avs;
   }
 
   private encodeRow(table: TableName, row: Row, desired: Tables): Data {
@@ -431,8 +542,17 @@ export class AVRepository {
     const encoded: Data = { [schema.titleField]: encodeCell('block', row.data[schema.titleField]) };
     for (const column of schema.columns) {
       if (column.field === 'extra' || column.field === 'presence') continue;
-      if (column.field === 'notes') { encoded.notes = row.richPlan?.cell || row.cells?.notes || this.richNotes.prepare(row.notes ?? '').cell; continue; }
-      if (column.field === 'notesAssets') { encoded.notesAssets = row.richPlan?.assets || row.cells?.notesAssets || this.richNotes.prepare(row.notes ?? '').assets; continue; }
+      if (row.emptyNewNotes && (column.field === 'notes' || column.field === 'notesAssets')) continue;
+      if (column.field === 'notes') {
+        if (row.cells && !row.richPlan && !row.cells.notes) continue;
+        encoded.notes = row.richPlan?.cell || row.cells?.notes || this.richNotes.prepare(row.notes ?? '').cell;
+        continue;
+      }
+      if (column.field === 'notesAssets') {
+        if (row.cells && !row.richPlan && !row.cells.notesAssets) continue;
+        encoded.notesAssets = row.richPlan?.assets || row.cells?.notesAssets || this.richNotes.prepare(row.notes ?? '').assets;
+        continue;
+      }
       let value = row.data[column.field];
       if (column.relation) {
         const ids = column.multiple ? (value || []) : (value ? [value] : []);
@@ -488,6 +608,9 @@ export class AVRepository {
       const encoded = this.encodeRow(table, { ...row, data: { ...row.data, notesDocId, notesLink: notesDocId ? `siyuan://blocks/${notesDocId}` : '' } }, desired);
       if (old.cells?.[this.specs[table].titleField]?.isDetached !== true) throw new AVConflictError(table, 'bound-row');
       for (const [field, value] of Object.entries(encoded)) {
+        // Incremental appends retain sparse physical positions rather than renumbering all
+        // other rows. Position numbers are derived bookkeeping, not retry business content.
+        if (field === 'sourceIndex') continue;
         const type = this.specs[table].columns.find((column) => column.field === field)?.type || 'block';
         if (richPending && ['notes', 'notesAssets'].includes(field)) continue;
         if (richPending && field === 'extra') {
@@ -521,24 +644,28 @@ export class AVRepository {
     }
   }
 
-  private async readState(allowIncomplete = false): Promise<ReadState> {
+  private async readState(allowIncomplete = false, views?: any[]): Promise<ReadState> {
     const tables = emptyTables();
-    const avs = await Promise.all(TABLE_NAMES.map((table) => this.client.getAV(this.binding.tables[table].avId)));
+    const avs = views || await this.readViews();
     for (let index = 0; index < TABLE_NAMES.length; index++) {
       const table = TABLE_NAMES[index], schema = this.specs[table], bound = this.binding.tables[table];
       const av = avs[index];
       const entries = new Map<string, any>(av.keyValues.map((entry: any) => [entry.key.id, entry]));
+      const cellsByKey = cellIndexes(entries);
       const primary = entries.get(bound.keys[schema.titleField]);
       if (primary?.key?.type !== 'block') throw new Error(`Things 主列被删除或改变：${table}`);
       for (const column of schema.columns) {
         if (entries.get(bound.keys[column.field])?.key?.type !== column.type) throw new Error(`Things 数据库列被删除或改变：${table}.${column.field}`);
+        if (column.relation && entries.get(bound.keys[column.field])?.key?.relation?.avID !== this.binding.tables[column.relation].avId) {
+          throw new Error(`Things 关联目标被改变：${table}.${column.field}`);
+        }
       }
       for (const titleCell of primary.values || []) {
         const itemId = titleCell.blockID;
         const cells: Data = { [schema.titleField]: titleCell };
         const fields: Data = { [schema.titleField]: decodeCell('block', titleCell) };
         for (const column of schema.columns) {
-          const cell = entries.get(bound.keys[column.field]).values?.find((value: any) => value.blockID === itemId);
+          const cell = cellsByKey.get(bound.keys[column.field])?.get(itemId);
           cells[column.field] = cell;
           fields[column.field] = decodeCell(column.type, cell);
         }
@@ -656,8 +783,14 @@ export class AVRepository {
     row.data.notesDocId = current?.data.notesDocId;
     row.data.notesLink = current?.data.notesLink;
     row.notesDocId = current?.notesDocId;
+    if (!current && !(row.notes ?? '')) {
+      // Do not write new empty note columns: preserve native notes/assets added during insertion.
+      row.emptyNewNotes = true;
+      return;
+    }
     if ((row.notes ?? '') === (current?.notes ?? '') && current?.cells && !current.extra.richNotes?.pending) {
       row.cells = current.cells;
+      if (!current.cells.notes && !(decodeCell('mAsset', current.cells.notesAssets) || []).length) row.emptyNewNotes = true;
       if (current.extra.richNotes) row.extra.richNotes = copy(current.extra.richNotes);
       return;
     }
@@ -773,9 +906,10 @@ export class AVRepository {
     return docId;
   }
 
-  private async writeTables(desired: Tables, current: Tables, remove: boolean): Promise<void> {
+  private async writeTables(desired: Tables, current: Tables, remove: boolean, scope?: WriteScope): Promise<void> {
     // Preflight every note change before altering any table cells.
     for (const table of TABLE_NAMES) for (const row of desired[table].values()) {
+      if (scope && !scope.get(table)?.has(row.id)) continue;
       const old = current[table].get(row.id);
       if (this.isRich && NOTE_TABLES.has(table)) {
         if (row.notes !== old?.notes) this.richNotes.validate(row.notes ?? '');
@@ -783,20 +917,30 @@ export class AVRepository {
         this.prepareRichRow(row, old);
       } else if (old?.notesDocId && !old.extra.notesPending && row.notes !== old.notes) await this.nativeNotes.preflight(old.notesDocId, row.notes || '');
     }
-    for (const table of TABLE_NAMES) for (const row of desired[table].values()) {
-      const old = current[table].get(row.id);
-      row.itemId = old?.itemId || await stableId(this.binding.docId, `${table}:${row.id}`);
-      if (!old) {
-        if ([...current[table].values()].some((item) => item.itemId === row.itemId)) throw new Error('Things 条目 ID 冲突');
-        await this.client.addRow(this.binding.tables[table].avId, row.itemId, String(row.data[this.specs[table].titleField] ?? ''));
-        // Publish identity immediately; if later work fails, retry can find the same entry.
-        await this.client.setCells(this.binding.tables[table].avId, [{ itemID: row.itemId, keyID: this.binding.tables[table].keys.id, value: encodeCell('text', row.id) }]);
+    for (const table of TABLE_NAMES) {
+      const added: Row[] = [];
+      let nextIndex = Math.max(-1, ...[...current[table].values()].map(row => row.data.sourceIndex ?? -1)) + 1;
+      for (const row of desired[table].values()) {
+        const old = current[table].get(row.id);
+        row.itemId = old?.itemId || await stableId(this.binding.docId, `${table}:${row.id}`);
+        if (scope) row.data.sourceIndex = old && old.data.storageState === row.data.storageState ? old.data.sourceIndex : nextIndex++;
+        if (old || (scope && !scope.get(table)?.has(row.id))) continue;
+        if ([...current[table].values()].some(item => item.itemId === row.itemId)) throw new Error('Things 条目 ID 冲突');
+        added.push(row);
       }
+      if (!added.length) continue;
+      const avId = this.binding.tables[table].avId;
+      if (this.client.addRows) await this.client.addRows(avId, added.map(row => ({ id: row.itemId!, title: String(row.data[this.specs[table].titleField] ?? '') })));
+      else for (const row of added) await this.client.addRow(avId, row.itemId!, String(row.data[this.specs[table].titleField] ?? ''));
+      // Publish identities before notes/relations so interrupted groups remain recoverable.
+      for (let offset = 0; offset < added.length; offset += 100) await this.client.setCells(avId,
+        added.slice(offset, offset + 100).map(row => ({ itemID: row.itemId!, keyID: this.binding.tables[table].keys.id, value: encodeCell('text', row.id) })));
     }
     for (const table of TABLE_NAMES) {
       const binding = this.binding.tables[table], schema = this.specs[table];
       const patches: Array<{ itemID: string; keyID: string; value: Data }> = [];
       for (const row of desired[table].values()) {
+        if (scope && !scope.get(table)?.has(row.id)) continue;
         const old = current[table].get(row.id);
         if (this.isRich) {
           if (NOTE_TABLES.has(table)) await this.writeRichNotes(table, row, old);
@@ -820,12 +964,12 @@ export class AVRepository {
       // Frozen snapshots and their native note/asset references stay available for inspection.
       if (table === 'trashItems') continue;
       if (table === 'trashBatches') {
-        const patches = [...current[table].values()].filter((row) => !desired[table].has(row.id) && row.data.state !== 'restored')
+        const patches = [...current[table].values()].filter((row) => (!scope || scope.get(table)?.has(row.id)) && !desired[table].has(row.id) && row.data.state !== 'restored')
           .map((row) => ({ itemID: row.itemId!, keyID: this.binding.tables[table].keys.state, value: encodeCell('select', 'restored') }));
         if (patches.length) await this.client.setCells(this.binding.tables[table].avId, patches);
         continue;
       }
-      const ids = [...current[table].values()].filter((row) => !desired[table].has(row.id)).map((row) => row.itemId!);
+      const ids = [...current[table].values()].filter((row) => (!scope || scope.get(table)?.has(row.id)) && !desired[table].has(row.id)).map((row) => row.itemId!);
       if (ids.length) await this.client.removeRows(this.binding.tables[table].avId, ids);
     }
   }

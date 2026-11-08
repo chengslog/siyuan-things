@@ -1728,6 +1728,9 @@ export default class ThingsPlugin extends Plugin {
     html += `
       </div>
       <div class="things-nav__footer">
+        <button type="button" class="things-nav__settings" data-footer-action="settings" title="打开 Things 设置" aria-label="打开 Things 设置">
+          <svg aria-hidden="true" focusable="false"><use xlink:href="#iconSettings"></use></svg>
+        </button>
         <button type="button" class="things-nav__version" data-footer-action="changelog" title="查看更新日志">
           Things v${__PLUGIN_VERSION__}
         </button>
@@ -1786,6 +1789,9 @@ export default class ThingsPlugin extends Plugin {
 
     element.querySelector('[data-footer-action="changelog"]')?.addEventListener('click', () => {
       this.openChangelogDialog();
+    });
+    element.querySelector('[data-footer-action="settings"]')?.addEventListener('click', () => {
+      this.openSetting();
     });
   }
 
@@ -2848,7 +2854,7 @@ export default class ThingsPlugin extends Plugin {
 
         const desc = document.createElement("div");
         desc.className = "things-settings__section-desc";
-        desc.textContent = "选择具体页面后，Things 会将思源的“启动行为”自动设为“关闭所有页签”，以确保启动时只打开这里设置的页面。选择“不打开”不会修改思源设置。";
+        desc.textContent = "指定启动页时，会将思源启动行为设为“关闭所有页签”；选择“不打开”则保留原设置。";
         wrapper.appendChild(desc);
 
         defaultViewEl.addEventListener('change', () => {
@@ -2993,7 +2999,7 @@ export default class ThingsPlugin extends Plugin {
       syncTitle.textContent = '忽略 Things 插件程序同步';
       const syncDescription = document.createElement('div');
       syncDescription.className = 'things-settings__ai-toggle-desc';
-      syncDescription.textContent = '关闭后移除 Things 专用忽略规则。任务和设置数据仍按思源原有规则同步。';
+      syncDescription.textContent = '关闭后移除 Things 专用忽略规则，任务和设置仍按思源规则同步。';
       syncCopy.append(syncTitle, syncDescription);
       const syncToggle = document.createElement('input');
       syncToggle.type = 'checkbox';
@@ -3057,6 +3063,23 @@ export default class ThingsPlugin extends Plugin {
         finally { dataButton.disabled = false; }
       });
       maintenanceActions.appendChild(dataButton);
+      const locationButton = document.createElement('button');
+      locationButton.className = 'things-settings__action-button';
+      locationButton.textContent = '移入数据库笔记本';
+      locationButton.hidden = this.store.storage.mode !== 'database';
+      locationButton.addEventListener('click', async () => {
+        locationButton.disabled = true;
+        storageDetails.textContent = '正在备份并校验数据中心位置…';
+        try {
+          await this.store.storage.moveToSharedNotebook();
+          await this.refreshStorage();
+          storageDetails.textContent = '数据中心及子文档已移入数据库笔记本，原有 ID、表和关联已校验保留。';
+        } catch (error) {
+          storageDetails.textContent = `位置调整未完成：${(error as Error).message}`;
+          showMessage(storageDetails.textContent, 7000, 'error');
+        } finally { locationButton.disabled = false; }
+      });
+      maintenanceActions.appendChild(locationButton);
       const reloadDataButton = document.createElement('button');
       reloadDataButton.className = 'things-settings__action-button';
       setRefreshButton(reloadDataButton, '重新加载数据');
@@ -3072,6 +3095,7 @@ export default class ThingsPlugin extends Plugin {
           dataButton.hidden = false;
           dataButton.textContent = this.store.storage.mode === 'database' ? '打开数据中心' : '检查迁移数据';
           migrateButton.hidden = this.store.storage.mode !== 'legacy';
+          locationButton.hidden = this.store.storage.mode !== 'database';
           migrateButton.disabled = true;
         } catch (error) {
           storageDetails.textContent = `加载失败：${(error as Error).message}`;
@@ -3213,6 +3237,7 @@ export default class ThingsPlugin extends Plugin {
       dangerDescription.className = 'things-settings__section-desc';
       dangerDescription.textContent = '清空 Things 任务与分类并恢复默认设置。执行前仍需单独确认。';
       const dangerCopy = document.createElement('div');
+      dangerCopy.className = 'things-settings__feature-copy';
       dangerCopy.append(dangerTitle, dangerDescription);
       dangerZone.classList.add('things-settings__feature-row');
       dangerZone.append(dangerCopy, resetButton);
@@ -3234,14 +3259,16 @@ export default class ThingsPlugin extends Plugin {
       supportTitle.textContent = '支持与反馈';
       const supportDescription = document.createElement('p');
       supportDescription.className = 'things-settings__section-desc';
-      supportDescription.textContent = '遇到问题时，请附上 Things 和思源版本、复现步骤及截图。GitHub 更新失败时，可在报错窗口复制排查信息。';
-      supportSection.appendChild(supportTitle);
+      supportDescription.textContent = '反馈请附版本、复现步骤与截图；更新失败时可复制错误窗口的排查信息。';
       const supportActions = document.createElement('div');
       supportActions.className = 'things-settings__inline-actions';
       supportActions.appendChild(bugLink);
       const supportRow = document.createElement('div');
       supportRow.className = 'things-settings__feature-row';
-      supportRow.append(supportDescription, supportActions);
+      const supportCopy = document.createElement('div');
+      supportCopy.className = 'things-settings__feature-copy';
+      supportCopy.append(supportTitle, supportDescription);
+      supportRow.append(supportCopy, supportActions);
       supportSection.appendChild(supportRow);
 
       const layout = document.createElement('div');

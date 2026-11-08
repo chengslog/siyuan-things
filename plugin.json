@@ -2,7 +2,7 @@
   "name": "siyuan-things",
   "author": "ccriss",
   "url": "https://github.com/chengslog/siyuan-things",
-  "version": "0.11.3",
+  "version": "0.13.0",
   "minAppVersion": "3.8.8",
   "kernels": [
     "windows",

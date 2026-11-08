@@ -172,6 +172,57 @@ test('native delete preserves a recoverable snapshot of all active descendants r
   assert.deepEqual(f.store.get('grandchild'), grandchild);
 });
 
+test('native deletion updates views before persistence and confirms success only after its write', async () => {
+  for (const fails of [false, true]) {
+    const f = fixture({ active: [task('parent'), task('child', { parentId: 'parent' }), task('unrelated')] });
+    await f.store.load();
+    const events: any[] = [];
+    f.store.on(event => events.push(event));
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const write = f.plugin[STORAGE_BRIDGE].writeFiles;
+    f.plugin[STORAGE_BRIDGE].writeFiles = async updates => { await gate; await write(updates); };
+    const pending = f.store.delete('parent');
+    assert.deepEqual(f.store.getAll().map(task => task.id), ['unrelated']);
+    assert.equal(events[0].type, 'change');
+    assert.ok(!events.some(event => event.type === 'delete'));
+    assert.equal(f.files.get('tasks.json').length, 3, 'view responds before durable storage');
+    f.control.fail = fails;
+    finish();
+    if (fails) {
+      await assert.rejects(pending, /persistence failure/);
+      assert.equal(f.store.count, 3);
+      assert.ok(!events.some(event => event.type === 'delete'));
+    } else {
+      await pending;
+      assert.equal(f.files.get('tasks.json').length, 1);
+      assert.ok(events.some(event => event.type === 'delete'));
+    }
+  }
+});
+
+test('optimistic deletion restores its local snapshot when both write and reload fail', async () => {
+  const original = task('parent');
+  const f = fixture({ active: [original, task('unrelated')] });
+  await f.store.load();
+  f.control.fail = true;
+  f.plugin.loadData = async () => { throw new Error('read also unavailable'); };
+  await assert.rejects(f.store.delete('parent'), /persistence failure/);
+  assert.deepEqual(f.store.get('parent'), original);
+  assert.ok(f.store.get('unrelated'));
+  assert.equal(await f.store.restoreLastTrashedBatch(), 0);
+});
+
+test('a lost delete response does not restore tasks confirmed deleted by readback', async () => {
+  const f = fixture({ active: [task('parent')] });
+  await f.store.load();
+  const write = f.plugin[STORAGE_BRIDGE].writeFiles;
+  f.plugin[STORAGE_BRIDGE].writeFiles = async updates => { await write(updates); throw new Error('response lost'); };
+  await assert.rejects(f.store.delete('parent'), /response lost/);
+  assert.equal(f.store.get('parent'), undefined);
+  assert.equal(f.files.get('tasks-trash.json')[0].tasks[0].id, 'parent');
+});
+
 test('native grouped save failure restores the previous cache and cannot announce deletion', async () => {
   const original = task('parent');
   const f = fixture({ active: [original] });

@@ -39,8 +39,8 @@ function completionFixture(write: (id: string, changes: any) => Promise<any>) {
   let timer: (() => void) | undefined;
   const messages: string[] = [];
   const context = execute(source + `\nfunction destroyComponent(){${cleanup}}\nfunction state(){return {pendingDone,completionApplied,completionInFlight,isMoving};}`, {
-    task: { id: 'one', status: 'todo' }, currentView: 'today', expanded: false, mode: 'create', destroyed: false,
-    store: { tasks: { updateTask: write } }, showMessage: (message: string) => messages.push(message),
+    task: { id: 'one', status: 'todo' }, currentView: 'today', expanded: false, mode: 'create', destroyed: false, isDeleting: false,
+    store: { tasks: { updateTask: write, get: () => ({ id: 'one' }) } }, showMessage: (message: string) => messages.push(message),
     setTimeout(callback: () => void) { timer = callback; return 1; }, clearTimeout() { timer = undefined; },
     console: { error() {} }, document: { removeEventListener() {} }, window: { removeEventListener() {} },
     handleOutsideClick() {}, handleCardExpanded() {}, handleDropdownOutside() {}, copyFeedbackTimer: null, touchDragTimer: null,
@@ -101,6 +101,33 @@ test('undo writes an explicit todo state once and absent tasks are not marked su
   assert.equal(f.context.state().completionApplied, false);
   assert.equal(f.context.state().pendingDone, false);
   assert.match(f.messages[0], /移走或删除/);
+});
+
+test('deleting a card cancels pending completion on destruction', async () => {
+  let writes = 0;
+  const f = completionFixture(async () => { writes++; return { id: 'one' }; });
+  await f.context.handleToggle(click);
+  f.context.isDeleting = true;
+  f.context.destroyComponent();
+  f.fire();
+  await flush();
+  assert.equal(writes, 0);
+});
+
+test('delete ignores repeat clicks and reports a rejected write without an unhandled promise', async () => {
+  let reject!: (error: Error) => void, calls = 0;
+  const messages: string[] = [];
+  const source = card.slice(card.indexOf('  let isDeleting = false;'), card.indexOf('  async function addSubTask()'));
+  const context = execute(source, { task: { id: 'one' },
+    store: { tasks: { delete() { calls++; return new Promise((_resolve, no) => { reject = no; }); } } },
+    showMessage(message: string) { messages.push(message); },
+  });
+  const pending = context.handleDelete(click);
+  await context.handleDelete(click);
+  assert.equal(calls, 1);
+  reject(new Error('offline'));
+  await pending;
+  assert.match(messages[0], /offline/);
 });
 
 test('create retries reuse one immutable submission and ignore repeated clicks while saving', async () => {
